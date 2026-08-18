@@ -2838,7 +2838,7 @@ function InfiniteCanvasPage() {
                             isConnectionTarget={connectionTargetNodeId === node.id}
                             isConnecting={Boolean(connectingParams)}
                             editRequestNonce={editingNodeId === node.id ? editRequestNonce : 0}
-                            showPanel={dialogNodeId === node.id && !selectionBox && !getNodeDefinition(node.type)?.hidePanel}
+                            showPanel={!isNodeResizing && dialogNodeId === node.id && !selectionBox && !getNodeDefinition(node.type)?.hidePanel}
                             groupChildCount={groupChildCountById.get(node.id) || 0}
                             isGroupDropTarget={dropTargetGroupId === node.id}
                             batchExpanded={expandedImageNodeIds.has(node.id)}
