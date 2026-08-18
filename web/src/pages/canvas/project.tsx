@@ -232,6 +232,7 @@ function InfiniteCanvasPage() {
     const [superResolveNodeId, setSuperResolveNodeId] = useState<string | null>(null);
     const [angleNodeId, setAngleNodeId] = useState<string | null>(null);
     const [previewNodeId, setPreviewNodeId] = useState<string | null>(null);
+    const [previewImageId, setPreviewImageId] = useState<string | null>(null);
     const [titleEditing, setTitleEditing] = useState(false);
     const [titleDraft, setTitleDraft] = useState("");
     const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false });
@@ -590,6 +591,7 @@ function InfiniteCanvasPage() {
     const superResolveNode = superResolveNodeId ? nodeById.get(superResolveNodeId) || null : null;
     const angleNode = angleNodeId ? nodeById.get(angleNodeId) || null : null;
     const previewNode = previewNodeId ? nodeById.get(previewNodeId) || null : null;
+    const previewContent = previewImageId ? previewNode?.metadata?.images?.find((image) => image.id === previewImageId)?.content : previewNode?.metadata?.content;
     const hasMultipleSelectedNodes = selectedNodeIds.size > 1;
     const activeNodeId = hasMultipleSelectedNodes ? null : hoveredNodeId || (selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null);
     const groupChildCountById = useMemo(() => {
@@ -2693,7 +2695,10 @@ function InfiniteCanvasPage() {
     const handleNodeHoverEnd = useCallback((nodeId: string) => {
         setHoveredNodeId((current) => (current === nodeId ? null : current));
     }, []);
-    const handleNodeViewImage = useCallback((node: CanvasNodeData) => setPreviewNodeId(node.id), []);
+    const handleNodeViewImage = useCallback((node: CanvasNodeData, imageId?: string) => {
+        setPreviewNodeId(node.id);
+        setPreviewImageId(imageId || null);
+    }, []);
     const handleNodeRetry = useCallback((node: CanvasNodeData) => void handleRetryNode(node), [handleRetryNode]);
     const handleNodeContextMenu = useCallback((event: ReactMouseEvent, nodeId: string) => {
         event.preventDefault();
@@ -2918,7 +2923,7 @@ function InfiniteCanvasPage() {
                     onUpscale={(node) => setUpscaleNodeId(node.id)}
                     onSuperResolve={(node) => setSuperResolveNodeId(node.id)}
                     onAngle={(node) => setAngleNodeId(node.id)}
-                    onViewImage={(node) => setPreviewNodeId(node.id)}
+                    onViewImage={handleNodeViewImage}
                     onReversePrompt={createImageReversePromptNodes}
                     onRetry={(node) => void handleRetryNode(node)}
                     onToggleFreeResize={(node) => toggleNodeFreeResize(node.id)}
@@ -2998,14 +3003,14 @@ function InfiniteCanvasPage() {
 
                 <Modal
                     title={t("canvas.projectPage.imageDetails")}
-                    open={Boolean(previewNode?.metadata?.content)}
+                    open={Boolean(previewContent)}
                     centered
                     onCancel={() => setPreviewNodeId(null)}
                     footer={null}
                     width="auto"
                     styles={{ body: { padding: 0, display: "flex", justifyContent: "center", alignItems: "center", maxHeight: "80vh" } }}
                 >
-                    {previewNode?.metadata?.content ? <img src={previewNode.metadata.content} alt={previewNode.title || t("assets.kinds.image")} style={{ maxWidth: "100%", maxHeight: "80vh", objectFit: "contain" }} /> : null}
+                    {previewContent ? <img src={previewContent} alt={previewNode?.title || t("assets.kinds.image")} style={{ maxWidth: "100%", maxHeight: "80vh", objectFit: "contain" }} /> : null}
                 </Modal>
 
                 <Modal
