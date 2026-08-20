@@ -54,7 +54,7 @@ const serverConfigPath = resolve(process.env.INFINITE_CANVAS_DATA_DIR || resolve
 const maxServerConfigBytes = 1024 * 1024;
 const aiProxyPath = "/api/ai";
 const maxAiRequestBytes = 64 * 1024 * 1024;
-const protectedApiPaths = ["/api/config", aiProxyPath, "/api/webdav", "/api/image-proxy"];
+const protectedApiPaths = ["/api/config", aiProxyPath, "/api/webdav", "/api/image-proxy", canvasAgentProxyPath];
 const allowedNetworks = (process.env.INFINITE_CANVAS_ALLOWED_NETWORKS || "127.0.0.1,::1,192.168.0.0/22")
     .split(",")
     .map((value) => value.trim())

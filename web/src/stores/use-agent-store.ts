@@ -105,14 +105,28 @@ function runtimeAgentUrl() {
     }
 }
 
+function isLocalAgentHost() {
+    return typeof window === "undefined" || ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
+}
+
+function defaultAgentUrl() {
+    if (typeof window === "undefined") return "http://127.0.0.1:17371";
+    if (isLocalAgentHost()) return localStorage.getItem("canvas-agent-url") || "http://127.0.0.1:17371";
+    return new URL("/api/canvas-agent", window.location.origin).toString().replace(/\/$/, "");
+}
+
+function usesServerManagedAgent() {
+    return Boolean(runtimeAgentUrl()) || !isLocalAgentHost();
+}
+
 export const useAgentStore = create<AgentStore>((set, get) => ({
     width: typeof window === "undefined" ? 440 : Number(localStorage.getItem("canvas-agent-panel-width")) || 440,
     panelOpen: false,
     panelMounted: true,
     panelClosing: false,
     canvasContext: null,
-    url: typeof window === "undefined" ? "http://127.0.0.1:17371" : runtimeAgentUrl() || localStorage.getItem("canvas-agent-url") || "http://127.0.0.1:17371",
-    token: typeof window === "undefined" ? "" : runtimeAgentUrl() ? SERVER_MANAGED_AGENT_TOKEN : localStorage.getItem("canvas-agent-token") || "",
+    url: runtimeAgentUrl() || defaultAgentUrl(),
+    token: typeof window === "undefined" ? "" : usesServerManagedAgent() ? SERVER_MANAGED_AGENT_TOKEN : localStorage.getItem("canvas-agent-token") || "",
     connected: false,
     enabled: false,
     silentConnect: false,

@@ -8,7 +8,7 @@ runtime_dir="${RUNTIME_DIR:-/tmp/infinite-canvas-$UID}"
 pid_file="$runtime_dir/preview.pid"
 log_file="$runtime_dir/build-and-preview.log"
 bun_bin="${BUN_BIN:-}"
-agent_url="${VITE_CANVAS_AGENT_URL:-}"
+agent_url="${VITE_CANVAS_AGENT_URL:-/api/canvas-agent}"
 
 if [[ -z "$bun_bin" ]]; then
     bun_bin="$(command -v bun || true)"
