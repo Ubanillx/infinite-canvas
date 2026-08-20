@@ -26,8 +26,10 @@ export function loadConfig(create = false): CanvasAgentConfig {
 
 /** 将 Canvas Agent 配置写入用户配置目录。 */
 export function saveConfig(config: CanvasAgentConfig) {
-    fs.mkdirSync(CONFIG_DIR, { recursive: true });
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+    fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+    fs.chmodSync(CONFIG_DIR, 0o700);
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), { mode: 0o600 });
+    fs.chmodSync(CONFIG_FILE, 0o600);
 }
 
 /** 确保站点级 Codex 工作空间存在并已初始化。 */
@@ -59,7 +61,7 @@ export function updateSiteWorkspace(config: CanvasAgentConfig, patch: Partial<Si
 /** 创建工作空间目录并写入默认 AGENTS.md。 */
 function initializeWorkspace(workspacePath: string) {
     if (initializedWorkspaces.has(workspacePath)) return;
-    fs.mkdirSync(workspacePath, { recursive: true });
+    fs.mkdirSync(workspacePath, { recursive: true, mode: 0o700 });
     const instructionsFile = path.join(workspacePath, "AGENTS.md");
     const current = fs.existsSync(instructionsFile) ? fs.readFileSync(instructionsFile, "utf8") : "";
     if (!current || current.startsWith("# Infinite Canvas Agent")) fs.writeFileSync(instructionsFile, AGENT_PROMPT);

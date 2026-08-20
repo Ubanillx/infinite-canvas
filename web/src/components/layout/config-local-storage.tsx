@@ -39,7 +39,7 @@ export function ConfigLocalStorage({ active }: { active: boolean }) {
     }, [active, refresh, usage]);
 
     const indexedDbBytes = usage?.contentBytes ?? 0;
-    const percent = usage ? Math.min(100, (usage.usage / usage.quota) * 100) : 0;
+    const percent = usage?.quota ? Math.min(100, (usage.usage / usage.quota) * 100) : 0;
 
     return (
         <div className="space-y-3">
@@ -118,7 +118,8 @@ function storeLabel(name: string, t: TFunction) {
     return key ? t(`config.localStorage.stores.${key}`) : name;
 }
 
-function formatStorageBytes(bytes: number) {
+function formatStorageBytes(bytes: number | null) {
+    if (bytes === null) return "--";
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;

@@ -1,7 +1,7 @@
 import axios, { type AxiosRequestConfig } from "axios";
 
 import i18n from "@/i18n";
-import { buildApiUrl, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
+import { buildAiRequestUrl, buildApiUrl, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 
 type RequestOptions = { signal?: AbortSignal };
 
@@ -38,8 +38,20 @@ function pluginHeaders(extra?: Record<string, string>, hasJsonBody = false): Rec
 }
 
 function pluginUrl(config: AiConfig, path: string) {
-    if (/^https?:/i.test(path)) return path;
-    return buildApiUrl(config.baseUrl, path.startsWith("/") ? path : `/${path}`);
+    let normalizedPath = path.trim();
+    if (/^https?:/i.test(normalizedPath)) {
+        try {
+            const url = new URL(normalizedPath);
+            normalizedPath = `${url.pathname}${url.search}`;
+        } catch {
+            normalizedPath = "/";
+        }
+    }
+    normalizedPath = normalizedPath.startsWith("/") ? normalizedPath : `/${normalizedPath}`;
+    const prefix = config.apiFormat === "gemini" ? /^\/v1beta(?=\/)/i : config.apiFormat === "ark" ? /^\/api\/v3(?=\/)/i : /^\/v1(?=\/)/i;
+    normalizedPath = normalizedPath.replace(prefix, "") || "/";
+    if (config.channelId?.trim()) return buildAiRequestUrl(config, normalizedPath);
+    return /^https?:/i.test(path) ? path : buildApiUrl(config.baseUrl, normalizedPath);
 }
 
 function createPluginHttp(config: AiConfig, options?: RequestOptions): PluginHttp {

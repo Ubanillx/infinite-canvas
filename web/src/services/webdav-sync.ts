@@ -2,8 +2,10 @@ import i18n from "@/i18n";
 import type { WebdavSyncConfig } from "@/stores/use-config-store";
 
 export const WEBDAV_MANIFEST_FILE_NAME = "manifest.json";
+export const WEBDAV_CONFIG_FILE_NAME = "config.json";
 const WEBDAV_REQUEST_TIMEOUT_MS = 120000;
-const ensuredDirectories = new Set<string>();
+const WEBDAV_PROXY_TARGET = "http://192.168.0.242:5005";
+const directoryChecks = new Map<string, Promise<void>>();
 const webdavText = (key: string, options?: Record<string, unknown>) => i18n.t(`config.webdav.errors.${key}`, options);
 
 export async function testWebdavConnection(config: WebdavSyncConfig) {
@@ -28,6 +30,11 @@ export async function downloadWebdavFile(config: WebdavSyncConfig, path: string)
 
 export async function uploadWebdavSyncFile(config: WebdavSyncConfig, file: Blob) {
     return uploadWebdavFile(config, WEBDAV_MANIFEST_FILE_NAME, file, "application/json");
+}
+
+export async function uploadWebdavConfigFile(config: WebdavSyncConfig, data: unknown) {
+    const file = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    return uploadWebdavFile(config, WEBDAV_CONFIG_FILE_NAME, file, "application/json");
 }
 
 export async function uploadWebdavFile(config: WebdavSyncConfig, path: string, file: Blob, contentType = "application/octet-stream") {
@@ -56,15 +63,31 @@ async function ensureWebdavSubdirectory(config: WebdavSyncConfig, path: string) 
 async function ensureWebdavDirectoryPath(config: WebdavSyncConfig, directory: string) {
     const parts = normalizePath(directory).split("/").filter(Boolean);
     const cacheKey = `${config.url}:${parts.join("/")}`;
-    if (ensuredDirectories.has(cacheKey)) return;
+    const pending = directoryChecks.get(cacheKey);
+    if (pending) return pending;
+
+    const check = ensureWebdavDirectoryParts(config, parts);
+    directoryChecks.set(cacheKey, check);
+    try {
+        await check;
+    } catch (error) {
+        directoryChecks.delete(cacheKey);
+        throw error;
+    }
+}
+
+async function ensureWebdavDirectoryParts(config: WebdavSyncConfig, parts: string[]) {
     let path = "";
     for (const part of parts) {
         path = path ? `${path}/${part}` : part;
+        const existing = await webdavFetch({ ...config, directory: "" }, path, { method: "PROPFIND", headers: { Depth: "0" } });
+        if (existing.ok || existing.status === 207) continue;
+        if (existing.status !== 404) await throwWebdavError(existing, webdavText("directoryFailed"));
+
         const response = await webdavFetch({ ...config, directory: "" }, path, { method: "MKCOL" });
         if (response.ok || ((response.status === 405 || response.status === 423) && (await webdavDirectoryExists(config, path)))) continue;
         await throwWebdavError(response, webdavText("directoryFailed"));
     }
-    ensuredDirectories.add(cacheKey);
 }
 
 async function webdavDirectoryExists(config: WebdavSyncConfig, path: string) {
@@ -74,11 +97,11 @@ async function webdavDirectoryExists(config: WebdavSyncConfig, path: string) {
 
 async function webdavFetch(config: WebdavSyncConfig, path: string, init: RequestInit) {
     const headers = new Headers(init.headers);
-    if (config.username || config.password) headers.set("Authorization", `Basic ${encodeBasicAuth(`${config.username}:${config.password}`)}`);
+    headers.delete("Authorization");
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), WEBDAV_REQUEST_TIMEOUT_MS);
     try {
-        const url = buildWebdavUrl(config, path);
+        const url = buildWebdavRequestUrl(config, path);
         return await fetch(url, { ...init, headers, signal: controller.signal });
     } catch (error) {
         if (error instanceof Error && error.name === "AbortError") throw new Error(webdavText("requestTimeout"));
@@ -96,6 +119,21 @@ function buildWebdavUrl(config: WebdavSyncConfig, path: string) {
     return `${baseUrl}/${remotePath.split("/").map(encodeURIComponent).join("/")}`;
 }
 
+function buildWebdavRequestUrl(config: WebdavSyncConfig, path: string) {
+    const directUrl = buildWebdavUrl(config, path);
+    if (normalizeOrigin(config.url) !== normalizeOrigin(WEBDAV_PROXY_TARGET)) throw new Error(webdavText("connectionFailed"));
+    const remoteUrl = new URL(directUrl);
+    return `/api/webdav${remoteUrl.pathname}${remoteUrl.search}`;
+}
+
+function normalizeOrigin(value: string) {
+    try {
+        return new URL(value).origin;
+    } catch {
+        return "";
+    }
+}
+
 function normalizePath(path: string) {
     return path.trim().replace(/^\/+|\/+$/g, "");
 }
@@ -109,15 +147,6 @@ async function throwWebdavError(response: Response, fallback: string): Promise<n
     if (response.status === 401 || response.status === 403) throw new Error(webdavText("authenticationFailed"));
     if (response.status === 404) throw new Error(webdavText("pathMissing"));
     throw new Error(webdavText("responseFailed", { fallback, status: response.status, detail: detail ? ` ${detail.slice(0, 120)}` : "" }));
-}
-
-function encodeBasicAuth(value: string) {
-    const bytes = new TextEncoder().encode(value);
-    let binary = "";
-    bytes.forEach((byte) => {
-        binary += String.fromCharCode(byte);
-    });
-    return btoa(binary);
 }
 
 function withTimeout<T>(promise: Promise<T>, message: string) {

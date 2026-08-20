@@ -20,6 +20,7 @@ export type ModelChannel = {
     name: string;
     baseUrl: string;
     apiKey: string;
+    hasApiKey?: boolean;
     apiFormat: ApiCallFormat;
     models: ChannelModel[];
 };
@@ -51,6 +52,7 @@ export type AiConfig = {
     background: string;
     count: string;
     canvasImageCount: string;
+    channelId?: string;
 };
 
 export type WebdavSyncConfig = {
@@ -59,6 +61,9 @@ export type WebdavSyncConfig = {
     password: string;
     directory: string;
     lastSyncedAt: string;
+    lastConfigSyncedAt: string;
+    autoSyncEnabled: boolean;
+    autoSyncIntervalMinutes: number;
 };
 export type ConfigTabKey = "channels" | "preferences" | "prompt-sources" | "webdav" | "local-storage";
 
@@ -117,6 +122,9 @@ export const defaultWebdavSyncConfig: WebdavSyncConfig = {
     password: "",
     directory: "infinite-canvas",
     lastSyncedAt: "",
+    lastConfigSyncedAt: "",
+    autoSyncEnabled: true,
+    autoSyncIntervalMinutes: 5,
 };
 
 type ConfigStore = {
@@ -183,7 +191,7 @@ export function resolveModelScript(config: AiConfig, value: string) {
 
 function isAiConfigReady(config: AiConfig, model: string) {
     const channel = resolveModelChannel(config, model);
-    return Boolean(model.trim() && channel.baseUrl.trim() && channel.apiKey.trim());
+    return Boolean(model.trim() && channel.id.trim() && channel.baseUrl.trim());
 }
 
 export const useConfigStore = create<ConfigStore>()(
@@ -215,18 +223,18 @@ export const useConfigStore = create<ConfigStore>()(
         }),
         {
             name: CONFIG_STORE_KEY,
-            partialize: (state) => ({ config: state.config, webdav: state.webdav }),
+            partialize: (state) => ({ config: redactAiConfigSecrets(state.config), webdav: { ...state.webdav, password: "" } }),
             merge: (persisted, current) => {
                 const persistedState = (persisted || {}) as Partial<ConfigStore>;
                 const persistedConfig = (persistedState.config || {}) as Partial<AiConfig>;
                 const persistedWebdav = (persistedState.webdav || {}) as Partial<WebdavSyncConfig>;
-                const config = { ...defaultConfig, ...persistedConfig };
+                const config = redactAiConfigSecrets({ ...defaultConfig, ...persistedConfig });
                 if (!Array.isArray(persistedConfig.channels)) config.channels = [];
                 const channels = normalizeChannels(config);
                 const models = modelOptionsFromChannels(channels);
                 return {
                     ...current,
-                    webdav: { ...defaultWebdavSyncConfig, ...persistedWebdav },
+                    webdav: { ...defaultWebdavSyncConfig, ...persistedWebdav, password: "" },
                     config: {
                         ...config,
                         channelMode: "local",
@@ -281,8 +289,17 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
         name: channel?.name?.trim() || i18n.t("config.channels.newName"),
         baseUrl: channel?.baseUrl?.trim() || defaultBaseUrlForApiFormat(apiFormat),
         apiKey: channel?.apiKey || "",
+        hasApiKey: channel?.hasApiKey || Boolean(channel?.apiKey),
         apiFormat,
         models: normalizeChannelModels(channel?.models),
+    };
+}
+
+export function redactAiConfigSecrets(config: AiConfig): AiConfig {
+    return {
+        ...config,
+        apiKey: "",
+        channels: config.channels.map((channel) => ({ ...channel, apiKey: "", hasApiKey: channel.hasApiKey || Boolean(channel.apiKey) })),
     };
 }
 
@@ -338,6 +355,7 @@ export function resolveModelRequestConfig(config: AiConfig, value: string) {
     const channel = resolveModelChannel(config, value);
     return {
         ...config,
+        channelId: channel.id,
         model: modelOptionName(value || config.model),
         baseUrl: channel.baseUrl,
         apiKey: channel.apiKey,
@@ -390,6 +408,16 @@ export function buildApiUrl(baseUrl: string, path: string) {
     const lowerBaseUrl = normalizedBaseUrl.toLowerCase();
     const apiBaseUrl = lowerBaseUrl.endsWith("/v1") || lowerBaseUrl.endsWith("/api/v3") || lowerBaseUrl.endsWith("/api/plan/v3") ? normalizedBaseUrl : `${normalizedBaseUrl}/v1`;
     return `${apiBaseUrl}${path}`;
+}
+
+export function buildAiRequestUrl(config: Pick<AiConfig, "baseUrl" | "channelId"> & Partial<Pick<AiConfig, "apiFormat">>, path: string) {
+    const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+    if (config.channelId?.trim()) return `/api/ai/${encodeURIComponent(config.channelId.trim())}${normalizedPath}`;
+    const normalizedBaseUrl = config.baseUrl.trim().replace(/\/+$/, "");
+    const lowerBaseUrl = normalizedBaseUrl.toLowerCase();
+    const suffix = config.apiFormat === "gemini" ? "/v1beta" : config.apiFormat === "ark" ? "/api/v3" : "/v1";
+    const base = lowerBaseUrl.endsWith("/v1") || lowerBaseUrl.endsWith("/v1beta") || lowerBaseUrl.endsWith("/api/v3") ? normalizedBaseUrl : `${normalizedBaseUrl}${suffix}`;
+    return `${base}${normalizedPath}`;
 }
 
 function normalizeArkPlanBaseUrl(baseUrl: string) {

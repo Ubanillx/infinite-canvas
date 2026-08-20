@@ -1,4 +1,4 @@
-import { App, Button, Form, Input, Modal, Progress, Select, Tabs } from "antd";
+import { App, Alert, Button, Form, Input, Modal, Progress, Select, Switch, Tabs } from "antd";
 import type { TFunction } from "i18next";
 import { Cloud, Download, Pencil, Plus, RefreshCw, Trash2, Upload, Wifi } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -9,8 +9,10 @@ import { ChannelEditorDrawer } from "@/components/layout/channel-editor-drawer";
 import { ConfigPromptSources } from "@/components/layout/config-prompt-sources";
 import { ConfigLocalStorage } from "@/components/layout/config-local-storage";
 import type { AppLocale } from "@/i18n";
-import { exportAppConfig, importAppConfig } from "@/services/config-file";
-import { syncAppDataToWebdav, type AppSyncDomainKey, type AppSyncProgressEvent } from "@/services/app-sync";
+import { createAppConfigSnapshot, exportAppConfig, importAppConfig } from "@/services/config-file";
+import { saveServerConfig } from "@/services/server-config";
+import { type AppSyncDomainKey, type AppSyncProgressEvent } from "@/services/app-sync";
+import { getWebdavAutoSyncStatus, subscribeWebdavAutoSync, syncAllDataToWebdav, type WebdavAutoSyncStatus } from "@/services/webdav-auto-sync";
 import { testWebdavConnection, WEBDAV_MANIFEST_FILE_NAME } from "@/services/webdav-sync";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
 import { createModelChannel, modelOptionsFromChannels, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore, type AiConfig, type ApiCallFormat, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
@@ -52,21 +54,28 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     const configInputRef = useRef<HTMLInputElement>(null);
     const [activeTab, setActiveTab] = useState<ConfigTabKey>(initialTab);
     const [editingChannelId, setEditingChannelId] = useState("");
+    const [webdavPasswordInput, setWebdavPasswordInput] = useState("");
     const [testingWebdav, setTestingWebdav] = useState(false);
     const [syncingWebdav, setSyncingWebdav] = useState(false);
     const [webdavSyncStatus, setWebdavSyncStatus] = useState("");
     const [webdavDomainProgress, setWebdavDomainProgress] = useState(createWebdavDomainProgress);
+    const [autoSyncStatus, setAutoSyncStatus] = useState<WebdavAutoSyncStatus>(getWebdavAutoSyncStatus);
     const config = useConfigStore((state) => state.config);
     const webdav = useConfigStore((state) => state.webdav);
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const updateWebdavConfig = useConfigStore((state) => state.updateWebdavConfig);
     const shouldPromptContinue = useConfigStore((state) => state.shouldPromptContinue);
+    const isConfigOpen = useConfigStore((state) => state.isConfigOpen);
     const setConfigDialogOpen = useConfigStore((state) => state.setConfigDialogOpen);
     const clearPromptContinue = useConfigStore((state) => state.clearPromptContinue);
     const webdavReady = Boolean(webdav.url.trim());
     const editingChannel = config.channels.find((channel) => channel.id === editingChannelId) || null;
     const locale = i18n.resolvedLanguage as AppLocale;
     useEffect(() => setActiveTab(initialTab), [initialTab]);
+    useEffect(() => subscribeWebdavAutoSync(setAutoSyncStatus), []);
+    useEffect(() => {
+        if (!isConfigOpen) setWebdavPasswordInput("");
+    }, [isConfigOpen]);
 
     const saveConfig = (nextConfig: AiConfig) => {
         (Object.keys(nextConfig) as Array<keyof AiConfig>).forEach((key) => updateConfig(key, nextConfig[key]));
@@ -118,7 +127,10 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
         }
         setTestingWebdav(true);
         try {
-            await testWebdavConnection(webdav);
+            const snapshot = createAppConfigSnapshot();
+            await saveServerConfig(snapshot);
+            if (snapshot.webdav.password) updateWebdavConfig("password", "");
+            await testWebdavConnection(snapshot.webdav);
             message.success(t("config.webdav.available"));
         } catch (error) {
             message.error(error instanceof Error ? error.message : t("config.webdav.testFailed"));
@@ -150,8 +162,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
         setWebdavDomainProgress(createWebdavDomainProgress());
         setWebdavSyncStatus(t("config.webdav.preparing"));
         try {
-            const result = await syncAppDataToWebdav(webdav, updateWebdavProgress);
-            updateWebdavConfig("lastSyncedAt", result.syncedAt);
+            const result = await syncAllDataToWebdav(webdav, "manual", updateWebdavProgress);
             message.success(t("config.webdav.completed", { projects: result.projects, assets: result.assets, records: result.imageLogs + result.videoLogs, files: result.uploadedFiles, bytes: formatBytes(result.uploadedBytes) }));
         } catch (error) {
             setWebdavSyncStatus(error instanceof Error ? error.message : t("config.webdav.failed"));
@@ -282,7 +293,10 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                             </div>
                                             <div className="mt-1 text-xs text-stone-500">{t("config.webdav.description")}</div>
                                         </div>
-                                        <div className="text-xs text-stone-500">{webdav.lastSyncedAt ? t("config.webdav.lastSynced", { time: formatWebdavTime(webdav.lastSyncedAt, locale) }) : t("config.webdav.neverSynced")}</div>
+                                        <div className="text-right text-xs text-stone-500">
+                                            <div>{webdav.lastSyncedAt ? t("config.webdav.lastSynced", { time: formatWebdavTime(webdav.lastSyncedAt, locale) }) : t("config.webdav.neverSynced")}</div>
+                                            {webdav.lastConfigSyncedAt ? <div>{t("config.webdav.configLastSynced", { time: formatWebdavTime(webdav.lastConfigSyncedAt, locale) })}</div> : null}
+                                        </div>
                                     </div>
                                     <div className="grid gap-4 md:grid-cols-2">
                                         <Form.Item label={t("config.webdav.url")} className="mb-4">
@@ -295,9 +309,34 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                             <Input value={webdav.username} autoComplete="username" onChange={(event) => updateWebdavConfig("username", event.target.value)} />
                                         </Form.Item>
                                         <Form.Item label={t("config.webdav.password")} className="mb-0">
-                                            <Input.Password value={webdav.password} autoComplete="current-password" onChange={(event) => updateWebdavConfig("password", event.target.value)} />
+                                            <Input.Password
+                                                value={webdavPasswordInput}
+                                                visibilityToggle={false}
+                                                autoComplete="new-password"
+                                                placeholder={webdav.password ? t("config.webdav.passwordConfigured") : t("config.webdav.passwordPlaceholder")}
+                                                onChange={(event) => {
+                                                    setWebdavPasswordInput(event.target.value);
+                                                    updateWebdavConfig("password", event.target.value || webdav.password);
+                                                }}
+                                                onBlur={() => setWebdavPasswordInput("")}
+                                            />
+                                            <div className="mt-1 text-xs text-stone-500">{t("config.webdav.passwordWriteOnly")}</div>
                                         </Form.Item>
                                     </div>
+                                    <div className="mt-4 grid gap-4 md:grid-cols-2">
+                                        <Form.Item label={t("config.webdav.autoSync")} extra={t("config.webdav.autoSyncDescription")} className="mb-0">
+                                            <Switch checked={webdav.autoSyncEnabled} onChange={(value) => updateWebdavConfig("autoSyncEnabled", value)} />
+                                        </Form.Item>
+                                        <Form.Item label={t("config.webdav.autoSyncInterval")} className="mb-0">
+                                            <Select
+                                                disabled={!webdav.autoSyncEnabled}
+                                                value={webdav.autoSyncIntervalMinutes}
+                                                options={[5, 15, 30, 60].map((value) => ({ value, label: t("config.webdav.intervalMinutes", { count: value }) }))}
+                                                onChange={(value) => updateWebdavConfig("autoSyncIntervalMinutes", value)}
+                                            />
+                                        </Form.Item>
+                                    </div>
+                                    <Alert className="mt-4" type="warning" showIcon message={t("config.webdav.sensitiveConfigTitle")} description={t("config.webdav.sensitiveConfigDescription")} />
                                     <div className="mt-4 flex flex-wrap items-center gap-2">
                                         <Button icon={<Wifi className="size-4" />} disabled={!webdavReady || syncingWebdav} loading={testingWebdav} onClick={() => void testWebdav()}>
                                             {t("config.webdav.test")}
@@ -306,8 +345,10 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                             {t(syncingWebdav ? "config.webdav.syncing" : "config.webdav.syncNow")}
                                         </Button>
                                         {webdavSyncStatus ? <span className="text-xs text-stone-500">{syncStageLabel(webdavSyncStatus, t)}</span> : null}
+                                        {!syncingWebdav && autoSyncStatus.state === "syncing" ? <span className="text-xs text-stone-500">{t("config.webdav.autoSyncing")}{autoSyncStatus.stage ? ` · ${syncStageLabel(autoSyncStatus.stage, t)}` : ""}</span> : null}
                                     </div>
                                     {syncingWebdav || webdavSyncStatus ? <WebdavProgressGrid progress={webdavDomainProgress} t={t} /> : null}
+                                    {autoSyncStatus.state === "error" ? <Alert className="mt-3" type="error" showIcon message={t("config.webdav.autoSyncFailed")} description={autoSyncStatus.error} /> : null}
                                 </section>
                             </Form>
                         ),

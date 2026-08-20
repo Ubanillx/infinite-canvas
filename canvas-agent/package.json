@@ -22,20 +22,20 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@openai/codex": "0.146.0",
-    "express": "^5.1.0",
+    "express": "^5.2.1",
     "gray-matter": "^4.0.3",
     "strip-ansi": "7.2.0",
     "winston": "^3.19.0",
     "yaml": "^2.9.0",
-    "zod": "^3.25.0"
+    "zod": "^3.25.76"
   },
   "devDependencies": {
-    "@types/express": "^5.0.0",
-    "@types/node": "^22.0.0",
-    "tsx": "^4.19.0",
-    "typescript": "^5.8.0"
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.20.1",
+    "tsx": "^4.23.12",
+    "typescript": "^5.9.3"
   },
   "engines": {
     "node": ">=18"

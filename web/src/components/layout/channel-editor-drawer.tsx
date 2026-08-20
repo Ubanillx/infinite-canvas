@@ -12,6 +12,7 @@ type ScriptTarget = { name: string; capability: ModelCapability; value: string }
 export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: boolean; channel: ModelChannel | null; onSave: (channel: ModelChannel) => void; onClose: () => void }) {
     const { t } = useTranslation();
     const [draft, setDraft] = useState<ModelChannel | null>(channel);
+    const [apiKeyInput, setApiKeyInput] = useState("");
     const [selectOpen, setSelectOpen] = useState(false);
     const [scriptTarget, setScriptTarget] = useState<ScriptTarget | null>(null);
     const apiFormatOptions: Array<{ label: string; value: ApiCallFormat }> = [
@@ -22,7 +23,10 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
     const capabilityOptions: Array<{ label: string; value: ModelCapability }> = ["image", "video", "text", "audio"].map((value) => ({ label: t(`config.channelEditor.capabilities.${value}`), value: value as ModelCapability }));
 
     useEffect(() => {
-        if (open && channel) setDraft(channel);
+        if (open && channel) {
+            setDraft(channel);
+            setApiKeyInput("");
+        }
     }, [open, channel]);
 
     if (!draft) return null;
@@ -80,7 +84,18 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                 </label>
                 <label className="block md:col-span-2">
                     <span className="mb-1 block text-sm font-medium">API Key</span>
-                    <Input.Password value={draft.apiKey} onChange={(event) => patch({ apiKey: event.target.value })} placeholder="sk-..." />
+                    <Input.Password
+                        value={apiKeyInput}
+                        visibilityToggle={false}
+                        autoComplete="new-password"
+                        onChange={(event) => {
+                            setApiKeyInput(event.target.value);
+                            patch({ apiKey: event.target.value || channel?.apiKey || "", hasApiKey: draft.hasApiKey || Boolean(event.target.value) });
+                        }}
+                        onBlur={() => setApiKeyInput("")}
+                        placeholder={draft.hasApiKey || draft.apiKey ? t("config.channelEditor.apiKeyConfigured") : t("config.channelEditor.apiKeyPlaceholder")}
+                    />
+                    <span className="mt-1 block text-xs text-stone-500">{t("config.channelEditor.apiKeyWriteOnly")}</span>
                 </label>
             </div>
 

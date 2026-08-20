@@ -1,7 +1,7 @@
 import axios from "axios";
 
 import i18n from "@/i18n";
-import { buildApiUrl, resolveModelRequestConfig, resolveModelScript, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
+import { buildAiRequestUrl, resolveModelRequestConfig, resolveModelScript, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
 import { normalizePluginImages, runModelPlugin } from "./model-plugin";
 import { nanoid } from "nanoid";
 import { dataUrlToFile } from "@/lib/image-utils";
@@ -333,12 +333,12 @@ function withSystemPrompt(config: AiConfig, prompt: string) {
 }
 
 function aiApiUrl(config: AiConfig, path: string) {
-    return buildApiUrl(config.baseUrl, path);
+    return buildAiRequestUrl(config, path);
 }
 
 function aiHeaders(config: AiConfig, contentType?: string) {
     return {
-        Authorization: `Bearer ${config.apiKey}`,
+        ...(config.channelId ? {} : { Authorization: `Bearer ${config.apiKey}` }),
         ...(contentType ? { "Content-Type": contentType } : {}),
     };
 }
@@ -353,15 +353,19 @@ function geminiModelName(model: string) {
     return model.trim().replace(/^models\//, "");
 }
 
-function geminiApiUrl(config: Pick<AiConfig, "baseUrl" | "model">, action?: "generateContent" | "streamGenerateContent") {
+function geminiApiUrl(config: Pick<AiConfig, "baseUrl" | "model"> & Partial<Pick<AiConfig, "channelId" | "apiFormat">>, action?: "generateContent" | "streamGenerateContent") {
+    if (config.channelId) {
+        const path = action ? `/models/${encodeURIComponent(geminiModelName(config.model))}:${action}` : "/models";
+        return buildAiRequestUrl(config, path);
+    }
     const baseUrl = geminiBaseUrl(config);
     if (!action) return `${baseUrl}/models`;
     return `${baseUrl}/models/${encodeURIComponent(geminiModelName(config.model))}:${action}`;
 }
 
-function geminiHeaders(config: Pick<AiConfig, "apiKey">) {
+function geminiHeaders(config: Pick<AiConfig, "apiKey"> & Partial<Pick<AiConfig, "channelId">>) {
     return {
-        "x-goog-api-key": config.apiKey,
+        ...(config.channelId ? {} : { "x-goog-api-key": config.apiKey }),
         "Content-Type": "application/json",
     };
 }
@@ -905,7 +909,7 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
     }
 }
 
-export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat">) {
+export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat"> & Partial<Pick<AiConfig, "channelId">>) {
     try {
         if (config.apiFormat === "gemini") {
             const response = await axios.get<GeminiPayload>(geminiApiUrl({ ...defaultGeminiConfig, ...config }), { headers: geminiHeaders({ ...defaultGeminiConfig, ...config }) });
@@ -915,10 +919,8 @@ export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKe
                 .filter((id): id is string => Boolean(id))
                 .sort((a, b) => a.localeCompare(b));
         }
-        const response = await axios.get<{ data?: Array<{ id?: string }>; error?: { message?: string } }>(buildApiUrl(config.baseUrl, "/models"), {
-            headers: {
-                Authorization: `Bearer ${config.apiKey}`,
-            },
+        const response = await axios.get<{ data?: Array<{ id?: string }>; error?: { message?: string } }>(buildAiRequestUrl(config, "/models"), {
+            headers: config.channelId ? undefined : { Authorization: `Bearer ${config.apiKey}` },
         });
         return (response.data.data || [])
             .map((model) => model.id)
@@ -930,7 +932,7 @@ export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKe
 }
 
 export async function fetchChannelModels(channel: ModelChannel) {
-    return fetchImageModels({ baseUrl: channel.baseUrl, apiKey: channel.apiKey, apiFormat: channel.apiFormat });
+    return fetchImageModels({ channelId: channel.id, baseUrl: channel.baseUrl, apiKey: channel.apiKey, apiFormat: channel.apiFormat });
 }
 
 const defaultGeminiConfig: Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat" | "model" | "systemPrompt"> = {

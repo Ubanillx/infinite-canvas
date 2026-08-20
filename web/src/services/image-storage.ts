@@ -19,13 +19,29 @@ const videoLogStore = localforage.createInstance({ name: "infinite-canvas", stor
 const objectUrls = new Map<string, string>();
 
 export async function uploadImage(input: string | Blob): Promise<UploadedImage> {
-    const blob = typeof input === "string" ? await (await fetch(input)).blob() : input;
+    const blob = typeof input === "string" ? await fetchImageBlob(input) : input;
     const storageKey = `image:${nanoid()}`;
     await store.setItem(storageKey, blob);
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
     const meta = await readImageMeta(url);
     return { url, storageKey, width: meta.width, height: meta.height, bytes: blob.size, mimeType: blob.type || meta.mimeType };
+}
+
+async function fetchImageBlob(input: string) {
+    let fetchUrl = input;
+    try {
+        const source = new URL(input, window.location.href);
+        if (source.protocol === "https:" && source.hostname.toLowerCase().endsWith(".r2.cloudflarestorage.com")) {
+            fetchUrl = `/api/image-proxy?url=${encodeURIComponent(source.href)}`;
+        }
+    } catch {
+        // Let fetch report malformed URLs consistently with other image sources.
+    }
+
+    const response = await fetch(fetchUrl);
+    if (!response.ok) throw new Error(`${i18n.t("common.imageReadFailed")} (${response.status})`);
+    return response.blob();
 }
 
 export async function resolveImageUrl(storageKey?: string, fallback = "") {

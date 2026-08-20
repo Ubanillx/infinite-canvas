@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import i18n from "@/i18n";
 
+import { CANVAS_AGENT_URL } from "@/constant/runtime-config";
 import type { CanvasAgentOp, CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 
@@ -40,6 +41,7 @@ export type AgentConversationState = {
 export type AgentPanelTab = "chat" | "setup" | "history" | "skills" | "log";
 
 const CONNECT_TIMEOUT_MS = 6000;
+const SERVER_MANAGED_AGENT_TOKEN = "server-managed";
 let agentSource: EventSource | null = null;
 let connectTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -94,14 +96,23 @@ type AgentStore = {
 
 export const CANVAS_AGENT_PANEL_MOTION_MS = 500;
 
+function runtimeAgentUrl() {
+    if (typeof window === "undefined" || !CANVAS_AGENT_URL) return "";
+    try {
+        return new URL(CANVAS_AGENT_URL, window.location.origin).toString().replace(/\/$/, "");
+    } catch {
+        return "";
+    }
+}
+
 export const useAgentStore = create<AgentStore>((set, get) => ({
     width: typeof window === "undefined" ? 440 : Number(localStorage.getItem("canvas-agent-panel-width")) || 440,
     panelOpen: false,
     panelMounted: true,
     panelClosing: false,
     canvasContext: null,
-    url: typeof window === "undefined" ? "http://127.0.0.1:17371" : localStorage.getItem("canvas-agent-url") || "http://127.0.0.1:17371",
-    token: typeof window === "undefined" ? "" : localStorage.getItem("canvas-agent-token") || "",
+    url: typeof window === "undefined" ? "http://127.0.0.1:17371" : runtimeAgentUrl() || localStorage.getItem("canvas-agent-url") || "http://127.0.0.1:17371",
+    token: typeof window === "undefined" ? "" : runtimeAgentUrl() ? SERVER_MANAGED_AGENT_TOKEN : localStorage.getItem("canvas-agent-token") || "",
     connected: false,
     enabled: false,
     silentConnect: false,
@@ -118,7 +129,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     activeTurnId: "",
     workspacePath: "",
     loadingThreads: false,
-    activeTab: "setup",
+    activeTab: "chat",
     confirmTools: false,
     permissionMode: typeof window === "undefined" ? "request" : (localStorage.getItem("canvas-agent-permission-mode") as AgentPermissionMode) || "request",
     models: [],
@@ -132,7 +143,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     pendingTool: null,
     pendingApprovals: [],
     setAgentState: (patch) => set(patch),
-    openPanel: () => set({ panelOpen: true, panelMounted: true, panelClosing: false }),
+    openPanel: () => set({ panelOpen: true, panelMounted: true, panelClosing: false, activeTab: "chat" }),
     closePanel: () => {
         if (!get().panelMounted || get().panelClosing) return;
         set({ panelOpen: false, panelClosing: true });

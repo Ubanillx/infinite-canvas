@@ -16,7 +16,7 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import { nanoid } from "nanoid";
 import { formatBytes, formatDuration, getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
 import { requestEdit, requestGeneration } from "@/services/api/image";
-import { deleteStoredImages, resolveImageUrl, uploadImage } from "@/services/image-storage";
+import { deleteStoredImages, getImageBlob, resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
 import type { ReferenceImage } from "@/types/image";
@@ -207,6 +207,12 @@ export default function ImagePage() {
                     images: logImages,
                 }),
             );
+            setResults((current) =>
+                current.map((result) => {
+                    const stored = result.image && logImages.find((image) => image.id === result.image?.id);
+                    return stored ? { ...result, image: stored } : result;
+                }),
+            );
             successCount ? message.success(t("imageWorkbench.generated")) : message.error(failed?.reason instanceof Error ? failed.reason.message : t("workbench.generationFailed"));
         } finally {
             setRunning(false);
@@ -246,17 +252,24 @@ export default function ImagePage() {
     };
 
     const saveResultToAssets = async (image: GeneratedImage, index: number) => {
-        const stored = await uploadImage(image.dataUrl);
-        addAsset({
-            kind: "image",
-            title: t("imageWorkbench.resultTitle", { count: index + 1 }),
-            coverUrl: stored.url,
-            tags: [],
-            source: t("imageWorkbench.source"),
-            data: { dataUrl: stored.url, storageKey: stored.storageKey, width: stored.width, height: stored.height, bytes: stored.bytes, mimeType: stored.mimeType },
-            metadata: { source: "image-page", prompt },
-        });
-        message.success(t("common.addedToAssets"));
+        try {
+            const blob = image.storageKey ? await getImageBlob(image.storageKey) : null;
+            const stored = blob && image.storageKey
+                ? { url: await resolveImageUrl(image.storageKey, image.dataUrl), storageKey: image.storageKey, width: image.width, height: image.height, bytes: blob.size, mimeType: image.mimeType || blob.type || "image/png" }
+                : await uploadImage(image.dataUrl);
+            addAsset({
+                kind: "image",
+                title: t("imageWorkbench.resultTitle", { count: index + 1 }),
+                coverUrl: stored.url,
+                tags: [],
+                source: t("imageWorkbench.source"),
+                data: { dataUrl: stored.url, storageKey: stored.storageKey, width: stored.width, height: stored.height, bytes: stored.bytes, mimeType: stored.mimeType },
+                metadata: { source: "image-page", prompt },
+            });
+            message.success(t("common.addedToAssets"));
+        } catch {
+            message.error(t("assets.addFailed"));
+        }
     };
 
     const insertPickedAsset = async (payload: InsertAssetPayload) => {

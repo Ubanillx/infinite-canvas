@@ -61,7 +61,7 @@ export function ModelSelectModal({ open, channel, selectedNames, onConfirm, onCl
 
     const fetchModels = async () => {
         if (!channel) return;
-        if (!channel.baseUrl.trim() || !channel.apiKey.trim()) {
+        if (!channel.id.trim() || !channel.baseUrl.trim()) {
             message.error(t("config.modelSelect.missingConfig"));
             return;
         }
