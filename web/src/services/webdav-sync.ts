@@ -4,7 +4,6 @@ import type { WebdavSyncConfig } from "@/stores/use-config-store";
 export const WEBDAV_MANIFEST_FILE_NAME = "manifest.json";
 export const WEBDAV_CONFIG_FILE_NAME = "config.json";
 const WEBDAV_REQUEST_TIMEOUT_MS = 120000;
-const WEBDAV_PROXY_TARGET = "http://192.168.0.242:5005";
 const directoryChecks = new Map<string, Promise<void>>();
 const webdavText = (key: string, options?: Record<string, unknown>) => i18n.t(`config.webdav.errors.${key}`, options);
 
@@ -121,17 +120,8 @@ function buildWebdavUrl(config: WebdavSyncConfig, path: string) {
 
 function buildWebdavRequestUrl(config: WebdavSyncConfig, path: string) {
     const directUrl = buildWebdavUrl(config, path);
-    if (normalizeOrigin(config.url) !== normalizeOrigin(WEBDAV_PROXY_TARGET)) throw new Error(webdavText("connectionFailed"));
-    const remoteUrl = new URL(directUrl);
-    return `/api/webdav${remoteUrl.pathname}${remoteUrl.search}`;
-}
-
-function normalizeOrigin(value: string) {
-    try {
-        return new URL(value).origin;
-    } catch {
-        return "";
-    }
+    if (config.url.trim() !== "/api/webdav") throw new Error(webdavText("connectionFailed"));
+    return directUrl;
 }
 
 function normalizePath(path: string) {

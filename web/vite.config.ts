@@ -1,34 +1,18 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import type { IncomingMessage, ServerResponse } from "node:http";
+import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
-import { defineConfig, type Plugin, type ProxyOptions } from "vite";
+import { defineConfig, type Plugin } from "vite";
 
 import { parseChangelog } from "./src/lib/release";
 
 const webDir = dirname(fileURLToPath(import.meta.url));
 const localVersion = readFileSync(resolve(webDir, "../VERSION"), "utf8").trim() || "dev";
 const localChangelog = readFileSync(resolve(webDir, "../CHANGELOG.md"), "utf8");
-const webdavProxyTarget = "http://192.168.0.242:5005";
-const webdavProxy: ProxyOptions = {
-    target: webdavProxyTarget,
-    changeOrigin: true,
-    rewrite: (path: string) => path.replace(/^\/api\/webdav/, ""),
-    configure(proxy) {
-        proxy.on("proxyReq", (proxyReq) => {
-            proxyReq.removeHeader("authorization");
-            const authorization = webdavProxyAuthorization();
-            if (authorization) proxyReq.setHeader("Authorization", authorization);
-        });
-        proxy.on("proxyRes", (proxyRes) => {
-            // A WebDAV 401 should be handled by the app, not as a browser-level login challenge.
-            delete proxyRes.headers["www-authenticate"];
-        });
-    },
-};
 const canvasAgentProxyPath = "/api/canvas-agent";
 const canvasAgentProxy = {
     target: "http://127.0.0.1:17371",
@@ -70,6 +54,65 @@ function serverApiAccessControl(): Plugin {
     };
     return {
         name: "server-api-access-control",
+        configureServer(server) {
+            server.middlewares.use(middleware);
+        },
+        configurePreviewServer(server) {
+            server.middlewares.use(middleware);
+        },
+    };
+}
+
+function serverWebdavProxy(): Plugin {
+    const middleware = (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+        const requestUrl = new URL(req.url || "/", "http://localhost");
+        if (requestUrl.pathname !== "/api/webdav" && !requestUrl.pathname.startsWith("/api/webdav/")) return next();
+
+        let target: URL;
+        let authorization: string;
+        try {
+            const webdav = readServerWebdavConfig();
+            target = buildServerWebdavUrl(requestUrl, webdav);
+            authorization = webdav.authorization;
+        } catch (error) {
+            console.error("Server WebDAV configuration failed", error);
+            return sendJson(res, 503, { error: "WebDAV is not configured" });
+        }
+
+        const isPropfind = req.method === "PROPFIND";
+        const headers = { ...req.headers, authorization };
+        delete headers.host;
+        delete headers.connection;
+        if (isPropfind) delete headers["accept-encoding"];
+        const transport = target.protocol === "https:" ? httpsRequest : httpRequest;
+        const upstream = transport(target, { method: req.method, headers }, (upstreamResponse) => {
+            res.statusCode = upstreamResponse.statusCode || 502;
+            for (const [name, value] of Object.entries(upstreamResponse.headers)) {
+                if (value === undefined || name === "www-authenticate" || name === "connection" || (isPropfind && name === "content-length")) continue;
+                res.setHeader(name, value);
+            }
+            if (!isPropfind) return upstreamResponse.pipe(res);
+            const chunks: Buffer[] = [];
+            upstreamResponse.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+            upstreamResponse.on("end", () => {
+                const publicHref = requestUrl.pathname || "/api/webdav";
+                const body = Buffer.concat(chunks)
+                    .toString("utf8")
+                    .replace(/<([A-Za-z][\w.-]*):href>[^<]*<\/\1:href>/gi, (_match, namespace: string) => `<${namespace}:href>${publicHref}</${namespace}:href>`);
+                res.setHeader("Content-Length", Buffer.byteLength(body));
+                res.end(body);
+            });
+        });
+        upstream.on("error", (error) => {
+            console.error("Server WebDAV proxy failed", error);
+            if (!res.headersSent) return sendJson(res, 502, { error: "WebDAV request failed" });
+            res.destroy(error);
+        });
+        req.on("aborted", () => upstream.destroy());
+        req.pipe(upstream);
+    };
+    return {
+        name: "server-webdav-proxy",
         configureServer(server) {
             server.middlewares.use(middleware);
         },
@@ -311,7 +354,7 @@ function redactServerSecrets(value: unknown) {
             });
         }
     }
-    if (webdav) webdav.password = "";
+    if (webdav) Object.assign(webdav, { url: "/api/webdav", username: "", password: "", directory: "" });
     return result;
 }
 
@@ -337,7 +380,12 @@ function mergeServerSecrets(incoming: unknown, stored: unknown) {
             });
         }
     }
-    if (nextWebdav) nextWebdav.password = keepSecret(nextWebdav.password, previousWebdav?.password);
+    if (nextWebdav) {
+        nextWebdav.url = typeof previousWebdav?.url === "string" ? previousWebdav.url : nextWebdav.url;
+        nextWebdav.username = typeof previousWebdav?.username === "string" ? previousWebdav.username : nextWebdav.username;
+        nextWebdav.directory = typeof previousWebdav?.directory === "string" ? previousWebdav.directory : nextWebdav.directory;
+        nextWebdav.password = keepSecret(nextWebdav.password, previousWebdav?.password);
+    }
     return result;
 }
 
@@ -349,17 +397,45 @@ function asRecord(value: unknown) {
     return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
-function webdavProxyAuthorization() {
-    try {
-        const config = JSON.parse(readFileSync(serverConfigPath, "utf8"));
-        if (!isServerConfig(config)) return "";
-        const webdav = asRecord(asRecord(config)?.webdav);
-        const username = typeof webdav?.username === "string" ? webdav.username : "";
-        const password = typeof webdav?.password === "string" ? webdav.password : "";
-        return username && password ? `Basic ${Buffer.from(`${username}:${password}`, "utf8").toString("base64")}` : "";
-    } catch {
-        return "";
-    }
+function normalizeWebdavPath(value: string) {
+    return value.trim().replace(/^\/+|\/+$/g, "");
+}
+
+function readServerWebdavConfig() {
+    const config = JSON.parse(readFileSync(serverConfigPath, "utf8"));
+    if (!isServerConfig(config)) throw new Error("Invalid server configuration");
+    const webdav = asRecord(asRecord(config)?.webdav);
+    const username = typeof webdav?.username === "string" ? webdav.username : "";
+    const password = typeof webdav?.password === "string" ? webdav.password : "";
+    const directory = typeof webdav?.directory === "string" ? webdav.directory : "";
+    const target = new URL(typeof webdav?.url === "string" ? webdav.url : "");
+    if (!["http:", "https:"].includes(target.protocol) || target.username || target.password || !username || !password) throw new Error("Invalid WebDAV configuration");
+    target.search = "";
+    target.hash = "";
+    return { target, directory, authorization: `Basic ${Buffer.from(`${username}:${password}`, "utf8").toString("base64")}` };
+}
+
+function buildServerWebdavUrl(requestUrl: URL, config: ReturnType<typeof readServerWebdavConfig>) {
+    const relativePath = requestUrl.pathname === "/api/webdav" ? "" : requestUrl.pathname.slice("/api/webdav/".length);
+    const configuredSegments = safeWebdavSegments(config.directory);
+    const requestSegments = safeWebdavSegments(relativePath);
+    const target = new URL(config.target);
+    const targetPath = target.pathname.replace(/\/+$/, "");
+    const encodedPath = [...configuredSegments, ...requestSegments].map(encodeURIComponent).join("/");
+    target.pathname = `${targetPath}/${encodedPath}` || "/";
+    target.search = requestUrl.search;
+    return target;
+}
+
+function safeWebdavSegments(value: string) {
+    return normalizeWebdavPath(value)
+        .split("/")
+        .filter(Boolean)
+        .map((segment) => {
+            const decoded = decodeURIComponent(segment);
+            if (decoded === "." || decoded === ".." || decoded.includes("/") || decoded.includes("\\") || decoded.includes("\0")) throw new Error("Invalid WebDAV path");
+            return decoded;
+        });
 }
 
 function cloneJson<T>(value: T): T {
@@ -472,9 +548,9 @@ function localPluginsManifest(): Plugin {
 
 export default defineConfig({
     base: process.env.VITE_BASE || "/",
-    plugins: [react(), localPluginsManifest(), serverApiAccessControl(), serverConfigStorage(), aiProviderProxy(), imageProxy()],
-    server: { proxy: { "/api/webdav": webdavProxy, [canvasAgentProxyPath]: canvasAgentProxy } },
-    preview: { allowedHosts: ["ubuntu-server"], proxy: { "/api/webdav": webdavProxy, [canvasAgentProxyPath]: canvasAgentProxy } },
+    plugins: [react(), localPluginsManifest(), serverApiAccessControl(), serverWebdavProxy(), serverConfigStorage(), aiProviderProxy(), imageProxy()],
+    server: { proxy: { [canvasAgentProxyPath]: canvasAgentProxy } },
+    preview: { allowedHosts: ["ubuntu-server"], proxy: { [canvasAgentProxyPath]: canvasAgentProxy } },
     resolve: {
         alias: {
             "@": resolve(webDir, "src"),

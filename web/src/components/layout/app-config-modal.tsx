@@ -13,7 +13,7 @@ import { createAppConfigSnapshot, exportAppConfig, importAppConfig } from "@/ser
 import { saveServerConfig } from "@/services/server-config";
 import { type AppSyncDomainKey, type AppSyncProgressEvent } from "@/services/app-sync";
 import { getWebdavAutoSyncStatus, subscribeWebdavAutoSync, syncAllDataToWebdav, type WebdavAutoSyncStatus } from "@/services/webdav-auto-sync";
-import { testWebdavConnection, WEBDAV_MANIFEST_FILE_NAME } from "@/services/webdav-sync";
+import { testWebdavConnection } from "@/services/webdav-sync";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
 import { createModelChannel, modelOptionsFromChannels, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore, type AiConfig, type ApiCallFormat, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
 
@@ -54,7 +54,6 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     const configInputRef = useRef<HTMLInputElement>(null);
     const [activeTab, setActiveTab] = useState<ConfigTabKey>(initialTab);
     const [editingChannelId, setEditingChannelId] = useState("");
-    const [webdavPasswordInput, setWebdavPasswordInput] = useState("");
     const [testingWebdav, setTestingWebdav] = useState(false);
     const [syncingWebdav, setSyncingWebdav] = useState(false);
     const [webdavSyncStatus, setWebdavSyncStatus] = useState("");
@@ -68,14 +67,11 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     const isConfigOpen = useConfigStore((state) => state.isConfigOpen);
     const setConfigDialogOpen = useConfigStore((state) => state.setConfigDialogOpen);
     const clearPromptContinue = useConfigStore((state) => state.clearPromptContinue);
-    const webdavReady = Boolean(webdav.url.trim());
+    const webdavReady = webdav.url.trim() === "/api/webdav";
     const editingChannel = config.channels.find((channel) => channel.id === editingChannelId) || null;
     const locale = i18n.resolvedLanguage as AppLocale;
     useEffect(() => setActiveTab(initialTab), [initialTab]);
     useEffect(() => subscribeWebdavAutoSync(setAutoSyncStatus), []);
-    useEffect(() => {
-        if (!isConfigOpen) setWebdavPasswordInput("");
-    }, [isConfigOpen]);
 
     const saveConfig = (nextConfig: AiConfig) => {
         (Object.keys(nextConfig) as Array<keyof AiConfig>).forEach((key) => updateConfig(key, nextConfig[key]));
@@ -129,7 +125,6 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
         try {
             const snapshot = createAppConfigSnapshot();
             await saveServerConfig(snapshot);
-            if (snapshot.webdav.password) updateWebdavConfig("password", "");
             await testWebdavConnection(snapshot.webdav);
             message.success(t("config.webdav.available"));
         } catch (error) {
@@ -298,31 +293,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                             {webdav.lastConfigSyncedAt ? <div>{t("config.webdav.configLastSynced", { time: formatWebdavTime(webdav.lastConfigSyncedAt, locale) })}</div> : null}
                                         </div>
                                     </div>
-                                    <div className="grid gap-4 md:grid-cols-2">
-                                        <Form.Item label={t("config.webdav.url")} className="mb-4">
-                                            <Input value={webdav.url} placeholder="https://nas.example.com/webdav" onChange={(event) => updateWebdavConfig("url", event.target.value)} />
-                                        </Form.Item>
-                                        <Form.Item label={t("config.webdav.directory")} extra={t("config.webdav.directoryDescription", { manifest: WEBDAV_MANIFEST_FILE_NAME })} className="mb-4">
-                                            <Input value={webdav.directory} placeholder="infinite-canvas" onChange={(event) => updateWebdavConfig("directory", event.target.value)} />
-                                        </Form.Item>
-                                        <Form.Item label={t("config.webdav.username")} className="mb-0">
-                                            <Input value={webdav.username} autoComplete="username" onChange={(event) => updateWebdavConfig("username", event.target.value)} />
-                                        </Form.Item>
-                                        <Form.Item label={t("config.webdav.password")} className="mb-0">
-                                            <Input.Password
-                                                value={webdavPasswordInput}
-                                                visibilityToggle={false}
-                                                autoComplete="new-password"
-                                                placeholder={webdav.password ? t("config.webdav.passwordConfigured") : t("config.webdav.passwordPlaceholder")}
-                                                onChange={(event) => {
-                                                    setWebdavPasswordInput(event.target.value);
-                                                    updateWebdavConfig("password", event.target.value || webdav.password);
-                                                }}
-                                                onBlur={() => setWebdavPasswordInput("")}
-                                            />
-                                            <div className="mt-1 text-xs text-stone-500">{t("config.webdav.passwordWriteOnly")}</div>
-                                        </Form.Item>
-                                    </div>
+                                    <Alert type="success" showIcon message={t("config.webdav.serverManagedTitle")} description={t("config.webdav.serverManagedDescription")} />
                                     <div className="mt-4 grid gap-4 md:grid-cols-2">
                                         <Form.Item label={t("config.webdav.autoSync")} extra={t("config.webdav.autoSyncDescription")} className="mb-0">
                                             <Switch checked={webdav.autoSyncEnabled} onChange={(value) => updateWebdavConfig("autoSyncEnabled", value)} />
@@ -336,7 +307,6 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                             />
                                         </Form.Item>
                                     </div>
-                                    <Alert className="mt-4" type="warning" showIcon message={t("config.webdav.sensitiveConfigTitle")} description={t("config.webdav.sensitiveConfigDescription")} />
                                     <div className="mt-4 flex flex-wrap items-center gap-2">
                                         <Button icon={<Wifi className="size-4" />} disabled={!webdavReady || syncingWebdav} loading={testingWebdav} onClick={() => void testWebdav()}>
                                             {t("config.webdav.test")}

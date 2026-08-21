@@ -50,7 +50,7 @@ export function syncAllDataToWebdav(config = useConfigStore.getState().webdav, r
 }
 
 export function isWebdavConfigured(config: WebdavSyncConfig) {
-    return Boolean(config.url.trim() && config.directory.trim());
+    return config.url.trim() === "/api/webdav";
 }
 
 function enqueue<T>(reason: WebdavAutoSyncStatus["reason"], task: () => Promise<T>) {

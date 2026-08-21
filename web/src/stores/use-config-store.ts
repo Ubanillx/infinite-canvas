@@ -117,10 +117,10 @@ export const defaultConfig: AiConfig = {
 };
 
 export const defaultWebdavSyncConfig: WebdavSyncConfig = {
-    url: "",
+    url: "/api/webdav",
     username: "",
     password: "",
-    directory: "infinite-canvas",
+    directory: "",
     lastSyncedAt: "",
     lastConfigSyncedAt: "",
     autoSyncEnabled: true,
