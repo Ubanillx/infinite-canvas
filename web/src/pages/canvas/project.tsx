@@ -79,6 +79,7 @@ import {
     type CanvasConnection,
     type CanvasNodeData,
     type CanvasNodeImage,
+    type CanvasNodeText,
     type CanvasNodeMetadata,
     type CanvasNodeTypeId,
     type ConnectionHandle,
@@ -235,7 +236,7 @@ function InfiniteCanvasPage() {
     const [titleEditing, setTitleEditing] = useState(false);
     const [titleDraft, setTitleDraft] = useState("");
     const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false });
-    const [expandedImageNodeIds, setExpandedImageNodeIds] = useState<Set<string>>(new Set());
+    const [expandedBatchNodeIds, setExpandedBatchNodeIds] = useState<Set<string>>(new Set());
     const [isNodeDragging, setIsNodeDragging] = useState(false);
     const [isNodeResizing, setIsNodeResizing] = useState(false);
     const [dropTargetGroupId, setDropTargetGroupId] = useState<string | null>(null);
@@ -297,7 +298,16 @@ function InfiniteCanvasPage() {
         setNodes((prev) =>
             prev.map((node) =>
                 affectedNodeIds.has(node.id) && node.metadata?.status === NODE_STATUS_LOADING
-                    ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_IDLE, errorDetails: undefined, images: node.metadata.images?.map((image) => (image.status === NODE_STATUS_LOADING ? { ...image, status: NODE_STATUS_ERROR, errorDetails: t("common.requestCanceled") } : image)) } }
+                    ? {
+                          ...node,
+                          metadata: {
+                              ...node.metadata,
+                              status: NODE_STATUS_IDLE,
+                              errorDetails: undefined,
+                              images: node.metadata.images?.map((image) => (image.status === NODE_STATUS_LOADING ? { ...image, status: NODE_STATUS_ERROR, errorDetails: t("common.requestCanceled") } : image)),
+                              texts: node.metadata.texts?.map((text) => (text.status === NODE_STATUS_LOADING ? { ...text, status: NODE_STATUS_ERROR, errorDetails: t("common.requestCanceled") } : text)),
+                          },
+                      }
                     : node,
             ),
         );
@@ -720,7 +730,7 @@ function InfiniteCanvasPage() {
             setAngleNodeId((current) => (current && allIds.has(current) ? null : current));
             setPreviewNodeId((current) => (current && allIds.has(current) ? null : current));
             setRunningNodeId((current) => (current && allIds.has(current) ? null : current));
-            setExpandedImageNodeIds((current) => new Set([...current].filter((nodeId) => !allIds.has(nodeId))));
+            setExpandedBatchNodeIds((current) => new Set([...current].filter((nodeId) => !allIds.has(nodeId))));
             setContextMenu((current) => (current?.type === "node" && allIds.has(current.nodeId) ? null : current));
             cleanupCanvasFiles({ projectId, nodes: nodesRef.current.filter((node) => !allIds.has(node.id)), chatSessions });
         },
@@ -1439,7 +1449,13 @@ function InfiniteCanvasPage() {
     }, []);
 
     const handleNodeContentChange = useCallback((nodeId: string, content: string) => {
-        setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, content } } : node)));
+        setNodes((prev) =>
+            prev.map((node) =>
+                node.id === nodeId
+                    ? { ...node, metadata: { ...node.metadata, content, texts: node.metadata?.texts?.map((text) => (text.id === node.metadata?.primaryTextId ? { ...text, content } : text)) } }
+                    : node,
+            ),
+        );
     }, []);
 
     const handleNodeTitleChange = useCallback((nodeId: string, title: string) => {
@@ -1447,7 +1463,7 @@ function InfiniteCanvasPage() {
     }, []);
 
     const toggleBatchExpanded = useCallback((nodeId: string) => {
-        setExpandedImageNodeIds((current) => {
+        setExpandedBatchNodeIds((current) => {
             const next = new Set(current);
             if (next.has(nodeId)) next.delete(nodeId);
             else next.add(nodeId);
@@ -1455,11 +1471,15 @@ function InfiniteCanvasPage() {
         });
     }, []);
 
-    const setBatchPrimary = useCallback((nodeId: string, imageId: string) => {
+    const setBatchPrimary = useCallback((nodeId: string, itemId: string) => {
         setNodes((prev) =>
             prev.map((node) => {
                 if (node.id !== nodeId) return node;
-                const image = node.metadata?.images?.find((item) => item.id === imageId);
+                if (node.type === CanvasNodeType.Text) {
+                    const text = node.metadata?.texts?.find((item) => item.id === itemId);
+                    return text?.content ? { ...node, metadata: { ...node.metadata, content: text.content, primaryTextId: text.id } } : node;
+                }
+                const image = node.metadata?.images?.find((item) => item.id === itemId);
                 if (!image?.content) return node;
                 const edge = Math.max(node.width, node.height);
                 const size = node.metadata?.freeResize ? { width: node.width, height: node.height } : fitNodeSize(image.naturalWidth, image.naturalHeight, edge, edge);
@@ -2348,69 +2368,119 @@ function InfiniteCanvasPage() {
                     return;
                 }
 
-                let streamed = "";
                 const isConfigNode = sourceNode?.type === CanvasNodeType.Config;
                 const textCount = getGenerationCount(String(sourceNode?.metadata?.textCount || 1));
                 const parentConfig = NODE_DEFAULT_SIZE[isConfigNode ? CanvasNodeType.Config : CanvasNodeType.Text];
                 const textConfig = NODE_DEFAULT_SIZE[CanvasNodeType.Text];
                 const parentPosition = sourceNode?.position || { x: 0, y: 0 };
-                const childIds = isConfigNode || editingTextNode || textCount > 1 ? Array.from({ length: textCount }, () => nanoid()) : [];
-                pendingChildIds = childIds;
-                if (childIds.length) {
-                    const childNodes: CanvasNodeData[] = childIds.map((id, index) => ({
-                        id,
-                        type: CanvasNodeType.Text,
-                        title: effectivePrompt.slice(0, 32) || "Generated Text",
-                        position: {
-                            x: parentPosition.x + parentConfig.width + 96,
-                            y: parentPosition.y + parentConfig.height / 2 - textConfig.height / 2 + (index - (textCount - 1) / 2) * (textConfig.height + 36),
-                        },
-                        width: textConfig.width,
-                        height: textConfig.height,
-                        metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, fontSize: 14, model: generationConfig.model, reasoningEffort: generationConfig.reasoningEffort },
-                    }));
-                    setNodes((prev) => [...prev.map((node) => (node.id === nodeId && isConfigNode ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined } } : node)), ...childNodes]);
-                    setConnections((prev) => [...prev, ...childIds.map((childId) => ({ id: nanoid(), fromNodeId: nodeId, toNodeId: childId }))]);
-                }
+                const isEmptyTextNode = sourceNode?.type === CanvasNodeType.Text && !sourceTextContent;
+                const rootId = isEmptyTextNode ? nodeId : nanoid();
+                const textIds = Array.from({ length: textCount }, () => nanoid());
+                const rootNode: CanvasNodeData = {
+                    id: rootId,
+                    type: CanvasNodeType.Text,
+                    title: effectivePrompt.slice(0, 32) || "Generated Text",
+                    position: isEmptyTextNode ? sourceNode.position : { x: parentPosition.x + parentConfig.width + 96, y: parentPosition.y + parentConfig.height / 2 - textConfig.height / 2 },
+                    width: isEmptyTextNode ? sourceNode.width : textConfig.width,
+                    height: isEmptyTextNode ? sourceNode.height : textConfig.height,
+                    metadata: {
+                        prompt: effectivePrompt,
+                        status: NODE_STATUS_LOADING,
+                        fontSize: 14,
+                        model: generationConfig.model,
+                        reasoningEffort: generationConfig.reasoningEffort,
+                        textCount,
+                        texts: textIds.map((id) => ({ id, status: NODE_STATUS_LOADING, content: "" })),
+                        primaryTextId: textIds[0],
+                    },
+                };
+                pendingChildIds = [rootId];
+                setNodes((prev) =>
+                    isEmptyTextNode
+                        ? prev.map((node) => (node.id === nodeId ? { ...node, ...rootNode } : node))
+                        : [...prev.map((node) => (node.id === nodeId && isConfigNode ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined } } : node)), rootNode],
+                );
+                if (!isEmptyTextNode) setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: nodeId, toNodeId: rootId }]);
+                setSelectedNodeIds(new Set([nodeId]));
+                setSelectedConnectionId(null);
+                setDialogNodeId(nodeId);
 
-                const controller = runController;
-                const textTargetIds = childIds.length ? childIds : [nodeId];
-                textTargetIds.forEach((targetNodeId) => startGenerationRequest(targetNodeId, nodeId, nodeId, controller));
-                const answers = await Promise.all(
-                    textTargetIds.map((targetNodeId) => {
-                        let localStreamed = "";
-                        return requestImageQuestion(
-                            generationConfig,
-                            buildNodeResponseMessages({ ...generationContext, prompt: effectivePrompt }),
-                            (text) => {
-                                localStreamed = text;
-                                streamed = text;
-                                if (isConfigNode) return;
-                                setNodes((prev) => prev.map((node) => (node.id === targetNodeId ? { ...node, type: CanvasNodeType.Text, metadata: { ...node.metadata, content: text, status: NODE_STATUS_LOADING } } : node)));
-                            },
-                            { signal: controller.signal },
-                        )
-                            .then((answer) => ({ nodeId: targetNodeId, content: answer || localStreamed }))
-                            .finally(() => finishGenerationRequest(targetNodeId, controller));
+                const controller = rootId === nodeId ? runController : startGenerationRequest(rootId, nodeId, nodeId, runController);
+                const results = await Promise.all(
+                    textIds.map(async (textId): Promise<CanvasNodeText | null> => {
+                        let streamed = "";
+                        try {
+                            const answer = await requestImageQuestion(
+                                generationConfig,
+                                buildNodeResponseMessages({ ...generationContext, prompt: effectivePrompt }),
+                                (text) => {
+                                    streamed = text;
+                                    setNodes((prev) =>
+                                        prev.map((node) =>
+                                            node.id === rootId
+                                                ? {
+                                                      ...node,
+                                                      metadata: {
+                                                          ...node.metadata,
+                                                          ...(node.metadata?.primaryTextId === textId ? { content: text } : {}),
+                                                          texts: node.metadata?.texts?.map((item) => (item.id === textId ? { ...item, content: text } : item)),
+                                                      },
+                                                  }
+                                                : node,
+                                        ),
+                                    );
+                                },
+                                { signal: controller.signal },
+                            );
+                            const content = answer || streamed;
+                            setNodes((prev) =>
+                                prev.map((node) =>
+                                    node.id === rootId
+                                        ? {
+                                              ...node,
+                                              metadata: {
+                                                  ...node.metadata,
+                                                  ...(node.metadata?.primaryTextId === textId ? { content } : {}),
+                                                  texts: node.metadata?.texts?.map((item) => (item.id === textId ? { ...item, content, status: NODE_STATUS_SUCCESS } : item)),
+                                              },
+                                          }
+                                        : node,
+                                ),
+                            );
+                            return { id: textId, status: NODE_STATUS_SUCCESS, content } satisfies CanvasNodeText;
+                        } catch (error) {
+                            if (isGenerationCanceled(error)) return null;
+                            const errorDetails = error instanceof Error ? error.message : t("canvas.projectPage.generationFailed");
+                            setNodes((prev) => prev.map((node) => (node.id === rootId ? { ...node, metadata: { ...node.metadata, texts: node.metadata?.texts?.map((item) => (item.id === textId ? { ...item, status: NODE_STATUS_ERROR, errorDetails } : item)) } } : node)));
+                            return { id: textId, status: NODE_STATUS_ERROR, content: "", errorDetails } satisfies CanvasNodeText;
+                        }
                     }),
                 );
+                if (rootId !== nodeId) finishGenerationRequest(rootId, controller);
                 if (controller.signal.aborted) return;
-                const answerByNodeId = new Map(answers.map((item) => [item.nodeId, item.content]));
+                const completedTexts = results.flatMap((item) => (item?.status === NODE_STATUS_SUCCESS ? [item] : []));
+                const failedTexts = results.filter((item) => item?.status === NODE_STATUS_ERROR);
+                const firstText = completedTexts[0];
+                if (completedTexts.length <= 1) setExpandedBatchNodeIds((current) => new Set([...current].filter((id) => id !== rootId)));
+                if (failedTexts.length) message.error(firstText ? t("canvas.projectPage.partialTextFailed") : failedTexts[0]?.errorDetails || t("canvas.projectPage.generationFailed"));
                 setNodes((prev) =>
-                    prev.map((node) =>
-                        childIds.includes(node.id)
-                            ? { ...node, metadata: { ...node.metadata, content: answerByNodeId.get(node.id) || streamed, status: NODE_STATUS_SUCCESS } }
-                            : node.id === nodeId && isConfigNode
-                              ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS } }
-                              : node.id === nodeId && !editingTextNode
-                                ? {
-                                      ...node,
-                                      type: CanvasNodeType.Text,
-                                      title: prompt.slice(0, 32) || "Generated Text",
-                                      metadata: { ...node.metadata, content: answerByNodeId.get(node.id) || streamed, model: generationConfig.model, reasoningEffort: generationConfig.reasoningEffort, status: NODE_STATUS_SUCCESS },
-                                  }
-                                : node,
-                    ),
+                    prev.map((node) => {
+                        if (node.id === rootId) {
+                            const primaryText = completedTexts.find((text) => text.id === node.metadata?.primaryTextId) || firstText;
+                            return {
+                                ...node,
+                                metadata: {
+                                    ...node.metadata,
+                                    content: primaryText?.content || "",
+                                    texts: completedTexts,
+                                    primaryTextId: primaryText?.id,
+                                    status: primaryText ? NODE_STATUS_SUCCESS : NODE_STATUS_ERROR,
+                                    errorDetails: primaryText ? undefined : t("canvas.projectPage.generationFailed"),
+                                },
+                            };
+                        }
+                        return node.id === nodeId && isConfigNode ? { ...node, metadata: { ...node.metadata, status: firstText ? NODE_STATUS_SUCCESS : NODE_STATUS_ERROR, errorDetails: firstText ? undefined : t("canvas.projectPage.generationFailed") } } : node;
+                    }),
                 );
             } catch (error) {
                 if (isGenerationCanceled(error)) return;
@@ -2584,7 +2654,7 @@ function InfiniteCanvasPage() {
 
     const deleteBatchImage = useCallback((nodeId: string, imageId: string) => {
         const node = nodesRef.current.find((item) => item.id === nodeId);
-        if ((node?.metadata?.images?.length || 0) <= 2) setExpandedImageNodeIds((current) => new Set([...current].filter((id) => id !== nodeId)));
+        if ((node?.metadata?.images?.length || 0) <= 2) setExpandedBatchNodeIds((current) => new Set([...current].filter((id) => id !== nodeId)));
         setNodes((prev) =>
             prev.map((item) => {
                 if (item.id !== nodeId) return item;
@@ -2718,7 +2788,16 @@ function InfiniteCanvasPage() {
         setPreviewNodeId(node.id);
         setPreviewImageId(imageId || null);
     }, []);
-    const handleNodeRetry = useCallback((node: CanvasNodeData) => void handleRetryNode(node), [handleRetryNode]);
+    const handleNodeRetry = useCallback(
+        (node: CanvasNodeData) => {
+            if (node.type === CanvasNodeType.Text && (node.metadata?.textCount || 1) > 1) {
+                void generateNodeRef.current?.(node.id, "text", node.metadata?.prompt || "");
+                return;
+            }
+            void handleRetryNode(node);
+        },
+        [handleRetryNode],
+    );
     const handleNodeContextMenu = useCallback((event: ReactMouseEvent, nodeId: string) => {
         event.preventDefault();
         event.stopPropagation();
@@ -2864,7 +2943,7 @@ function InfiniteCanvasPage() {
                             showPanel={!isNodeResizing && dialogNodeId === node.id && !selectionBox && !getNodeDefinition(node.type)?.hidePanel}
                             groupChildCount={groupChildCountById.get(node.id) || 0}
                             isGroupDropTarget={dropTargetGroupId === node.id}
-                            batchExpanded={expandedImageNodeIds.has(node.id)}
+                            batchExpanded={expandedBatchNodeIds.has(node.id)}
                             showImageInfo={showImageInfo}
                             mentionReferences={mentionReferencesByNodeId.get(node.id) || EMPTY_REFERENCES}
                             pluginHost={pluginHost}
@@ -2921,7 +3000,7 @@ function InfiniteCanvasPage() {
                 </InfiniteCanvas>
 
                 <CanvasNodeHoverToolbar
-                    node={isNodeDragging || isNodeResizing || nodeImageSettingsOpen || expandedImageNodeIds.has(toolbarNode?.id || "") ? null : toolbarNode}
+                    node={isNodeDragging || isNodeResizing || nodeImageSettingsOpen || expandedBatchNodeIds.has(toolbarNode?.id || "") ? null : toolbarNode}
                     viewport={viewport}
                     extraTools={toolbarNode ? buildNodeToolbarItems(toolbarNode) : undefined}
                     onKeep={keepNodeToolbar}
