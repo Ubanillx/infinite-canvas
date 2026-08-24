@@ -797,14 +797,14 @@ function ExpandedImageCard({ node, image, index, onView, onSetPrimary, onDuplica
 
     return (
         <div
-            className="absolute z-20 overflow-hidden rounded-3xl border shadow-[0_18px_50px_rgba(28,25,23,.18)]"
+            className={`absolute z-20 overflow-hidden rounded-3xl ${image.content ? "" : "border shadow-[0_18px_50px_rgba(28,25,23,.18)]"}`}
             style={
                 {
                     left: x,
                     top: y,
                     width: node.width,
                     height: node.height,
-                    background: theme.node.panel,
+                    background: "transparent",
                     borderColor: theme.node.stroke,
                     "--batch-from-x": `${-x}px`,
                     "--batch-from-y": `${-y}px`,
