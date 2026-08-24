@@ -72,7 +72,7 @@ function getContextInputNodes(nodeId: string, nodes: CanvasNodeData[], connectio
     return connections
         .filter((connection) => connection.toNodeId === nodeId)
         .map((connection) => nodes.find((node) => node.id === connection.fromNodeId))
-        .filter((node): node is CanvasNodeData => Boolean(node && (isResourceNode(node) || hasGroupResources(node, nodes))));
+        .filter((node): node is CanvasNodeData => Boolean(node && isCanvasReferenceNode(node, nodes)));
 }
 
 function getConnectedConfigInputNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
@@ -83,6 +83,10 @@ function getConnectedConfigInputNodes(nodeId: string, nodes: CanvasNodeData[], c
 
 function hasGroupResources(node: CanvasNodeData, nodes: CanvasNodeData[]) {
     return node.type === CanvasNodeType.Group && getGroupResourceNodes(node.id, nodes).length > 0;
+}
+
+export function isCanvasReferenceNode(node: CanvasNodeData, nodes: CanvasNodeData[]) {
+    return isResourceNode(node) || hasGroupResources(node, nodes);
 }
 
 function expandGroupResourceNodes(inputNodes: CanvasNodeData[], nodes: CanvasNodeData[]) {
