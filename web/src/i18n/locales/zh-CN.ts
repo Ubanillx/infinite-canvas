@@ -258,6 +258,7 @@ export default {
             node: "节点",
             untitled: "未命名节点", renameHint: "双击修改节点名称", group: "组", nodeCount: "{{count}} 个节点", generating: "生成中", failed: "生成失败", retry: "重试", missingPlugin: "缺少插件", missingPluginDescription: "节点类型“{{type}}”的插件未安装或未启用", generateImage: "用文本生图", generate: "生图", editText: "双击编辑文字", emptyImage: "空图片节点", emptyVideo: "空视频节点", emptyAudio: "空音频节点", audio: "音频", batchExpanded: "图片组已展开", batchCollapsed: "图片组已收起", createCopy: "创建副本", setPrimary: "设为主图",
         },
+        videoFrames: { first: "截取首帧", last: "截取尾帧", current: "截取当前帧", firstTitle: "{{name}} 首帧", lastTitle: "{{name}} 尾帧", currentTitle: "{{name}} 当前帧", captured: "已生成图片节点", failed: "无法截取该画面，请重试" },
         sidePanel: {
             canvas: "画布", assets: "资产", prompts: "提示词库", resize: "调整左侧面板宽度", elements: "画布元素", select: "选择", searchNodes: "搜索节点", focusNode: "定位到节点", preview: "放大预览", noNodes: "画布暂无节点", clearAll: "取消全选", selected: "已选 {{count}}", exporting: "正在导出选中元素…", exportName: "画布元素-{{count}}个", exported: "已导出 {{count}} 个元素", exportFailed: "导出失败，请重试",
             addingAssets: "正在添加资产…", addedAssets: "已添加 {{count}} 个资产", mediaOnly: "仅支持图片或视频文件", addFailed: "添加失败，请重试", searchAssets: "搜索资产", add: "添加", noAssets: "暂无资产", inserted: "插入画布", removeAssetTitle: "移除该资产？", remove: "移除", removeAsset: "移除资产", assetRemoved: "资产已移除",

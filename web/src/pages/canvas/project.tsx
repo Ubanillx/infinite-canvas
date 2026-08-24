@@ -18,6 +18,7 @@ import { useAssetStore } from "@/stores/use-asset-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { cropDataUrl, splitDataUrl, upscaleDataUrl } from "@/lib/canvas/canvas-image-data";
 import { fitNodeSize, nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
+import { captureVideoFrame, type VideoFramePosition } from "@/lib/canvas/canvas-video-frame";
 import { App, Button, Modal } from "antd";
 import { NODE_DEFAULT_SIZE, getNodeSpec } from "@/constant/canvas";
 import { ActiveConnectionPath, ConnectionPath } from "@/components/canvas/canvas-connections";
@@ -588,6 +589,7 @@ function InfiniteCanvasPage() {
     const upscaleNode = upscaleNodeId ? nodeById.get(upscaleNodeId) || null : null;
     const superResolveNode = superResolveNodeId ? nodeById.get(superResolveNodeId) || null : null;
     const angleNode = angleNodeId ? nodeById.get(angleNodeId) || null : null;
+    const contextMenuNode = contextMenu?.type === "node" ? nodeById.get(contextMenu.nodeId) || null : null;
     const previewNode = previewNodeId ? nodeById.get(previewNodeId) || null : null;
     const previewContent = previewImageId ? previewNode?.metadata?.images?.find((image) => image.id === previewImageId)?.content : previewNode?.metadata?.content;
     const hasMultipleSelectedNodes = selectedNodeIds.size > 1;
@@ -1533,6 +1535,40 @@ function InfiniteCanvasPage() {
         if (!image?.content) return;
         saveAs(image.content, `canvas-image-${node.id}-${image.id}.${imageExtension(image.content)}`);
     }, []);
+
+    const captureVideoNodeFrame = useCallback(
+        async (nodeId: string, position: VideoFramePosition) => {
+            setContextMenu(null);
+            const node = nodesRef.current.find((item) => item.id === nodeId);
+            const video = Array.from(containerRef.current!.querySelectorAll<HTMLVideoElement>("video[data-canvas-video]")).find((item) => item.dataset.canvasVideo === nodeId);
+            if (node?.type !== CanvasNodeType.Video || !node.metadata?.content || !video) return message.error(t("canvas.videoFrames.failed"));
+            try {
+                const image = await uploadImage(await captureVideoFrame(node.metadata.content, position, video.currentTime));
+                const size = fitNodeSize(image.width, image.height, VIDEO_NODE_MAX_WIDTH, VIDEO_NODE_MAX_HEIGHT);
+                const id = nanoid();
+                const x = node.position.x + node.width + 96;
+                let y = node.position.y + node.height / 2 - size.height / 2;
+                while (nodesRef.current.some((item) => item.id !== node.id && item.position.x < x + size.width && item.position.x + item.width > x && item.position.y < y + size.height && item.position.y + item.height > y)) y += size.height + 24;
+                const child: CanvasNodeData = {
+                    id,
+                    type: CanvasNodeType.Image,
+                    title: t(`canvas.videoFrames.${position}Title`, { name: node.title || t("assets.kinds.video") }),
+                    position: { x, y },
+                    ...size,
+                    metadata: imageMetadata(image),
+                };
+                setNodes((prev) => [...prev, child]);
+                setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: node.id, toNodeId: id }]);
+                setSelectedNodeIds(new Set([id]));
+                setSelectedConnectionId(null);
+                setDialogNodeId(id);
+                message.success(t("canvas.videoFrames.captured"));
+            } catch {
+                message.error(t("canvas.videoFrames.failed"));
+            }
+        },
+        [message, t],
+    );
 
     const saveNodeAsset = useCallback(
         async (node: CanvasNodeData) => {
@@ -2942,7 +2978,12 @@ function InfiniteCanvasPage() {
                 {contextMenu ? (
                     <CanvasNodeContextMenu
                         menu={contextMenu}
+                        canCaptureVideoFrame={contextMenuNode?.type === CanvasNodeType.Video && Boolean(contextMenuNode.metadata?.content)}
                         onClose={() => setContextMenu(null)}
+                        onCaptureVideoFrame={(position) => {
+                            if (contextMenu.type !== "node") return;
+                            void captureVideoNodeFrame(contextMenu.nodeId, position);
+                        }}
                         onDuplicate={() => {
                             if (contextMenu.type !== "node") return;
                             duplicateNode(contextMenu.nodeId);
