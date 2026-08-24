@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent } from "react";
 import { Button, Image } from "antd";
-import { FileText, Image as ImageIcon, Music2, Video, X } from "lucide-react";
+import { FileText, Group, Image as ImageIcon, Music2, Video, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import i18n from "@/i18n";
@@ -40,7 +40,7 @@ export function CanvasConfigComposer({ value, inputs, onChange, onClose }: Canva
         if (!mention) return [];
         const query = (mention.query || "").trim().toLowerCase();
         if (!query) return inputs;
-        return inputs.filter((input) => `${resourceLabel(input, inputs)} ${input.title} ${input.text || ""}`.toLowerCase().includes(query));
+        return inputs.filter((input) => `${resourceLabel(input, inputs)} ${input.title} ${input.type === "group" ? "" : input.text || ""}`.toLowerCase().includes(query));
     }, [inputs, mention]);
 
     useEffect(() => {
@@ -214,7 +214,7 @@ function MentionMenu({ inputs, allInputs, activeIndex, theme, onSelect }: { inpu
                     <ResourcePreview input={input} />
                     <span className="min-w-0 flex-1">
                         <span className="block font-medium">{resourceLabel(input, allInputs)}</span>
-                        <span className="block truncate opacity-65">{input.text || input.title}</span>
+                        <span className="block truncate opacity-65">{input.type === "group" ? i18n.t("canvas.node.nodeCount", { count: input.children.length }) : input.text || input.title}</span>
                     </span>
                 </button>
             ))}
@@ -223,6 +223,7 @@ function MentionMenu({ inputs, allInputs, activeIndex, theme, onSelect }: { inpu
 }
 
 function ResourcePreview({ input }: { input: NodeGenerationInput }) {
+    if (input.type === "group") return <span className="grid size-9 shrink-0 place-items-center"><Group className="size-4" /></span>;
     if (input.type === "image" && input.image) return <img src={input.image.dataUrl} alt="" className="size-9 rounded-md object-cover" />;
     if (input.type === "video" && input.video) return <video src={input.video.url} className="size-9 rounded-md bg-black object-cover" muted preload="metadata" />;
     const Icon = input.type === "audio" ? Music2 : input.type === "video" ? Video : input.type === "image" ? ImageIcon : FileText;
@@ -252,7 +253,7 @@ function createReferenceChip(input: NodeGenerationInput, inputs: NodeGenerationI
             onImagePreview(input.image?.dataUrl || "");
         });
     } else {
-        wrapper.title = input.text || input.title;
+        wrapper.title = input.type === "group" ? input.title : input.text || input.title;
         const text = document.createElement("span");
         text.className = "block truncate";
         text.textContent = input.type === "text" ? input.text || input.title : input.title;
