@@ -30,7 +30,7 @@ export type CanvasNodeImage = {
     status: CanvasNodeStatus;
     errorDetails?: string;
     content: string;
-    storageKey: string;
+    storageKey?: string;
     naturalWidth: number;
     naturalHeight: number;
     bytes: number;

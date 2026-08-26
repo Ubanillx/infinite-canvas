@@ -46,7 +46,7 @@ description: 当前版本已实现但仍需人工验证的变更项
 - Canvas Agent 配置权限：在 Linux 和 macOS 上保存配置后，`~/.infinite-canvas` 权限应为 `0700`，`canvas-agent.json` 权限应为 `0600`，已有的宽松权限也应被纠正；配置应能继续正常读写，Windows 启动不受影响。
 - Canvas Agent URL 自动连接：链接应在 `#` 后传递 `agentUrl` 和 `agentToken`，进入或选择具体画布时继续保留，读取后立即从地址栏移除，并可连接有效的本机、局域网或远程 HTTP(S) Agent 地址且不主动展开设置面板；缺少参数或地址无效时应展开设置并显示错误。
 - 图片 API 模型参数：`gpt-image-*` 的生成和编辑请求不应发送 `response_format`，`dall-e-*` 请求仍应发送 `response_format: "b64_json"`。
-- 图片外链持久化：图片接口返回远程 URL 时，前端应立即下载为自包含图片数据并进入原有本地存储流程；浏览器因 CORS 无法下载时仍应保留原 URL 兜底。
+- 图片外链持久化：画布和生图工作台对图片接口返回的远程 URL 应只下载一次，经图片解码校验后保存到 IndexedDB；返回 `200` 但内容不是图片时应失败，下载期间停止画布生成后不得保存或应用结果；浏览器因 CORS 无法读取但图片仍可显示时，应保留原 URL 且不生成空 `storageKey`，插件调用在外链可读取时仍应收到 Data URL。
 - Canvas Agent Codex 日志：Codex app-server 输出带颜色或样式控制符及 UTC 时间的 stderr 时，本地日志和网页诊断日志应只显示一份 `YYYY-MM-DD HH:mm:ss` 本地时间和干净文本，不应出现重复 ISO 时间或 `[2m`、`[31m` 等 ANSI 转义内容。
 - Agent HTTP 诊断日志：网页发送一条普通消息后，本地 Debug 日志不应重复输出 `/health`、`/canvas/state`、`/canvas/activate` 成功请求、流式增量或完整会话响应，只保留 HTTP 请求与 Codex 生命周期摘要；右侧「日志」应以单行时间线展示发送、开始、回复、工具、完成用量和错误，不再输出 userMessage started/completed、流式摘要、重复 threadId 或大段原始 JSON。
 - Agent 排查日志：右侧「日志」中的排查视图应显示连接摘要，并可按错误、警告和信息筛选；向下查看日志时仅列表内部滚动，标题、连接状态、筛选数量和操作按钮保持固定；连续相同事件应折叠计数，单条日志可展开查看完整详情；原始 JSON、复制全部、复制最近错误和清空功能应继续可用，浅色与深色主题下均应清晰。
