@@ -225,8 +225,9 @@ form.set("model", model);
 form.set("prompt", prompt);
 form.set("n", String(params.count));
 form.set("response_format", "b64_json");
+const imageField = images.length > 1 ? "image[]" : "image";
 for (const dataUrl of images) {
-  form.append("image", await (await fetch(dataUrl)).blob(), "ref.png");
+  form.append(imageField, await (await fetch(dataUrl)).blob(), "ref.png");
 }
 const edited = await request({
   method: "post",
