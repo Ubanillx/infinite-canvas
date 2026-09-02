@@ -114,6 +114,7 @@ export default {
         copyText: "复制文本",
         downloadImage: "下载图片",
         downloadVideo: "下载视频",
+        downloadFailed: "下载失败，请稍后重试",
     },
     notFound: {
         title: "页面不存在",
