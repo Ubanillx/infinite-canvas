@@ -32,6 +32,16 @@ Create a video node from the toolbar or upload a local video. Video nodes use th
 
 The OpenAI-compatible flow uses `POST /v1/videos`, `GET /v1/videos/{id}`, and `GET /v1/videos/{id}/content`. After a remote task is created, its ID is stored on the video node so a page refresh can keep polling, or you can click **Get task status**. Polling stops when the video is ready, the task fails, or the status request errors. For Volcengine Ark Agent Plan and Seedance 2.0, use `https://ark.cn-beijing.volces.com/api/plan/v3` and enter the model name manually because this endpoint does not expose OpenAI's `/models` API.
 
+## Group nodes
+
+Group nodes collect several nodes so you can move them together and reference their contents in one connection.
+
+- After box-selecting or Shift/Ctrl/Cmd-clicking multiple nodes, a rounded dashed bound wraps the selection and **Group** appears above it.
+- Click **Group** or press `Ctrl / Cmd` + `G` to wrap the selection in a group node without moving the contents.
+- With a group selected, use **Ungroup** in the toolbar or context menu, or press `Ctrl / Cmd` + `Shift` + `G`.
+- You can also create an empty group from the toolbar and drag nodes into it; dragging a node out removes it from the group.
+- Connecting a group to a generation node includes every populated image, video, audio, text, and reference-capable extension node inside it.
+
 ## Recommended workflow
 
 1. Create a text node with the initial idea.
