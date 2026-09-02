@@ -46,10 +46,8 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
     }
 
     const resourceInputs = flattenGenerationInputs(inputs);
-    const upstreamText = resourceInputs
-        .map((input) => input.text)
-        .filter(Boolean)
-        .join("\n\n");
+    let textIndex = 0;
+    const upstreamText = resourceInputs.flatMap((input) => (input.text ? [textBlock(generationLabel("text", textIndex++), input.text)] : [])).join("\n\n");
     const referenceImages = resourceInputs.map((input) => input.image).filter((image): image is ReferenceImage => Boolean(image));
     const referenceVideos = resourceInputs.map((input) => input.video).filter((video): video is ReferenceVideo => Boolean(video));
     const referenceAudios = resourceInputs.map((input) => input.audio).filter((audio): audio is ReferenceAudio => Boolean(audio));
@@ -87,7 +85,7 @@ function buildComposerGenerationContext(inputs: NodeGenerationInput[], prompt: s
                 if (!label) {
                     label = generationLabel(resource.type, counts[resource.type]++);
                     labelByNodeId.set(resource.nodeId, label);
-                    if (resource.type === "text") textBlocks.push(`【${label}】\n${resource.text || ""}`);
+                    if (resource.type === "text") textBlocks.push(textBlock(label, resource.text || ""));
                     else selectedInputs.push(resource);
                 }
                 return resource.type === "text" ? `【${label}】` : label;
@@ -180,6 +178,10 @@ export async function hydrateNodeGenerationContext(context: NodeGenerationContex
 function readNodeTextInput(node: CanvasNodeData) {
     if (node.type === CanvasNodeType.Text) return node.metadata?.content || node.metadata?.prompt || "";
     return node.metadata?.prompt || "";
+}
+
+function textBlock(label: string, text: string) {
+    return `【${label}】\n${text}`;
 }
 
 function generationLabel(type: NodeGenerationResourceInput["type"], index: number) {
