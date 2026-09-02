@@ -45,17 +45,30 @@ function aiHeaders(config: AiConfig, contentType?: string) {
 }
 
 export async function requestVideoGeneration(config: AiConfig, prompt: string, references: ReferenceImage[] = [], videoReferences: ReferenceVideo[] = [], audioReferences: ReferenceAudio[] = [], options?: RequestOptions): Promise<VideoGenerationResult> {
-    const task = await createVideoGenerationTask(config, prompt, references, videoReferences, audioReferences, options);
+    return waitForVideoGenerationTask(config, await createVideoGenerationTask(config, prompt, references, videoReferences, audioReferences, options), options);
+}
+
+export async function waitForVideoGenerationTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationResult> {
     const delayMs = task.provider === "seedance" ? 5000 : 2500;
     for (let attempt = 0; attempt < 120; attempt += 1) {
         if (options?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
         const state = await pollVideoGenerationTask(config, task, options);
         if (state.status === "completed") return state.result;
-        if (state.status === "failed") throw new Error(state.error);
+        if (state.status === "failed") throw videoTaskFailed(state.error);
         if (attempt === 119) throw new Error(apiText("videoTimeout", { provider: task.provider === "seedance" ? "Seedance " : "" }));
         await delay(delayMs, options?.signal);
     }
     throw new Error(apiText("videoTimeout", { provider: "" }));
+}
+
+export function isVideoTaskFailed(error: unknown) {
+    return error instanceof Error && error.name === "VideoTaskFailed";
+}
+
+function videoTaskFailed(message: string) {
+    const error = new Error(message);
+    error.name = "VideoTaskFailed";
+    return error;
 }
 
 export async function createVideoGenerationTask(config: AiConfig, prompt: string, references: ReferenceImage[] = [], videoReferences: ReferenceVideo[] = [], audioReferences: ReferenceAudio[] = [], options?: RequestOptions): Promise<VideoGenerationTask> {

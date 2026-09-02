@@ -56,6 +56,7 @@ description: 当前画布节点的主要用途与操作流程
 - 使用火山方舟 Agent Plan / Seedance 2.0 时，Base URL 配置为 `https://ark.cn-beijing.volces.com/api/plan/v3`，模型名使用 Seedance 2.0 对应模型；系统会改用 `POST /contents/generations/tasks` 创建异步任务，并轮询 `GET /contents/generations/tasks/{id}`。
 - Agent Plan 专属 `/api/plan/v3` 当前未提供 OpenAI `/models` 模型列表接口，配置弹窗不会伪造模型列表；请手动填写 `doubao-seedance-2.0` 或文档列出的其他可用模型。
 - Seedance 参考视频更建议使用公网可访问 URL；本地素材由前端读取后传给兼容接口，是否可用取决于具体上游。
+- 创建远端任务后会把任务 ID 写入视频节点；刷新页面后会自动继续查询任务状态，也可点击「获取任务状态」手动拉取，直到生成成功、任务失败或查询请求报错。
 
 ### 推荐流程
 
