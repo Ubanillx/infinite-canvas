@@ -10,6 +10,7 @@ import "dayjs/locale/zh-cn";
 import { useTranslation } from "react-i18next";
 
 import { ClientRootInit } from "@/components/layout/client-root-init";
+import { WorkspaceGate } from "@/components/layout/workspace-gate";
 import type { AppLocale } from "@/i18n";
 import { getAntThemeConfig } from "@/lib/app-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -47,7 +48,7 @@ export function AppProviders({ children }: { children: ReactNode }) {
             <ProConfigProvider dark={dark}>
                 <App>
                     <QueryClientProvider client={queryClient}>
-                        <ClientRootInit>{children}</ClientRootInit>
+                        <WorkspaceGate><ClientRootInit>{children}</ClientRootInit></WorkspaceGate>
                     </QueryClientProvider>
                 </App>
             </ProConfigProvider>

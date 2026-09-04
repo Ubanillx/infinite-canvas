@@ -7,9 +7,9 @@ import type { CanvasSnapshot } from "../canvas/types.js";
 import { logger } from "../utils/logger.js";
 import { errorMessage, field, type JsonRecord } from "../utils/value.js";
 import { CodexAppClient, CodexReportedError } from "./codex-client.js";
-import { codexEventHistory } from "./codex-event-history.js";
+import { codexEventHistory, CodexEventHistory } from "./codex-event-history.js";
 import { settledTurnIds, summarizeCodexThread, threadMessages } from "./codex-history.js";
-import { messageMetadataStore } from "./message-metadata.js";
+import { messageMetadataStoreForWorkspace } from "./message-metadata.js";
 import type { CodexReasoningEffort, CodexSkillMetadata, CodexSkillSelector, CodexSkillsListEntry } from "./codex-protocol.js";
 import type { AgentAttachment, AgentEmit, AgentPermissionMode } from "./types.js";
 
@@ -52,10 +52,11 @@ export class CodexSkillLookupError extends Error {
 }
 
 let codexQueue: Promise<unknown> = Promise.resolve();
-let codexApp: CodexAppClient | null = null;
-let codexAppStart: Promise<CodexAppClient> | null = null;
+const codexApps = new Map<string, CodexAppClient>();
+const codexAppStarts = new Map<string, Promise<CodexAppClient>>();
 /** 仅表示最近主动加载/选择的线程；运行中的 turn 身份由 CodexAppClient 自己维护。 */
-let loadedThreadId = "";
+const loadedThreadIds = new Map<string, string>();
+const eventHistories = new Map<string, CodexEventHistory>();
 
 export { summarizeCodexThread } from "./codex-history.js";
 
@@ -75,36 +76,38 @@ export async function generateCodexSkillDraft(emit: AgentEmit, cwd: string, inpu
 
 /** 中断当前线程正在执行的 Codex turn。 */
 export async function interruptCodexTurn(threadId?: string) {
-    if (!codexApp) return false;
-    return await codexApp.interruptCurrentTurn(threadId);
+    const app = [...codexApps.values()].find((candidate) => !threadId || candidate.isThreadActive(threadId));
+    if (!app) return false;
+    return await app.interruptCurrentTurn(threadId);
 }
 
 /** 回复当前 app-server 的待处理权限请求。 */
-export async function resolveCodexApproval(requestId: string, decision: string) {
-    return Boolean(codexApp?.resolveApproval(requestId, decision));
+export async function resolveCodexApproval(requestId: string, decision: string, cwd?: string) {
+    const app = cwd ? codexApps.get(cwdKey(cwd)) : undefined;
+    return Boolean(app?.resolveApproval(requestId, decision));
 }
 
 /** 创建新的 Codex 线程并记录当前线程 ID。 */
 export async function startCodexThread(emit: AgentEmit, cwd?: string, permissionMode: AgentPermissionMode = "request", preheat = false) {
-    const app = await getCodexApp(emit);
+    const app = await getCodexApp(emit, cwd);
     const thread = await app.startThread(cwd, permissionMode, preheat);
-    loadedThreadId = String(field(thread, "id") || "");
+    loadedThreadIds.set(cwdKey(cwd), String(field(thread, "id") || ""));
     return thread;
 }
 
 /** 恢复指定 Codex 线程并返回聊天历史。 */
 export async function resumeCodexThread(emit: AgentEmit, threadId: string, cwd?: string, permissionMode: AgentPermissionMode = "request", preheat = false) {
-    const app = await getCodexApp(emit);
+    const app = await getCodexApp(emit, cwd);
     const thread = await resumeLoadedThread(app, threadId, cwd, permissionMode, true, preheat);
     const history = await loadCodexHistory(emit, threadId, cwd);
-    const supplementalItems = await codexEventHistory.readThread(threadId);
-    const messages = await mergeMessageMetadata(threadId, threadMessages(history.thread, app.planUpdates(threadId), supplementalItems));
+    const supplementalItems = await eventHistoryFor(cwd).readThread(threadId);
+    const messages = await mergeMessageMetadata(cwd, threadId, threadMessages(history.thread, app.planUpdates(threadId), supplementalItems));
     return { thread, messages, settledTurnIds: settledTurnIds(history.thread, supplementalItems), historyReady: history.historyReady };
 }
 
 /** 查询当前工作空间中的 Codex 线程。 */
 export async function listCodexThreads(emit: AgentEmit, options: { cwd: string; searchTerm?: string; limit?: number }) {
-    const app = await getCodexApp(emit);
+    const app = await getCodexApp(emit, options.cwd);
     const result = await app.listThreads({
         limit: options.limit || 40,
         sortKey: "updated_at",
@@ -118,13 +121,13 @@ export async function listCodexThreads(emit: AgentEmit, options: { cwd: string; 
 }
 
 /** 查询当前账号可用于新任务的 Codex 模型。 */
-export async function listCodexModels(emit: AgentEmit) {
-    return await (await getCodexApp(emit)).listModels();
+export async function listCodexModels(emit: AgentEmit, cwd?: string) {
+    return await (await getCodexApp(emit, cwd)).listModels();
 }
 
 /** 查询当前工作空间的原生 Skill 列表。 */
 export async function listCodexSkills(emit: AgentEmit, cwd: string, forceReload = false): Promise<CodexSkillsListEntry> {
-    const result = await (await getCodexApp(emit)).listSkills(cwd, forceReload);
+    const result = await (await getCodexApp(emit, cwd)).listSkills(cwd, forceReload);
     return result.data.find((entry) => samePath(entry.cwd, cwd)) || { cwd, skills: [], errors: [] };
 }
 
@@ -143,22 +146,22 @@ export async function resolveCodexSkill(emit: AgentEmit, cwd: string, selector: 
 /** 修改经过原生列表校验的 Skill 启用状态。 */
 export async function configureCodexSkill(emit: AgentEmit, cwd: string, selector: CodexSkillSelector, enabled: boolean) {
     const skill = await resolveCodexSkill(emit, cwd, selector);
-    const result = await (await getCodexApp(emit)).setSkillEnabled(skill.path, enabled);
+    const result = await (await getCodexApp(emit, cwd)).setSkillEnabled(skill.path, enabled);
     return { ...result, skill: { ...skill, enabled: result.effectiveEnabled } };
 }
 
 /** 读取指定 Codex 线程及其聊天历史。 */
 export async function readCodexThread(emit: AgentEmit, threadId: string, cwd?: string) {
-    const app = await getCodexApp(emit);
+    const app = await getCodexApp(emit, cwd);
     const history = await loadCodexHistory(emit, threadId, cwd);
-    const supplementalItems = await codexEventHistory.readThread(threadId);
-    const messages = await mergeMessageMetadata(threadId, threadMessages(history.thread, app.planUpdates(threadId), supplementalItems));
+    const supplementalItems = await eventHistoryFor(cwd).readThread(threadId);
+    const messages = await mergeMessageMetadata(cwd, threadId, threadMessages(history.thread, app.planUpdates(threadId), supplementalItems));
     return { thread: summarizeCodexThread(history.thread), messages, settledTurnIds: settledTurnIds(history.thread, supplementalItems), historyReady: history.historyReady };
 }
 
 /** 归档指定 Codex 线程。 */
 export async function archiveCodexThread(emit: AgentEmit, threadId: string, cwd?: string) {
-    const app = await getCodexApp(emit);
+    const app = await getCodexApp(emit, cwd);
     try {
         await loadCodexThread(emit, threadId, cwd, false);
     } catch (error) {
@@ -167,14 +170,15 @@ export async function archiveCodexThread(emit: AgentEmit, threadId: string, cwd?
     }
     await app.archiveThread(threadId);
     app.clearPlanUpdates(threadId);
-    await codexEventHistory.removeThread(threadId);
-    await messageMetadataStore.removeThread(threadId).catch((error) => logger.warn("Failed to remove archived thread message metadata", { threadId, error }));
-    if (loadedThreadId === threadId) loadedThreadId = "";
+    await eventHistoryFor(cwd).removeThread(threadId);
+    await messageMetadataStoreForWorkspace(cwd).removeThread(threadId).catch((error) => logger.warn("Failed to remove archived thread message metadata", { threadId, error }));
+    const key = cwdKey(cwd);
+    if (loadedThreadIds.get(key) === threadId) loadedThreadIds.delete(key);
 }
 
-async function mergeMessageMetadata<T extends { role: string; threadId: string; turnId: string }>(threadId: string, messages: T[]) {
+async function mergeMessageMetadata<T extends { role: string; threadId: string; turnId: string }>(cwd: string | undefined, threadId: string, messages: T[]) {
     try {
-        return await messageMetadataStore.mergeThread(threadId, messages);
+        return await messageMetadataStoreForWorkspace(cwd).mergeThread(threadId, messages);
     } catch (error) {
         logger.warn("Failed to read thread message metadata", { threadId, error });
         return messages;
@@ -192,7 +196,7 @@ async function runCodexTurnNow(prompt: string, lifecycleEmit: AgentEmit, attachm
     try {
         options.onStart?.();
         files = await writeAttachmentFiles(attachments);
-        const app = await getCodexApp(options.appEmit || lifecycleEmit);
+        const app = await getCodexApp(options.appEmit || lifecycleEmit, options.cwd);
         let threadId = await ensureCodexThread(app, options, lifecycleEmit);
         options.onThread?.(threadId);
         try {
@@ -200,7 +204,7 @@ async function runCodexTurnNow(prompt: string, lifecycleEmit: AgentEmit, attachm
         } catch (error) {
             if (!isRecoverableThreadError(error)) throw error;
             lifecycleEmit("agent_log", { text: `Codex thread unavailable, starting a new thread: ${errorMessage(error)}` });
-            loadedThreadId = "";
+            loadedThreadIds.delete(cwdKey(options.cwd));
             threadId = await ensureCodexThread(app, { cwd: options.cwd }, lifecycleEmit);
             options.onThread?.(threadId);
             await app.startTurn(threadId, prompt, files, options.permissionMode || "request", options.model, options.effort, options.onTurn, options.skill, options.messageText);
@@ -216,27 +220,29 @@ async function runCodexTurnNow(prompt: string, lifecycleEmit: AgentEmit, attachm
 
 /** 恢复请求线程或创建新的 Codex 线程。 */
 async function ensureCodexThread(app: CodexAppClient, options: CodexRunOptions, emit: AgentEmit) {
+    const key = cwdKey(options.cwd);
+    const loadedThreadId = loadedThreadIds.get(key) || "";
     if (options.threadId) {
         if (options.threadId === loadedThreadId) return loadedThreadId;
         try {
             await resumeLoadedThread(app, options.threadId, options.cwd, options.permissionMode || "request", true);
-            return loadedThreadId;
+            return loadedThreadIds.get(key) || options.threadId;
         } catch (error) {
             if (!isRecoverableThreadError(error)) throw error;
             emit("agent_log", { text: `Codex thread unavailable, starting a new thread: ${errorMessage(error)}` });
-            loadedThreadId = "";
+            loadedThreadIds.delete(key);
         }
     }
-    if (!loadedThreadId) {
+    if (!loadedThreadIds.get(key)) {
         const thread = await app.startThread(options.cwd, options.permissionMode || "request");
-        loadedThreadId = String(field(thread, "id") || "");
+        loadedThreadIds.set(key, String(field(thread, "id") || ""));
     }
-    return loadedThreadId;
+    return loadedThreadIds.get(key) || "";
 }
 
 /** 从 app-server 读取线程并校验工作空间。 */
 async function loadCodexThread(emit: AgentEmit, threadId: string, cwd: string | undefined, includeTurns: boolean) {
-    const app = await getCodexApp(emit);
+    const app = await getCodexApp(emit, cwd);
     const result = await app.readThread(threadId, includeTurns);
     const thread = field(result, "thread") || {};
     assertThreadWorkspace(thread, cwd);
@@ -244,7 +250,7 @@ async function loadCodexThread(emit: AgentEmit, threadId: string, cwd: string | 
 }
 
 async function generateCodexSkillDraftNow(emit: AgentEmit, cwd: string, input: CodexSkillDraftInput) {
-    const app = await getCodexApp(emit);
+    const app = await getCodexApp(emit, cwd);
     let threadId = "";
     try {
         const thread = input.source === "conversation" ? await app.forkSkillDraftThread(input.threadId, cwd) : await app.startSkillDraftThread(cwd);
@@ -434,7 +440,7 @@ async function loadCodexHistory(emit: AgentEmit, threadId: string, cwd?: string)
     } catch (error) {
         if (/not materialized yet.*includeTurns/i.test(errorMessage(error))) return { thread: await loadCodexThread(emit, threadId, cwd, false), historyReady: false };
         if (!isRecoverableThreadError(error)) throw error;
-        const app = await getCodexApp(emit);
+        const app = await getCodexApp(emit, cwd);
         const thread = await resumeLoadedThread(app, threadId, cwd, "request", false);
         try {
             return { thread: await loadCodexThread(emit, threadId, cwd, true), historyReady: true };
@@ -449,23 +455,49 @@ async function loadCodexHistory(emit: AgentEmit, threadId: string, cwd?: string)
 async function resumeLoadedThread(app: CodexAppClient, threadId: string, cwd?: string, permissionMode: AgentPermissionMode = "request", updateLoaded = true, preheat = false) {
     const thread = await app.resumeThread(threadId, cwd, permissionMode, preheat);
     assertThreadWorkspace(thread, cwd);
-    if (updateLoaded) loadedThreadId = String(field(thread, "id") || threadId);
+    if (updateLoaded) loadedThreadIds.set(cwdKey(cwd), String(field(thread, "id") || threadId));
     return thread;
 }
 
 /** 获取已启动的 Codex app-server 客户端。 */
-async function getCodexApp(emit: AgentEmit) {
-    if (codexApp) return codexApp;
+async function getCodexApp(emit: AgentEmit, cwd?: string) {
+    const key = cwdKey(cwd);
+    const existing = codexApps.get(key);
+    if (existing) return existing;
+    let codexAppStart = codexAppStarts.get(key);
     codexAppStart ||= CodexAppClient.start(emit, () => {
-        codexApp = null;
-        loadedThreadId = "";
-    });
+        codexApps.delete(key);
+        codexAppStarts.delete(key);
+        loadedThreadIds.delete(key);
+    }, eventHistoryFor(cwd), workspaceIdForCwd(cwd));
+    codexAppStarts.set(key, codexAppStart);
     try {
-        codexApp = await codexAppStart;
+        const codexApp = await codexAppStart;
+        codexApps.set(key, codexApp);
         return codexApp;
     } finally {
-        codexAppStart = null;
+        if (codexAppStarts.get(key) === codexAppStart) codexAppStarts.delete(key);
     }
+}
+
+function eventHistoryFor(cwd?: string) {
+    const key = cwdKey(cwd);
+    if (cwd && path.basename(path.resolve(cwd)) === "site") return codexEventHistory;
+    const existing = eventHistories.get(key);
+    if (existing) return existing;
+    const history = new CodexEventHistory(path.join(cwd || process.cwd(), ".infinite-canvas", "codex-event-history.json"));
+    eventHistories.set(key, history);
+    return history;
+}
+
+function cwdKey(cwd?: string) {
+    return cwd ? (process.platform === "win32" ? path.resolve(cwd).toLowerCase() : path.resolve(cwd)) : "__default__";
+}
+
+/** 从 Codex 工作目录提取 Infinite Canvas workspace ID，供 MCP 转发复用。 */
+function workspaceIdForCwd(cwd?: string) {
+    const id = cwd ? path.basename(path.resolve(cwd)) : "";
+    return /^[0-9a-f-]{36}$/i.test(id) ? id : undefined;
 }
 
 /** 校验线程是否属于指定工作空间。 */

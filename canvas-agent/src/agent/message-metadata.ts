@@ -154,6 +154,20 @@ export class MessageMetadataStore {
 
 export const messageMetadataStore = new MessageMetadataStore();
 
+const workspaceMetadataStores = new Map<string, MessageMetadataStore>();
+
+/** 为每个 Codex 工作区保存独立的消息附件和元数据。 */
+export function messageMetadataStoreForWorkspace(workspacePath?: string) {
+    if (!workspacePath) return messageMetadataStore;
+    if (path.basename(path.resolve(workspacePath)) === "site") return messageMetadataStore;
+    const directory = path.join(path.resolve(workspacePath), ".infinite-canvas", "message-metadata");
+    const existing = workspaceMetadataStores.get(directory);
+    if (existing) return existing;
+    const store = new MessageMetadataStore(directory);
+    workspaceMetadataStores.set(directory, store);
+    return store;
+}
+
 async function createStorage(directory: string) {
     const temporaryDirectory = `${directory}.${process.pid}.${Date.now()}.tmp`;
     try {

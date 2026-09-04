@@ -4,6 +4,8 @@ import { persist, type PersistStorage, type StorageValue } from "zustand/middlew
 import { nanoid } from "nanoid";
 import i18n from "@/i18n";
 import { localForageStorage } from "@/lib/localforage-storage";
+import { workspaceStorageKey } from "@/lib/workspace";
+import { loadWorkspaceData, saveWorkspaceData } from "@/services/workspace-data";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
 
@@ -41,6 +43,12 @@ let queuedPersistState: PersistedCanvasState | null = null;
 
 const canvasStorage: PersistStorage<CanvasStore> = {
     getItem: async (name) => {
+        try {
+            const remote = await loadWorkspaceData<StorageValue<CanvasStore>>("canvas");
+            if (remote) return remote;
+        } catch {
+            // Use the local cache while the account/session is being established.
+        }
         const value = await localForageStorage.getItem(name);
         if (!value) return null;
         const parsed = JSON.parse(value) as StorageValue<CanvasStore>;
@@ -55,6 +63,7 @@ const canvasStorage: PersistStorage<CanvasStore> = {
         saveTimer = setTimeout(() => {
             saveTimer = null;
             void localForageStorage.setItem(name, JSON.stringify(value));
+            void saveWorkspaceData("canvas", value).catch(() => undefined);
         }, 400);
     },
     removeItem: (name) => localForageStorage.removeItem(name),
@@ -121,7 +130,7 @@ export const useCanvasStore = create<CanvasStore>()(
                 })),
         }),
         {
-            name: CANVAS_STORE_KEY,
+            name: workspaceStorageKey(CANVAS_STORE_KEY),
             storage: canvasStorage,
             partialize: (state) =>
                 ({

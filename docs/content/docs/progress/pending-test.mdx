@@ -5,6 +5,17 @@ description: Implemented changes that still need manual verification
 
 # Pending Tests
 
+- Custom video providers: add a provider using the Custom Video API protocol, configure a Base URL and write-only API key, manually add Seedance or Grok video models, and verify generation uses only `/api/ai/<channelId>/video/generations`. Reload in a fresh browser and confirm the provider still works while `/api/config` and browser storage contain no API key.
+
+## Workspace And WebDAV Isolation
+
+- Create two workspaces with separate names and access keys. Confirm the browser lists only the workspaces previously unlocked on that device, rejects an incorrect key, and starts the second workspace empty. The first newly created workspace should migrate legacy local browser data exactly once.
+- Create canvases, assets, image/video workbench records, and local media in each workspace. Switch between them and reload: no item, media blob, or Zustand state from one workspace may appear in the other.
+- Keep AI channels and API keys configured globally, then switch workspaces and verify the same configured providers remain usable without being included in either workspace snapshot.
+- With WebDAV automatic sync enabled, modify local workspace data and confirm only an upload-only snapshot is created under `workspaces/<workspaceId>/snapshots/`. Automatic sync must not download or merge remote data. Confirm only the latest 30 snapshots remain.
+- In WebDAV settings, list snapshots and manually import one. Existing local records with the same ID must win; remote-only records and missing media should be added. A workspace must not list, import, upload, or delete another workspace's WebDAV path.
+- In two workspaces, open the Canvas Codex Agent, create/recover different conversations, send independent canvas states, Skills, or approvals, then switch/reload. SSE events, active threads, message attachments, agent history, and Codex workspace directories must remain isolated.
+
 ## One-command Canvas Codex Agent startup
 
 - Running `./run-all-background.sh` starts both Web and Canvas Agent and passes their health checks.
@@ -39,7 +50,7 @@ The current release needs manual verification in these areas:
 - Server settings persistence: on the first start after upgrading, the current browser settings should be uploaded when the Bun server has no saved configuration. AI providers and API keys, default generation preferences, prompt sources and schedules, and WebDAV settings should then load consistently in another browser and survive a Bun preview restart or rebuild. Rapid edits should save the latest value, and a server read or write failure should be shown instead of silently falling back to browser-only settings.
 - Server-side AI proxy: in a fresh browser with redacted channel keys, image workbench generation, image edits, canvas image generation, text requests, and model listing should call only same-origin `/api/ai/<channelId>/...`; Bun should inject the stored provider credential, reject unknown channel IDs and disallowed endpoints, and never return the credential in `/api/config` or browser storage.
 - Security boundary: `/api/config`, `/api/ai`, `/api/webdav`, and image proxy routes should reject clients outside the configured `192.168.0.0/22` network; AI proxy should reject localhost, loopback, link-local, multicast, and credential-bearing provider URLs.
-- Automatic WebDAV sync: with automatic sync enabled, settings changes should upload `config.json` after about one second, canvas and asset changes should start a data sync after about ten seconds of inactivity, and image/video history plus all other domains should synchronize on the selected 5/15/30/60-minute schedule. Pending changes should attempt to flush when the page is hidden, reconnecting the network should retry, manual sync should share the same serialized queue, and failures should remain visible in the WebDAV settings. The remote settings file contains API keys and WebDAV credentials and must be treated as sensitive.
+- Automatic WebDAV sync: with automatic sync enabled, canvas and asset changes should start an upload-only workspace snapshot after about ten seconds of inactivity, and image/video history plus all other workspace domains should upload on the selected 5/15/30/60-minute schedule. Pending changes should attempt to flush when the page is hidden, reconnecting the network should retry, manual upload should share the same serialized queue, and failures should remain visible in the WebDAV settings. No automatic operation may download remote data, merge it, or upload AI/API-key configuration.
 - WebDAV directory checks: syncing to an existing Synology directory should use `PROPFIND` without first issuing `MKCOL`, concurrent domain syncs should share one directory check, and the browser console should no longer fill with handled `405 Method Not Allowed` responses. A missing nested directory should still be created before its files are uploaded.
 
 The Chinese version contains the complete item-by-item acceptance checklist.

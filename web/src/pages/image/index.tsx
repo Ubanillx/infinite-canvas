@@ -21,6 +21,8 @@ import { useAssetStore } from "@/stores/use-asset-store";
 import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
 import type { ReferenceImage } from "@/types/image";
 import i18n from "@/i18n";
+import { workspaceStoreName } from "@/lib/workspace";
+import { loadWorkspaceData, saveWorkspaceData } from "@/services/workspace-data";
 
 type GeneratedImage = {
     id: string;
@@ -66,7 +68,7 @@ type UpdateAiConfig = <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => 
 
 const LOG_STORE_KEY = "infinite-canvas:image_generation_logs";
 const RESULT_ACTION_BUTTON_CLASS = "min-w-0 px-1.5 [&_.ant-btn-icon]:shrink-0 [&>span:last-child]:min-w-0 [&>span:last-child]:truncate";
-const logStore = localforage.createInstance({ name: "infinite-canvas", storeName: "image_generation_logs" });
+const logStore = localforage.createInstance({ name: "infinite-canvas", storeName: workspaceStoreName("image_generation_logs") });
 
 export default function ImagePage() {
     const { message } = App.useApp();
@@ -296,7 +298,7 @@ export default function ImagePage() {
 
     const deleteSelectedLogs = () => {
         const imageKeys = logs.filter((log) => selectedLogIds.includes(log.id)).flatMap((log) => log.images.map((image) => image.storageKey).filter((key): key is string => Boolean(key)));
-        void Promise.all([deleteStoredImages(imageKeys), ...selectedLogIds.map((id) => logStore.removeItem(id))]).then(refreshLogs);
+        void Promise.all([deleteStoredImages(imageKeys), ...selectedLogIds.map((id) => logStore.removeItem(id))]).then(async () => { const next = await refreshLogs(false); await saveWorkspaceData("image-workbench", { logs: next.map(serializeLog) }).catch(() => undefined); });
         if (previewLog && selectedLogIds.includes(previewLog.id)) {
             setPreviewLog(null);
             setResults([]);
@@ -306,10 +308,14 @@ export default function ImagePage() {
     };
 
     const saveLog = (log: GenerationLog) => {
-        void logStore.setItem(log.id, serializeLog(log)).then(refreshLogs);
+        void logStore.setItem(log.id, serializeLog(log)).then(async () => { const next = await refreshLogs(false); await saveWorkspaceData("image-workbench", { logs: next.map(serializeLog) }).catch(() => undefined); });
     };
 
-    const refreshLogs = async () => setLogs(await readStoredLogs());
+    const refreshLogs = async (preferRemote = true) => {
+        const next = await readStoredLogs(preferRemote);
+        setLogs(next);
+        return next;
+    };
 
     const previewGenerationLog = async (log: GenerationLog) => {
         setPreviewLog(log);
@@ -789,9 +795,13 @@ function LogCard({ log, selected, active, onSelectedChange, onClick }: { log: Ge
     );
 }
 
-async function readStoredLogs() {
+async function readStoredLogs(preferRemote = true) {
     if (typeof window === "undefined") return [];
     try {
+        if (preferRemote) {
+            const remote = await loadWorkspaceData<{ logs?: GenerationLog[] }>("image-workbench");
+            if (remote?.logs) return (await Promise.all(remote.logs.map(normalizeLog))).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        }
         const values: GenerationLog[] = [];
         await logStore.iterate<GenerationLog, void>((value) => {
             values.push(value);

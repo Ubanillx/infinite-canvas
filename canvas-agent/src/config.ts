@@ -9,6 +9,7 @@ export const CONFIG_FILE = path.join(CONFIG_DIR, "canvas-agent.json");
 export const VERSION = readPackageVersion();
 export const AGENT_PROMPT = fs.readFileSync(new URL("../agent-instructions.md", import.meta.url), "utf8");
 const initializedWorkspaces = new Set<string>();
+const requestWorkspaceStates = new Map<string, SiteWorkspaceConfig>();
 
 export type SiteWorkspaceConfig = { workspacePath: string; activeThreadId?: string; pinnedThreadIds?: string[] };
 export type CanvasAgentConfig = { url: string; token: string; origins?: string[]; workspace?: SiteWorkspaceConfig };
@@ -33,7 +34,7 @@ export function saveConfig(config: CanvasAgentConfig) {
 }
 
 /** 确保站点级 Codex 工作空间存在并已初始化。 */
-export function ensureSiteWorkspace(config: CanvasAgentConfig) {
+export function ensureSiteWorkspace(config: CanvasAgentConfig): SiteWorkspaceConfig {
     const current = config.workspace;
     if (current?.workspacePath) {
         const workspacePath = resolveWorkspacePath(current.workspacePath);
@@ -45,6 +46,33 @@ export function ensureSiteWorkspace(config: CanvasAgentConfig) {
     initializeWorkspace(workspacePath);
     saveConfig(config);
     return { workspacePath };
+}
+
+/** 为已通过站点网关认证的工作区请求返回独立的 Codex 工作目录。 */
+export function ensureRequestWorkspace(config: CanvasAgentConfig, workspaceId?: string): SiteWorkspaceConfig {
+    const normalized = String(workspaceId || "").trim();
+    if (!/^[0-9a-f-]{36}$/i.test(normalized)) return ensureSiteWorkspace(config);
+    const current = requestWorkspaceStates.get(normalized);
+    if (current) {
+        initializeWorkspace(current.workspacePath);
+        return current;
+    }
+    const workspacePath = path.join(CONFIG_DIR, "codex-workspaces", normalized);
+    const workspace: SiteWorkspaceConfig = { workspacePath };
+    requestWorkspaceStates.set(normalized, workspace);
+    initializeWorkspace(workspacePath);
+    return workspace;
+}
+
+/** 更新指定请求工作区的活跃线程，不污染全局站点配置。 */
+export function updateRequestWorkspace(config: CanvasAgentConfig, workspaceId: string, patch: Partial<SiteWorkspaceConfig>) {
+    const normalized = String(workspaceId || "").trim();
+    if (!/^[0-9a-f-]{36}$/i.test(normalized)) return updateSiteWorkspace(config, patch);
+    const current = ensureRequestWorkspace(config, normalized);
+    const next = { ...current, ...patch, workspacePath: current.workspacePath };
+    requestWorkspaceStates.set(normalized, next);
+    initializeWorkspace(next.workspacePath);
+    return next;
 }
 
 /** 更新站点级 Codex 工作空间配置。 */

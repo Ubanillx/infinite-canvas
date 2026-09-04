@@ -6,4 +6,11 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3000:3000"
+    volumes:
+      - infinite-canvas-data:/data
+      - infinite-canvas-agent:/root/.infinite-canvas
     restart: unless-stopped
+
+volumes:
+  infinite-canvas-data:
+  infinite-canvas-agent:

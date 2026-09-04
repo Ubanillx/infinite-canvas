@@ -1,4 +1,4 @@
-import { App, Alert, Button, Form, Input, Modal, Progress, Select, Switch, Tabs } from "antd";
+import { App, Alert, Button, Form, Input, Modal, Progress, Select, Tabs } from "antd";
 import type { TFunction } from "i18next";
 import { Cloud, Download, Pencil, Plus, RefreshCw, Trash2, Upload, Wifi } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -11,8 +11,8 @@ import { ConfigLocalStorage } from "@/components/layout/config-local-storage";
 import type { AppLocale } from "@/i18n";
 import { createAppConfigSnapshot, exportAppConfig, importAppConfig } from "@/services/config-file";
 import { saveServerConfig } from "@/services/server-config";
-import { type AppSyncDomainKey, type AppSyncProgressEvent } from "@/services/app-sync";
-import { getWebdavAutoSyncStatus, subscribeWebdavAutoSync, syncAllDataToWebdav, type WebdavAutoSyncStatus } from "@/services/webdav-auto-sync";
+import { importWorkspaceSnapshot, listWorkspaceSnapshots, type AppSyncDomainKey, type AppSyncProgressEvent, type WebdavSnapshot } from "@/services/app-sync";
+import { syncAllDataToWebdav } from "@/services/webdav-auto-sync";
 import { testWebdavConnection } from "@/services/webdav-sync";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
 import { createModelChannel, modelOptionsFromChannels, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore, type AiConfig, type ApiCallFormat, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
@@ -55,14 +55,17 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     const [activeTab, setActiveTab] = useState<ConfigTabKey>(initialTab);
     const [editingChannelId, setEditingChannelId] = useState("");
     const [testingWebdav, setTestingWebdav] = useState(false);
+    const [uploadingServerConfig, setUploadingServerConfig] = useState(false);
     const [syncingWebdav, setSyncingWebdav] = useState(false);
     const [webdavSyncStatus, setWebdavSyncStatus] = useState("");
+    const [webdavSnapshots, setWebdavSnapshots] = useState<WebdavSnapshot[]>([]);
+    const [selectedSnapshot, setSelectedSnapshot] = useState("");
+    const [loadingSnapshots, setLoadingSnapshots] = useState(false);
+    const [importingSnapshot, setImportingSnapshot] = useState(false);
     const [webdavDomainProgress, setWebdavDomainProgress] = useState(createWebdavDomainProgress);
-    const [autoSyncStatus, setAutoSyncStatus] = useState<WebdavAutoSyncStatus>(getWebdavAutoSyncStatus);
     const config = useConfigStore((state) => state.config);
     const webdav = useConfigStore((state) => state.webdav);
     const updateConfig = useConfigStore((state) => state.updateConfig);
-    const updateWebdavConfig = useConfigStore((state) => state.updateWebdavConfig);
     const shouldPromptContinue = useConfigStore((state) => state.shouldPromptContinue);
     const isConfigOpen = useConfigStore((state) => state.isConfigOpen);
     const setConfigDialogOpen = useConfigStore((state) => state.setConfigDialogOpen);
@@ -71,14 +74,26 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     const editingChannel = config.channels.find((channel) => channel.id === editingChannelId) || null;
     const locale = i18n.resolvedLanguage as AppLocale;
     useEffect(() => setActiveTab(initialTab), [initialTab]);
-    useEffect(() => subscribeWebdavAutoSync(setAutoSyncStatus), []);
 
     const saveConfig = (nextConfig: AiConfig) => {
         (Object.keys(nextConfig) as Array<keyof AiConfig>).forEach((key) => updateConfig(key, nextConfig[key]));
     };
 
+    const uploadConfigToServer = async () => {
+        setUploadingServerConfig(true);
+        try {
+            await saveServerConfig(createAppConfigSnapshot());
+            message.success(t("config.serverStorage.uploaded"));
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : t("config.serverStorage.saveFailed");
+            message.error(`${t("config.serverStorage.saveFailed")}：${detail}`);
+        } finally {
+            setUploadingServerConfig(false);
+        }
+    };
+
     const finishConfig = () => {
-        const ready = config.channels.some((channel) => channel.baseUrl.trim() && channel.apiKey.trim() && channel.models.length);
+        const ready = config.channels.some((channel) => channel.baseUrl.trim() && (channel.hasApiKey || channel.apiKey.trim()) && channel.models.length);
         setConfigDialogOpen(false);
         if (!ready) return;
         message.success(t(shouldPromptContinue ? "config.savedContinue" : "config.saved"));
@@ -123,9 +138,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
         }
         setTestingWebdav(true);
         try {
-            const snapshot = createAppConfigSnapshot();
-            await saveServerConfig(snapshot);
-            await testWebdavConnection(snapshot.webdav);
+            await testWebdavConnection(webdav);
             message.success(t("config.webdav.available"));
         } catch (error) {
             message.error(error instanceof Error ? error.message : t("config.webdav.testFailed"));
@@ -167,11 +180,46 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
         }
     };
 
+    const loadSnapshots = async () => {
+        if (!webdavReady) {
+            message.error(t("config.webdav.missingUrl"));
+            return;
+        }
+        setLoadingSnapshots(true);
+        try {
+            setWebdavSnapshots(await listWorkspaceSnapshots(webdav));
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "读取工作区快照失败");
+        } finally {
+            setLoadingSnapshots(false);
+        }
+    };
+
+    const importSnapshot = async () => {
+        if (!selectedSnapshot) {
+            message.warning("请先选择一个快照");
+            return;
+        }
+        setImportingSnapshot(true);
+        setWebdavSyncStatus("正在导入快照");
+        try {
+            const result = await importWorkspaceSnapshot(webdav, selectedSnapshot, updateWebdavProgress);
+            message.success(`快照已导入：${result.projects} 个画布、${result.assets} 个素材`);
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "导入工作区快照失败");
+        } finally {
+            setImportingSnapshot(false);
+        }
+    };
+
     return (
         <>
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-200 pb-3 dark:border-stone-800">
                 <div className="text-xs text-stone-500">{t("config.fileSecurity")}</div>
                 <div className="flex gap-2">
+                    <Button type="primary" icon={<Cloud className="size-4" />} loading={uploadingServerConfig} onClick={() => void uploadConfigToServer()}>
+                        {t("config.serverStorage.upload")}
+                    </Button>
                     <Button icon={<Upload className="size-4" />} onClick={() => configInputRef.current?.click()}>
                         {t("config.import")}
                     </Button>
@@ -294,19 +342,6 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                         </div>
                                     </div>
                                     <Alert type="success" showIcon message={t("config.webdav.serverManagedTitle")} description={t("config.webdav.serverManagedDescription")} />
-                                    <div className="mt-4 grid gap-4 md:grid-cols-2">
-                                        <Form.Item label={t("config.webdav.autoSync")} extra={t("config.webdav.autoSyncDescription")} className="mb-0">
-                                            <Switch checked={webdav.autoSyncEnabled} onChange={(value) => updateWebdavConfig("autoSyncEnabled", value)} />
-                                        </Form.Item>
-                                        <Form.Item label={t("config.webdav.autoSyncInterval")} className="mb-0">
-                                            <Select
-                                                disabled={!webdav.autoSyncEnabled}
-                                                value={webdav.autoSyncIntervalMinutes}
-                                                options={[5, 15, 30, 60].map((value) => ({ value, label: t("config.webdav.intervalMinutes", { count: value }) }))}
-                                                onChange={(value) => updateWebdavConfig("autoSyncIntervalMinutes", value)}
-                                            />
-                                        </Form.Item>
-                                    </div>
                                     <div className="mt-4 flex flex-wrap items-center gap-2">
                                         <Button icon={<Wifi className="size-4" />} disabled={!webdavReady || syncingWebdav} loading={testingWebdav} onClick={() => void testWebdav()}>
                                             {t("config.webdav.test")}
@@ -314,11 +349,12 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                         <Button type="primary" icon={<RefreshCw className="size-4" />} disabled={!webdavReady || testingWebdav} loading={syncingWebdav} onClick={() => void syncWebdav()}>
                                             {t(syncingWebdav ? "config.webdav.syncing" : "config.webdav.syncNow")}
                                         </Button>
+                                        <Button icon={<Download className="size-4" />} disabled={!webdavReady || loadingSnapshots || importingSnapshot} loading={loadingSnapshots} onClick={() => void loadSnapshots()}>读取快照</Button>
+                                        <Select className="min-w-52" disabled={!webdavSnapshots.length || importingSnapshot} value={selectedSnapshot || undefined} placeholder="选择要导入的快照" options={webdavSnapshots.map((snapshot) => ({ value: snapshot.id, label: formatWebdavTime(snapshot.createdAt, locale) }))} onChange={setSelectedSnapshot} />
+                                        <Button icon={<Upload className="size-4" />} disabled={!selectedSnapshot || !webdavReady || loadingSnapshots} loading={importingSnapshot} onClick={() => void importSnapshot()}>导入快照</Button>
                                         {webdavSyncStatus ? <span className="text-xs text-stone-500">{syncStageLabel(webdavSyncStatus, t)}</span> : null}
-                                        {!syncingWebdav && autoSyncStatus.state === "syncing" ? <span className="text-xs text-stone-500">{t("config.webdav.autoSyncing")}{autoSyncStatus.stage ? ` · ${syncStageLabel(autoSyncStatus.stage, t)}` : ""}</span> : null}
                                     </div>
                                     {syncingWebdav || webdavSyncStatus ? <WebdavProgressGrid progress={webdavDomainProgress} t={t} /> : null}
-                                    {autoSyncStatus.state === "error" ? <Alert className="mt-3" type="error" showIcon message={t("config.webdav.autoSyncFailed")} description={autoSyncStatus.error} /> : null}
                                 </section>
                             </Form>
                         ),
@@ -398,6 +434,7 @@ function normalizeImageCount(value: string) {
 function apiFormatLabel(apiFormat: ApiCallFormat, t: TFunction) {
     if (apiFormat === "gemini") return "Gemini";
     if (apiFormat === "ark") return t("config.protocols.ark");
+    if (apiFormat === "custom") return t("config.protocols.customVideo");
     return "OpenAI";
 }
 

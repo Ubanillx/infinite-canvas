@@ -169,6 +169,11 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     setCanvasContext: (canvasContext) => set({ canvasContext }),
     connectAgent: (options) => {
         const silent = options?.silent ?? false;
+        // Multiple layout effects (and React StrictMode's development
+        // remount) can request auto-connect at the same time. Once a
+        // connection has been enabled, the panel's SSE effect owns the
+        // actual socket; do not rewrite state or start another bootstrap.
+        if (get().enabled || get().connected) return;
         const endpoint = get().url.trim().replace(/\/$/, "");
         const token = get().token.trim();
         if (!endpoint || !token) return set({ connectError: silent ? "" : i18n.t("agent.state.connectionRequired") });

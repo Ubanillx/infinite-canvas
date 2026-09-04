@@ -4,6 +4,7 @@ node_modules/
 .env*
 !.env.example
 data/
+data-test/
 *.log
 *.tsbuildinfo
 .DS_Store
@@ -14,4 +15,4 @@ web/dist
 web/public/plugins
 plugins/canvas/*/dist
 plugins/canvas/*/node_modules
-web/public/plugins
+sync-fix-*.tar.gz

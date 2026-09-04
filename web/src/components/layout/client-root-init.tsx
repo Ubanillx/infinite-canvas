@@ -1,14 +1,12 @@
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
-import { App, Button, Result, Spin } from "antd";
+import { App, Button, Modal, Result, Spin } from "antd";
 import { useTranslation } from "react-i18next";
 
-import { applyServerConfig, createAppConfigSnapshot } from "@/services/config-file";
-import { loadServerConfig, saveServerConfig } from "@/services/server-config";
+import { applyServerConfig } from "@/services/config-file";
+import { loadServerConfig } from "@/services/server-config";
 import { createModelChannel, useConfigStore } from "@/stores/use-config-store";
-import { usePromptSourceStore } from "@/stores/use-prompt-source-store";
 import { usePromptSourceScheduler } from "@/hooks/use-prompt-source-scheduler";
-import { useWebdavAutoSync } from "@/hooks/use-webdav-auto-sync";
 
 export function ClientRootInit({ children }: { children: ReactNode }) {
     const { t } = useTranslation();
@@ -38,9 +36,19 @@ function ReadyClientRoot({ children }: { children: ReactNode }) {
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const config = useConfigStore((state) => state.config);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
+    const [conflict, setConflict] = useState<string>("");
 
     usePromptSourceScheduler();
-    useWebdavAutoSync();
+
+    useEffect(() => {
+        const onConflict = (event: Event) => {
+            const detail = (event as CustomEvent<{ domain?: string }>).detail;
+            const labels: Record<string, string> = { canvas: "画布", assets: "素材库", "image-workbench": "生图记录", "video-workbench": "视频记录", "agent-sessions": "Agent 会话" };
+            setConflict(labels[detail?.domain || ""] || "工作区数据");
+        };
+        window.addEventListener("infinite-canvas:workspace-conflict", onConflict);
+        return () => window.removeEventListener("infinite-canvas:workspace-conflict", onConflict);
+    }, []);
 
     useEffect(() => {
         if (handledConfigParams.current) return;
@@ -75,85 +83,46 @@ function ReadyClientRoot({ children }: { children: ReactNode }) {
         message.success(t("config.importedDirectConfig"));
     }, [config.channels, message, openConfigDialog, t, updateConfig]);
 
-    return <>{children}</>;
+    return <>{children}<Modal open={Boolean(conflict)} title="检测到多人编辑冲突" okText="刷新并读取服务器版本" cancelText="继续保留本机内容" onOk={() => window.location.reload()} onCancel={() => setConflict("")}>“{conflict}”已被另一位成员更新。系统没有覆盖对方的数据；请刷新读取服务器版本，再决定如何合并本机修改。</Modal></>;
 }
 
 function useServerConfigSync(attempt: number) {
-    const { message } = App.useApp();
     const { t } = useTranslation();
     const [state, setState] = useState<{ ready: boolean; error: string }>({ ready: false, error: "" });
+    const translationRef = useRef(t);
+    translationRef.current = t;
 
     useEffect(() => {
         let active = true;
-        let saveTimer = 0;
-        let unsubscribeConfig: () => void = () => undefined;
-        let unsubscribePromptSources: () => void = () => undefined;
-        let saveQueue = Promise.resolve();
 
         setState({ ready: false, error: "" });
-
-        const reportSaveError = (reason: unknown) => {
-            if (!active) return;
-            const detail = reason instanceof Error ? reason.message : t("config.serverStorage.saveFailed");
-            message.open({ key: "server-config-save", type: "error", content: `${t("config.serverStorage.saveFailed")}：${detail}` });
-        };
-        const scheduleSave = () => {
-            window.clearTimeout(saveTimer);
-            saveTimer = window.setTimeout(() => {
-                const snapshot = createAppConfigSnapshot();
-                saveQueue = saveQueue.catch(() => undefined).then(() => saveServerConfig(snapshot)).catch(reportSaveError);
-            }, 500);
-        };
+        clearLegacyClientConfig();
 
         void (async () => {
             try {
-                await Promise.all([waitForStoreHydration(useConfigStore), waitForStoreHydration(usePromptSourceStore)]);
-                const serverConfig = await loadServerConfig();
+                const serverConfig = await loadServerConfig({ force: attempt > 0 });
                 if (!active) return;
                 if (serverConfig) applyServerConfig(serverConfig);
-                else await saveServerConfig(createAppConfigSnapshot());
-                if (!active) return;
-
-                let previousConfig = useConfigStore.getState().config;
-                let previousWebdav = useConfigStore.getState().webdav;
-                let previousSources = usePromptSourceStore.getState().sources;
-                let previousSchedule = usePromptSourceStore.getState().schedule;
-                unsubscribeConfig = useConfigStore.subscribe((next) => {
-                    if (next.config === previousConfig && next.webdav === previousWebdav) return;
-                    previousConfig = next.config;
-                    previousWebdav = next.webdav;
-                    scheduleSave();
-                });
-                unsubscribePromptSources = usePromptSourceStore.subscribe((next) => {
-                    if (next.sources === previousSources && next.schedule === previousSchedule) return;
-                    previousSources = next.sources;
-                    previousSchedule = next.schedule;
-                    scheduleSave();
-                });
                 setState({ ready: true, error: "" });
             } catch (reason) {
                 if (!active) return;
-                setState({ ready: false, error: reason instanceof Error ? reason.message : t("config.serverStorage.loadFailed") });
+                setState({ ready: false, error: reason instanceof Error ? reason.message : translationRef.current("config.serverStorage.loadFailed") });
             }
         })();
 
         return () => {
             active = false;
-            window.clearTimeout(saveTimer);
-            unsubscribeConfig();
-            unsubscribePromptSources();
         };
-    }, [attempt, message, t]);
+    }, [attempt]);
 
     return state;
 }
 
-function waitForStoreHydration(store: { persist: { hasHydrated: () => boolean; onFinishHydration: (listener: () => void) => () => void } }) {
-    if (store.persist.hasHydrated()) return Promise.resolve();
-    return new Promise<void>((resolve) => {
-        const unsubscribe = store.persist.onFinishHydration(() => {
-            unsubscribe();
-            resolve();
-        });
-    });
+function clearLegacyClientConfig() {
+    try {
+        window.localStorage.removeItem("infinite-canvas:ai_config_store");
+        window.localStorage.removeItem("infinite-canvas:prompt_source_store_v2");
+    } catch {
+        // Storage may be unavailable in private or restricted browser contexts.
+    }
 }

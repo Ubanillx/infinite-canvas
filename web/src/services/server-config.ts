@@ -2,20 +2,31 @@ import i18n from "@/i18n";
 import { isAppConfigFile, markServerConfigSaved, type AppConfigFile } from "@/services/config-file";
 
 const serverConfigUrl = "/api/config";
+let cachedServerConfigRequest: Promise<AppConfigFile | null> | null = null;
 
-export async function loadServerConfig() {
-    const response = await fetch(serverConfigUrl, { headers: { Accept: "application/json" }, cache: "no-store" });
-    if (response.status === 204) return null;
-    if (!response.ok) throw requestError(response.status);
+export function loadServerConfig(options: { force?: boolean } = {}) {
+    if (options.force) cachedServerConfigRequest = null;
+    if (cachedServerConfigRequest) return cachedServerConfigRequest;
 
-    let data: unknown;
-    try {
-        data = await response.json();
-    } catch {
-        throw new Error(i18n.t("config.serverStorage.invalidResponse"));
-    }
-    if (!isAppConfigFile(data)) throw new Error(i18n.t("config.serverStorage.invalidResponse"));
-    return data;
+    cachedServerConfigRequest = (async () => {
+        const response = await fetch(serverConfigUrl, { headers: { Accept: "application/json" }, cache: "no-store" });
+        if (response.status === 204) return null;
+        if (!response.ok) throw requestError(response.status);
+
+        let data: unknown;
+        try {
+            data = await response.json();
+        } catch {
+            throw new Error(i18n.t("config.serverStorage.invalidResponse"));
+        }
+        if (!isAppConfigFile(data)) throw new Error(i18n.t("config.serverStorage.invalidResponse"));
+        return data;
+    })().catch((error) => {
+        // Failed requests must remain retryable from the loading error view.
+        cachedServerConfigRequest = null;
+        throw error;
+    });
+    return cachedServerConfigRequest;
 }
 
 export async function saveServerConfig(config: AppConfigFile) {

@@ -1,9 +1,20 @@
 import i18n from "@/i18n";
+import { getActiveWorkspace, workspaceHeaders } from "@/lib/workspace";
 import type { CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import type { AgentReasoningEffort } from "@/stores/use-agent-store";
 
 type AgentConfigResponse = { ok?: boolean; protocolVersion?: number; url?: string; token?: string; hasToken?: boolean };
 const AGENT_MESSAGE_ASSET_PATTERN = /^agent-asset:([a-f0-9]{64})\/([a-f0-9]{64}\.(?:gif|jpe?g|png|webp))$/;
+
+// Configuration discovery is only a bootstrap operation. React can mount the
+// panel more than once (and several callers may race during startup), so keep
+// one request per endpoint in flight and briefly cache the result. Failed
+// probes are also cooled down to avoid a tight retry loop when the agent is
+// temporarily unavailable.
+const AGENT_CONFIG_CACHE_TTL_MS = 30_000;
+const AGENT_CONFIG_FAILURE_COOLDOWN_MS = 5_000;
+const agentConfigCache = new Map<string, { value: AgentConfigResponse | null; expiresAt: number }>();
+const agentConfigInFlight = new Map<string, Promise<AgentConfigResponse | null>>();
 
 export class AgentApiError<T = unknown> extends Error {
     constructor(readonly status: number, readonly response: T & { code?: string; error?: string; msg?: string }) {
@@ -43,9 +54,9 @@ export type AgentSkillDraftResponse = { ok?: boolean; data?: AgentSkillDraft };
 
 export async function postState(endpoint: string, token: string, clientId: string, snapshot: CanvasAgentSnapshot | null) {
     try {
-        const response = await fetch(`${endpoint}/canvas/state?token=${encodeURIComponent(token)}&clientId=${encodeURIComponent(clientId)}`, {
+        const response = await fetch(`${endpoint}/canvas/state?token=${encodeURIComponent(token)}&clientId=${encodeURIComponent(clientId)}${workspaceQuerySuffix()}`, {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: { "content-type": "application/json", ...workspaceHeaders() },
             body: JSON.stringify(snapshot ? { ...snapshot, hasCanvas: true } : { hasCanvas: false }),
         });
         return response.ok;
@@ -56,7 +67,7 @@ export async function postState(endpoint: string, token: string, clientId: strin
 
 export async function activateAgentClient(endpoint: string, token: string, clientId: string) {
     try {
-        await fetch(`${endpoint}/canvas/activate?token=${encodeURIComponent(token)}&clientId=${encodeURIComponent(clientId)}`, { method: "POST" });
+        await fetch(`${endpoint}/canvas/activate?token=${encodeURIComponent(token)}&clientId=${encodeURIComponent(clientId)}${workspaceQuerySuffix()}`, { method: "POST", headers: workspaceHeaders() });
     } catch {}
 }
 
@@ -84,7 +95,9 @@ export function resolveAgentMessageAssetUrl(endpoint: string, token: string, val
     const match = AGENT_MESSAGE_ASSET_PATTERN.exec(value);
     if (!match) return value.startsWith("agent-asset:") ? "" : value;
     const baseUrl = endpoint.trim().replace(/\/$/, "");
-    return baseUrl && token ? `${baseUrl}/agent/message-assets/${match[1]}/${match[2]}?token=${encodeURIComponent(token)}` : "";
+    const workspace = getActiveWorkspace();
+    const workspaceQuery = workspace ? `&workspaceId=${encodeURIComponent(workspace.id)}` : "";
+    return baseUrl && token ? `${baseUrl}/agent/message-assets/${match[1]}/${match[2]}?token=${encodeURIComponent(token)}${workspaceQuery}` : "";
 }
 
 export function fetchCodexSkills(endpoint: string, token: string, forceReload = false) {
@@ -116,22 +129,47 @@ export function setCodexSkillEnabled(endpoint: string, token: string, skill: Pic
 }
 
 export async function fetchAgentJson<T>(endpoint: string, token: string, path: string, init?: RequestInit) {
-    const url = `${endpoint}${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
-    const res = await fetch(url, init);
+    const url = `${endpoint}${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}${workspaceQuerySuffix()}`;
+    const res = await fetch(url, { ...init, headers: { ...workspaceHeaders(), ...init?.headers } });
     const data = (await res.json().catch(() => ({}))) as T & { error?: string; msg?: string };
     if (!res.ok) throw new AgentApiError(res.status, data);
     return data;
 }
 
-export async function discoverAgentConfig(endpoint: string) {
-    try {
-        const res = await fetch(`${endpoint}/config`);
-        if (!res.ok) return null;
-        const data = (await res.json()) as AgentConfigResponse;
-        return data.ok ? data : null;
-    } catch {
-        return null;
-    }
+function workspaceQuerySuffix() {
+    const workspace = getActiveWorkspace();
+    return workspace ? `&workspaceId=${encodeURIComponent(workspace.id)}` : "";
+}
+
+export function discoverAgentConfig(endpoint: string, options: { force?: boolean } = {}) {
+    const normalizedEndpoint = endpoint.trim().replace(/\/$/, "");
+    if (!normalizedEndpoint) return Promise.resolve(null);
+    const now = Date.now();
+    const cached = agentConfigCache.get(normalizedEndpoint);
+    if (!options.force && cached && cached.expiresAt > now) return Promise.resolve(cached.value);
+    const inFlight = agentConfigInFlight.get(normalizedEndpoint);
+    if (inFlight) return inFlight;
+
+    const request = (async () => {
+        try {
+            const res = await fetch(`${normalizedEndpoint}/config`, { headers: { Accept: "application/json" }, cache: "no-store" });
+            if (!res.ok) return null;
+            const data = (await res.json()) as AgentConfigResponse;
+            return data.ok ? data : null;
+        } catch {
+            return null;
+        }
+    })();
+    agentConfigInFlight.set(normalizedEndpoint, request);
+    void request.then((value) => {
+        agentConfigCache.set(normalizedEndpoint, {
+            value,
+            expiresAt: Date.now() + (value ? AGENT_CONFIG_CACHE_TTL_MS : AGENT_CONFIG_FAILURE_COOLDOWN_MS),
+        });
+    }).finally(() => {
+        if (agentConfigInFlight.get(normalizedEndpoint) === request) agentConfigInFlight.delete(normalizedEndpoint);
+    });
+    return request;
 }
 
 function jsonPost(body: unknown): RequestInit {

@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import path from "node:path";
 
 import { toolDescriptions, toolInputSchemas, toolNames, type ToolName } from "../canvas/schemas.js";
 import { AGENT_PROMPT, loadConfig, type CanvasAgentConfig, VERSION } from "../config.js";
@@ -25,8 +26,22 @@ function registerCanvasTool(server: McpServer, config: CanvasAgentConfig, name: 
 
 /** 将 MCP 工具调用转发到本地 Canvas Agent HTTP 服务。 */
 async function postCanvasAgentTool(config: CanvasAgentConfig, name: ToolName, input: unknown) {
-    const res = await fetch(`${config.url}/api/tools`, { method: "POST", headers: { "content-type": "application/json", "x-canvas-agent-token": config.token }, body: JSON.stringify({ name, input }) });
+    const workspaceId = workspaceIdFromRuntime();
+    const headers: Record<string, string> = {
+        "content-type": "application/json",
+        "x-canvas-agent-token": config.token,
+    };
+    if (/^[0-9a-f-]{36}$/i.test(workspaceId)) headers["x-infinite-canvas-workspace"] = workspaceId;
+    const res = await fetch(`${config.url}/api/tools`, { method: "POST", headers, body: JSON.stringify({ name, input }) });
     const body = (await res.json()) as CanvasAgentToolResponse;
     if (!body.ok) throw new Error(body.error || "tool call failed");
     return body.result;
+}
+
+/** app-server 启动 MCP 子进程时通常不会转发自定义环境变量，但会使用线程 cwd。 */
+function workspaceIdFromRuntime() {
+    const fromEnv = String(process.env.INFINITE_CANVAS_WORKSPACE_ID || "").trim();
+    if (/^[0-9a-f-]{36}$/i.test(fromEnv)) return fromEnv;
+    const fromCwd = path.basename(path.resolve(process.cwd()));
+    return /^[0-9a-f-]{36}$/i.test(fromCwd) ? fromCwd : "";
 }

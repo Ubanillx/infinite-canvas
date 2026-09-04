@@ -9,8 +9,22 @@ web_pid_file="$runtime_dir/preview.pid"
 agent_log="$runtime_dir/canvas-agent.log"
 web_log="$runtime_dir/build-and-preview.log"
 action="${1:-start}"
-bun_bin="${BUN_BIN:-$(command -v bun || true)}"
-node_bin="${NODE_BIN:-$(command -v node || true)}"
+if [[ -n "${BUN_BIN:-}" ]]; then
+    bun_bin="$BUN_BIN"
+else
+    bun_bin="$(command -v bun || true)"
+fi
+if [[ -n "${NODE_BIN:-}" ]]; then
+    node_bin="$NODE_BIN"
+else
+    node_bin=""
+    # Prefer the user's nvm Node so the bundled/local Codex versions and auth
+    # environment remain consistent after non-interactive restarts.
+    for candidate in "$HOME"/.nvm/versions/node/*/bin/node; do
+        [[ -x "$candidate" ]] && node_bin="$candidate"
+    done
+    [[ -n "$node_bin" ]] || node_bin="$(command -v node || true)"
+fi
 
 [[ -x "$bun_bin" ]] || bun_bin="$HOME/.bun/bin/bun"
 mkdir -p -m 700 "$runtime_dir"
@@ -80,7 +94,7 @@ service_status() {
         echo "Agent: stopped"
     fi
     if [[ "$web_pid" =~ ^[0-9]+$ ]] && kill -0 "$web_pid" 2>/dev/null && curl -fsS http://127.0.0.1:3100/ >/dev/null; then
-        echo "Web: running (PID $web_pid, http://192.168.2.231:3100)"
+        echo "Web: running (PID $web_pid, http://192.168.3.253:3100)"
     else
         echo "Web: stopped"
     fi
@@ -120,7 +134,7 @@ start_services() {
 
     echo "Building and starting Web..."
     cd "$root_dir"
-    INFINITE_CANVAS_ALLOWED_NETWORKS="${INFINITE_CANVAS_ALLOWED_NETWORKS:-127.0.0.1,::1,192.168.0.0/22}" VITE_CANVAS_AGENT_URL="/api/canvas-agent" ./run-background.sh
+    INFINITE_CANVAS_ALLOWED_NETWORKS="${INFINITE_CANVAS_ALLOWED_NETWORKS:-127.0.0.1,::1,192.168.0.0/22,172.16.0.0/12}" VITE_CANVAS_AGENT_URL="/api/canvas-agent" ./run-background.sh
     read -r web_pid < "$web_pid_file"
     for _ in {1..120}; do
         command_line="$(pid_command "$web_pid")"

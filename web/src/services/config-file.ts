@@ -29,12 +29,12 @@ export function createAppConfigSnapshot(): AppConfigFile {
 }
 
 export function applyAppConfig(data: AppConfigFile) {
-    useConfigStore.setState({ config: data.config, webdav: { ...defaultWebdavSyncConfig, ...data.webdav } });
+    useConfigStore.setState({ config: data.config, webdav: { ...defaultWebdavSyncConfig, ...data.webdav, autoSyncEnabled: false } });
     usePromptSourceStore.setState(data.promptSources);
 }
 
 export function applyServerConfig(data: AppConfigFile) {
-    useConfigStore.setState({ config: redactAiConfigSecrets(data.config), webdav: { ...defaultWebdavSyncConfig, ...data.webdav, password: "" } });
+    useConfigStore.setState({ config: redactAiConfigSecrets(data.config), webdav: { ...defaultWebdavSyncConfig, ...data.webdav, autoSyncEnabled: false, password: "" } });
     usePromptSourceStore.setState(data.promptSources);
 }
 

@@ -1,6 +1,4 @@
 import { syncAppDataToWebdav, type AppSyncProgress } from "@/services/app-sync";
-import { createAppConfigSnapshot } from "@/services/config-file";
-import { uploadWebdavConfigFile } from "@/services/webdav-sync";
 import { useConfigStore, type WebdavSyncConfig } from "@/stores/use-config-store";
 
 export type WebdavAutoSyncStatus = {
@@ -27,15 +25,6 @@ export function subscribeWebdavAutoSync(listener: StatusListener) {
 
 export function getWebdavAutoSyncStatus() {
     return status;
-}
-
-export function syncConfigToWebdav(config = useConfigStore.getState().webdav) {
-    return enqueue("config", async () => {
-        await uploadWebdavConfigFile(config, createAppConfigSnapshot());
-        const syncedAt = new Date().toISOString();
-        useConfigStore.getState().updateWebdavConfig("lastConfigSyncedAt", syncedAt);
-        return syncedAt;
-    });
 }
 
 export function syncAllDataToWebdav(config = useConfigStore.getState().webdav, reason: "data" | "manual" = "data", onProgress?: AppSyncProgress) {

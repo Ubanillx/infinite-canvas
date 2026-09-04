@@ -37,7 +37,9 @@ cd docs
 docker compose -f docker-compose.local.yml up -d --build
 ```
 
-The main application container only runs Next.js. Canvases, My Assets, generation history, and API keys are stored in the browser by default, while prompt repositories are fetched directly by the frontend. No persistent data volume is required for this data.
+The application container runs both the Vite preview server and Canvas Agent. The preview server keeps the workspace registry and same-origin WebDAV/Agent proxies available, while the Agent listens only on the container loopback interface. The included Compose volumes persist the workspace registry, Agent conversations, and server configuration across upgrades. AI channels and API keys remain global to the installation and are never copied into workspace snapshots.
+
+Automatic WebDAV sync uploads only the active workspace's snapshots. Remote snapshots are listed and imported only after the user explicitly chooses one in WebDAV settings.
 
 ## Optional analytics
 

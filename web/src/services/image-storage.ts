@@ -2,6 +2,7 @@ import localforage from "localforage";
 
 import { nanoid } from "nanoid";
 import i18n from "@/i18n";
+import { workspaceStoreName } from "@/lib/workspace";
 import { readImageMeta } from "@/lib/image-utils";
 
 export type UploadedImage = {
@@ -13,9 +14,9 @@ export type UploadedImage = {
     mimeType: string;
 };
 
-const store = localforage.createInstance({ name: "infinite-canvas", storeName: "image_files" });
-const imageLogStore = localforage.createInstance({ name: "infinite-canvas", storeName: "image_generation_logs" });
-const videoLogStore = localforage.createInstance({ name: "infinite-canvas", storeName: "video_generation_logs" });
+const store = localforage.createInstance({ name: "infinite-canvas", storeName: workspaceStoreName("image_files") });
+const imageLogStore = localforage.createInstance({ name: "infinite-canvas", storeName: workspaceStoreName("image_generation_logs") });
+const videoLogStore = localforage.createInstance({ name: "infinite-canvas", storeName: workspaceStoreName("video_generation_logs") });
 const objectUrls = new Map<string, string>();
 
 export async function uploadImage(input: string | Blob): Promise<UploadedImage> {

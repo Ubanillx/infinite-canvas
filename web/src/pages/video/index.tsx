@@ -5,6 +5,7 @@ import localforage from "localforage";
 import { nanoid } from "nanoid";
 import { saveAs } from "file-saver";
 import { useTranslation } from "react-i18next";
+import { workspaceStoreName } from "@/lib/workspace";
 
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { ModelPicker } from "@/components/model-picker";
@@ -23,6 +24,7 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 import i18n from "@/i18n";
+import { loadWorkspaceData, saveWorkspaceData } from "@/services/workspace-data";
 
 type GeneratedVideo = {
     id: string;
@@ -68,7 +70,7 @@ type GenerationLogConfig = Pick<AiConfig, "model" | "videoModel" | "size" | "vqu
 type UpdateAiConfig = <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
 
 const LOG_STORE_KEY = "infinite-canvas:video_generation_logs";
-const logStore = localforage.createInstance({ name: "infinite-canvas", storeName: "video_generation_logs" });
+const logStore = localforage.createInstance({ name: "infinite-canvas", storeName: workspaceStoreName("video_generation_logs") });
 
 export default function VideoPage() {
     const { message } = App.useApp();
@@ -316,7 +318,7 @@ export default function VideoPage() {
             .filter((log) => selectedLogIds.includes(log.id))
             .map((log) => log.video?.storageKey)
             .filter((key): key is string => Boolean(key));
-        void Promise.all([deleteStoredMedia(mediaKeys), ...selectedLogIds.map((id) => logStore.removeItem(id))]).then(() => refreshLogs());
+        void Promise.all([deleteStoredMedia(mediaKeys), ...selectedLogIds.map((id) => logStore.removeItem(id))]).then(async () => { const next = await refreshLogs(true, false); await saveWorkspaceData("video-workbench", { logs: next.map(serializeLog) }).catch(() => undefined); });
         if (previewLog && selectedLogIds.includes(previewLog.id)) {
             setPreviewLog(null);
             setResults([]);
@@ -327,11 +329,12 @@ export default function VideoPage() {
 
     const saveLog = async (log: GenerationLog, resumePending = true) => {
         await logStore.setItem(log.id, serializeLog(log));
-        await refreshLogs(resumePending);
+        const next = await refreshLogs(resumePending, false);
+        await saveWorkspaceData("video-workbench", { logs: next.map(serializeLog) }).catch(() => undefined);
     };
 
-    const refreshLogs = async (resumePending = true) => {
-        const nextLogs = await readStoredLogs();
+    const refreshLogs = async (resumePending = true, preferRemote = true) => {
+        const nextLogs = await readStoredLogs(preferRemote);
         setLogs(nextLogs);
         if (resumePending) resumePendingLogs(nextLogs);
         return nextLogs;
@@ -761,9 +764,13 @@ function LogCard({ log, selected, active, onSelectedChange, onClick }: { log: Ge
     );
 }
 
-async function readStoredLogs() {
+async function readStoredLogs(preferRemote = true) {
     if (typeof window === "undefined") return [];
     try {
+        if (preferRemote) {
+            const remote = await loadWorkspaceData<{ logs?: GenerationLog[] }>("video-workbench");
+            if (remote?.logs) return (await Promise.all(remote.logs.map(normalizeLog))).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        }
         const logs: GenerationLog[] = [];
         await logStore.iterate<GenerationLog, void>((value) => {
             logs.push(value);

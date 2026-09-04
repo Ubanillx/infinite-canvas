@@ -66,10 +66,16 @@ export class CodexAppClient {
     private constructor(private child: ChildProcess, private emit: AgentEmit, private eventHistory: Pick<CodexEventHistory, "record" | "recordTurn"> = codexEventHistory) {}
 
     /** 启动并初始化 Codex app-server。 */
-    static async start(emit: AgentEmit, onExit: () => void) {
+    static async start(emit: AgentEmit, onExit: () => void, eventHistory: Pick<CodexEventHistory, "record" | "recordTurn"> = codexEventHistory, workspaceId?: string) {
         logger.info("Starting Codex app-server", { executable: process.execPath, codex: codexBin() });
-        const child = spawn(process.execPath, [codexBin(), "app-server", "--stdio"], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-        const client = new CodexAppClient(child, emit);
+        const child = spawn(process.execPath, [codexBin(), "app-server", "--stdio"], {
+            stdio: ["pipe", "pipe", "pipe"],
+            windowsHide: true,
+            env: workspaceId
+                ? { ...process.env, INFINITE_CANVAS_WORKSPACE_ID: workspaceId }
+                : process.env,
+        });
+        const client = new CodexAppClient(child, emit, eventHistory);
         let stopped = false;
         const stop = () => {
             if (stopped) return;
@@ -256,6 +262,11 @@ export class CodexAppClient {
         const output = String(field(result, "output") || "").trim();
         if (!output) throw new Error("Codex 没有返回 Skill 草稿");
         return output;
+    }
+
+    /** 判断当前 app-server 是否正在处理指定线程。 */
+    isThreadActive(threadId: string) {
+        return this.currentThreadId === threadId || [...this.activeTurns.values()].some((turn) => turn.threadId === threadId);
     }
 
     /** 中断当前正在运行且属于指定线程的 Codex turn。 */

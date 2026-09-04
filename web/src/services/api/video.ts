@@ -6,12 +6,12 @@ import { dataUrlToFile } from "@/lib/image-utils";
 import { getMediaBlob, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { imageToDataUrl } from "@/services/image-storage";
 import { boolConfig, buildSeedancePromptText, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceVideoReferenceError, SEEDANCE_REFERENCE_LIMITS } from "@/lib/seedance-video";
-import { buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, type AiConfig } from "@/stores/use-config-store";
+import { buildAiRequestUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, type AiConfig } from "@/stores/use-config-store";
 import { runModelPlugin } from "./model-plugin";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 
-type VideoResponse = { id: string; status?: string; error?: { message?: string }; url?: string; result_url?: string; video_url?: string; content?: { video_url?: string; url?: string } | null };
+type VideoResponse = { id?: string; task_id?: string; status?: string; fail_reason?: string; error?: { message?: string }; url?: string; result_url?: string; video_url?: string; content?: { video_url?: string; url?: string } | null };
 type ApiVideoResponse = VideoResponse | { code?: number | string; data?: VideoResponse | null; msg?: string; message?: string; error?: { message?: string } };
 type SeedanceTask = {
     id: string;
@@ -27,19 +27,19 @@ type RequestOptions = { signal?: AbortSignal };
 const apiText = (key: string, options?: Record<string, unknown>) => i18n.t(`apiErrors.${key}`, options);
 
 export type VideoGenerationResult = { blob?: Blob; url?: string; mimeType?: string };
-export type VideoGenerationTask = { id: string; provider: "openai" | "seedance" | "plugin"; model: string };
+export type VideoGenerationTask = { id: string; provider: "openai" | "seedance" | "custom" | "plugin"; model: string };
 export type VideoGenerationTaskState = { status: "pending" } | { status: "completed"; result: VideoGenerationResult } | { status: "failed"; error: string };
 
 /** Results for scripted (plugin) video models, which run their own create+poll in one shot at task creation. */
 const pluginVideoResults = new Map<string, VideoGenerationResult>();
 
 function aiApiUrl(config: AiConfig, path: string) {
-    return buildApiUrl(config.baseUrl, path);
+    return buildAiRequestUrl(config, path);
 }
 
 function aiHeaders(config: AiConfig, contentType?: string) {
     return {
-        Authorization: `Bearer ${config.apiKey}`,
+        ...(config.channelId ? {} : { Authorization: `Bearer ${config.apiKey}` }),
         ...(contentType ? { "Content-Type": contentType } : {}),
     };
 }
@@ -64,6 +64,9 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
     const script = resolveModelScript(config, selectedModel);
     if (script) return createPluginVideoTask(requestConfig, selectedModel, script, prompt, references, options);
     assertVideoConfig(requestConfig, requestConfig.model);
+    if (requestConfig.apiFormat === "custom") {
+        return createCustomVideoTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
+    }
     if (isSeedanceVideoConfig(requestConfig)) {
         return createSeedanceTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
     }
@@ -80,12 +83,13 @@ export async function pollVideoGenerationTask(config: AiConfig, task: VideoGener
     }
     const requestConfig = resolveModelRequestConfig(config, task.model);
     assertVideoConfig(requestConfig, requestConfig.model);
+    if (task.provider === "custom") return pollCustomVideoTask(requestConfig, task, options);
     return task.provider === "seedance" ? pollSeedanceTask(requestConfig, task, options) : pollOpenAIVideoTask(requestConfig, task, options);
 }
 
 async function createPluginVideoTask(config: AiConfig, model: string, script: string, prompt: string, references: ReferenceImage[], options?: RequestOptions): Promise<VideoGenerationTask> {
     if (!config.baseUrl.trim()) throw new Error(apiText("baseUrlRequired"));
-    if (!config.apiKey.trim()) throw new Error(apiText("apiKeyRequired"));
+    if (!hasConfiguredApiKey(config)) throw new Error(apiText("apiKeyRequired"));
     const refs = await Promise.all(references.map((image) => imageToDataUrl(image)));
     const result = videoPluginResult(
         await runModelPlugin({
@@ -170,6 +174,50 @@ async function pollOpenAIVideoTask(config: AiConfig, task: VideoGenerationTask, 
     }
 }
 
+async function createCustomVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], options?: RequestOptions): Promise<VideoGenerationTask> {
+    if (audioReferences.length && !references.length && !videoReferences.length) throw new Error(apiText("seedanceAudioRequiresVisual"));
+    assertSeedanceVideoReferences(videoReferences);
+    assertSeedanceAudioReferences(audioReferences);
+    const seedance = /seedance/i.test(config.model);
+    const referenceImages = await Promise.all(references.slice(0, SEEDANCE_REFERENCE_LIMITS.images).map((image) => resolveSeedanceImageUrl(config, image)));
+    const referenceVideos = await Promise.all(videoReferences.slice(0, SEEDANCE_REFERENCE_LIMITS.videos).map(resolveSeedanceVideoUrl));
+    const referenceAudios = await Promise.all(audioReferences.slice(0, SEEDANCE_REFERENCE_LIMITS.audios).map(resolveSeedanceAudioUrl));
+    const payload = {
+        model: modelOptionName(model),
+        prompt: buildSeedancePromptText(prompt, references, videoReferences, audioReferences),
+        duration: seedance ? normalizeSeedanceDuration(config.videoSeconds) : Number(normalizeVideoSeconds(config.videoSeconds)),
+        resolution: seedance ? normalizeSeedanceResolution(config.vquality) : normalizeVideoResolution(config.vquality),
+        aspect_ratio: normalizeCustomVideoRatio(config.size),
+        generate_audio: boolConfig(config.videoGenerateAudio, true),
+        prompt_extend: false,
+        ...(referenceImages.length ? { reference_images: referenceImages } : {}),
+        ...(referenceVideos.length ? { reference_videos: referenceVideos } : {}),
+        ...(referenceAudios.length ? { reference_audios: referenceAudios } : {}),
+    };
+    if (!payload.prompt && !referenceImages.length && !referenceVideos.length) throw new Error(apiText("videoPromptRequired"));
+    try {
+        const created = unwrapCustomVideoTask((await axios.post<ApiEnvelope<VideoResponse>>(aiApiUrl(config, "/video/generations"), payload, { headers: aiHeaders(config, "application/json"), signal: options?.signal })).data);
+        const id = created.id || created.task_id;
+        if (!id) throw new Error(apiText("noVideoTaskId"));
+        return { id, provider: "custom", model };
+    } catch (error) {
+        throw new Error(readAxiosError(error, apiText("videoTaskCreateFailed")));
+    }
+}
+
+async function pollCustomVideoTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
+    try {
+        const state = unwrapCustomVideoTask((await axios.get<ApiEnvelope<VideoResponse>>(aiApiUrl(config, `/video/generations/${encodeURIComponent(task.id)}`), { headers: aiHeaders(config), signal: options?.signal })).data);
+        const url = videoResultUrl(state);
+        if (url) return { status: "completed", result: await videoResultFromUrl(url, options) };
+        if (state.status === "completed" || state.status === "succeeded") return { status: "failed", error: apiText("noPlayableVideo") };
+        if (["failed", "cancelled", "expired"].includes(state.status || "")) return { status: "failed", error: readApiErrorMessage(state.fail_reason || state.error?.message) || apiText("videoGenerationFailed") };
+        return { status: "pending" };
+    } catch (error) {
+        throw new Error(readAxiosError(error, apiText("videoTaskQueryFailed")));
+    }
+}
+
 async function createSeedanceTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], options?: RequestOptions): Promise<VideoGenerationTask> {
     if (audioReferences.length && !references.length && !videoReferences.length) {
         throw new Error(apiText("seedanceAudioRequiresVisual"));
@@ -233,7 +281,7 @@ function assertSeedanceAudioReferences(audioReferences: ReferenceAudio[]) {
 }
 
 function seedanceApiUrl(config: AiConfig, taskId?: string) {
-    return buildApiUrl(config.baseUrl, `/contents/generations/tasks${taskId ? `/${encodeURIComponent(taskId)}` : ""}`);
+    return buildAiRequestUrl(config, `/contents/generations/tasks${taskId ? `/${encodeURIComponent(taskId)}` : ""}`);
 }
 
 async function buildSeedanceContent(config: AiConfig, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[]) {
@@ -292,8 +340,17 @@ async function videoResultFromUrl(url: string, options?: RequestOptions): Promis
 function assertVideoConfig(config: AiConfig, model: string) {
     if (!model) throw new Error(apiText("videoModelRequired"));
     if (!config.baseUrl.trim()) throw new Error(apiText("baseUrlRequired"));
-    if (!config.apiKey.trim()) throw new Error(apiText("apiKeyRequired"));
+    if (!hasConfiguredApiKey(config)) throw new Error(apiText("apiKeyRequired"));
     if (config.apiFormat === "gemini") throw new Error(apiText("geminiVideoUnsupported"));
+}
+
+function hasConfiguredApiKey(config: AiConfig) {
+    return Boolean(config.apiKey.trim() || (config.channelId && config.hasApiKey));
+}
+
+function normalizeCustomVideoRatio(value: string) {
+    const ratio = normalizeSeedanceRatio(value);
+    return ratio === "adaptive" ? "16:9" : ratio;
 }
 
 function normalizeVideoSeconds(value: string) {
@@ -321,6 +378,12 @@ function unwrapVideoResponse(payload: ApiVideoResponse) {
 
 function unwrapSeedanceTask(payload: ApiEnvelope<SeedanceTask>) {
     return unwrapEnvelope(payload, apiText("seedanceNoTask"));
+}
+
+function unwrapCustomVideoTask(payload: ApiEnvelope<VideoResponse>) {
+    if (!payload) throw new Error(apiText("noVideoTask"));
+    if (typeof payload === "object" && "data" in payload && payload.data) return payload.data;
+    return unwrapEnvelope(payload, apiText("noVideoTask"));
 }
 
 function unwrapEnvelope<T>(payload: ApiEnvelope<T>, emptyMessage: string): T {

@@ -8,6 +8,7 @@ runtime_dir="${RUNTIME_DIR:-/tmp/infinite-canvas-$UID}"
 pid_file="$runtime_dir/preview.pid"
 log_file="$runtime_dir/build-and-preview.log"
 bun_bin="${BUN_BIN:-}"
+node_bin="${NODE_BIN:-}"
 agent_url="${VITE_CANVAS_AGENT_URL:-/api/canvas-agent}"
 
 if [[ -z "$bun_bin" ]]; then
@@ -17,6 +18,13 @@ if [[ ! -x "$bun_bin" && -x "$HOME/.bun/bin/bun" ]]; then
     bun_bin="$HOME/.bun/bin/bun"
 fi
 
+if [[ -z "$node_bin" ]]; then
+    for candidate in "$HOME"/.nvm/versions/node/*/bin/node; do
+        [[ -x "$candidate" ]] && node_bin="$candidate"
+    done
+    [[ -n "$node_bin" ]] || node_bin="$(command -v node || true)"
+fi
+
 if [[ ! "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
     echo "Invalid PORT: $port" >&2
     exit 1
@@ -24,6 +32,10 @@ fi
 
 if [[ ! -x "$bun_bin" ]]; then
     echo "Bun was not found. Set BUN_BIN to its absolute path." >&2
+    exit 1
+fi
+if [[ ! -x "$node_bin" ]]; then
+    echo "Node.js was not found. Set NODE_BIN to its absolute path." >&2
     exit 1
 fi
 
@@ -79,7 +91,8 @@ nohup bash -Eeuo pipefail -c '
     pid_file="$3"
     old_pid="$4"
     bun_bin="$5"
-    agent_url="$6"
+    node_bin="$6"
+    agent_url="$7"
     [[ -n "$agent_url" ]] && export VITE_CANVAS_AGENT_URL="$agent_url"
 
     cleanup_on_error() {
@@ -109,12 +122,13 @@ nohup bash -Eeuo pipefail -c '
     fi
 
     echo "[$(date "+%F %T")] Starting preview on 0.0.0.0:$port..."
-    exec "$bun_bin" "$web_dir/node_modules/vite/bin/vite.js" preview --host 0.0.0.0 --port "$port"
-' bash "$web_dir" "$port" "$pid_file" "$old_pid" "$bun_bin" "$agent_url" >> "$log_file" 2>&1 </dev/null &
+    exec "$node_bin" "$web_dir/node_modules/vite/bin/vite.js" preview --host 0.0.0.0 --port "$port"
+' bash "$web_dir" "$port" "$pid_file" "$old_pid" "$bun_bin" "$node_bin" "$agent_url" >> "$log_file" 2>&1 </dev/null &
 
 new_pid=$!
 echo "$new_pid" > "$pid_file"
 
 echo "Background build started with PID $new_pid."
 echo "Log: $log_file"
-echo "URL after a successful build: http://192.168.2.231:$port"
+public_host="${PUBLIC_HOST:-$(hostname -I | awk '{print \$1}')}"
+echo "URL after a successful build: http://${public_host}:$port"

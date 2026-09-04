@@ -3,6 +3,8 @@ import { persist, type PersistStorage, type StorageValue } from "zustand/middlew
 
 import { nanoid } from "nanoid";
 import { localForageStorage } from "@/lib/localforage-storage";
+import { workspaceStorageKey } from "@/lib/workspace";
+import { loadWorkspaceData, saveWorkspaceData } from "@/services/workspace-data";
 import { cleanupUnusedImages, resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { cleanupUnusedMedia, resolveMediaUrl } from "@/services/file-storage";
 
@@ -39,6 +41,12 @@ const ASSET_STORE_KEY = "infinite-canvas:asset_store";
 
 const assetStorage: PersistStorage<AssetStore> = {
     getItem: async (name) => {
+        try {
+            const remote = await loadWorkspaceData<StorageValue<AssetStore>>("assets");
+            if (remote) return remote;
+        } catch {
+            // Local data stays available when the server cannot be reached.
+        }
         const value = await localForageStorage.getItem(name);
         if (!value) return null;
         const parsed = JSON.parse(value) as StorageValue<AssetStore>;
@@ -59,7 +67,10 @@ const assetStorage: PersistStorage<AssetStore> = {
         );
         return parsed;
     },
-    setItem: (name, value) => localForageStorage.setItem(name, JSON.stringify(value)),
+    setItem: (name, value) => {
+        void localForageStorage.setItem(name, JSON.stringify(value));
+        void saveWorkspaceData("assets", value).catch(() => undefined);
+    },
     removeItem: (name) => localForageStorage.removeItem(name),
 };
 
@@ -94,7 +105,7 @@ export const useAssetStore = create<AssetStore>()(
             },
         }),
         {
-            name: ASSET_STORE_KEY,
+            name: workspaceStorageKey(ASSET_STORE_KEY),
             storage: assetStorage,
             partialize: (state) => ({ assets: state.assets }) as StorageValue<AssetStore>["state"],
             onRehydrateStorage: () => () => {
