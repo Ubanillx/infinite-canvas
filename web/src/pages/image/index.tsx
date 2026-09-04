@@ -203,12 +203,6 @@ export default function ImagePage() {
                     images: successImages,
                 }),
             );
-            setResults((current) =>
-                current.map((result) => {
-                    const stored = result.image && logImages.find((image) => image.id === result.image?.id);
-                    return stored ? { ...result, image: stored } : result;
-                }),
-            );
             successCount ? message.success(t("imageWorkbench.generated")) : message.error(failed?.reason instanceof Error ? failed.reason.message : t("workbench.generationFailed"));
         } finally {
             setRunning(false);

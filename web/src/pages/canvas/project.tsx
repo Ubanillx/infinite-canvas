@@ -3199,7 +3199,6 @@ function InfiniteCanvasPage() {
                             onRetryBatchImage={retryBatchImage}
                             onDeleteBatchImage={deleteBatchImage}
                             onRetry={handleNodeRetry}
-                            onGenerateImage={generateImageFromTextNode}
                             onViewImage={handleNodeViewImage}
                             onSelectReference={selectNodeReference}
                             onContextMenu={handleNodeContextMenu}
