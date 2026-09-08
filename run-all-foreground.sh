@@ -30,8 +30,15 @@ fi
 
 mkdir -p -m 700 "$runtime_dir"
 chmod 700 "$runtime_dir"
-: > "$agent_log"
-: > "$web_log"
+umask 077
+# Keep the previous five runs, including the error that caused a restart.
+for log in "$agent_log" "$web_log"; do
+    for index in 4 3 2 1; do
+        [[ ! -f "$log.$index" ]] || mv -f -- "$log.$index" "$log.$((index + 1))"
+    done
+    [[ ! -f "$log" ]] || mv -f -- "$log" "$log.1"
+    : > "$log"
+done
 chmod 600 "$agent_log" "$web_log"
 
 agent_pid=""

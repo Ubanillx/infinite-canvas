@@ -5,6 +5,8 @@ description: Implemented changes that still need manual verification
 
 # Pending Tests
 
+- AI proxy: verify compressed image responses and interrupted streams do not crash the service. Generate three canvas images with one failed request; successful images should remain and retrying one failed image should submit only one generation. Network failures should not be reported as confirmed CORS blocks. Restart the service and confirm previous logs remain in numbered files.
+
 - Custom video providers: add a provider using the Custom Video API protocol, configure a Base URL and write-only API key, manually add Seedance or Grok video models, and verify generation uses only `/api/ai/<channelId>/video/generations`. Reload in a fresh browser and confirm the provider still works while `/api/config` and browser storage contain no API key.
 
 ## Workspace And WebDAV Isolation

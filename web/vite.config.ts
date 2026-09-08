@@ -6,6 +6,7 @@ import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { forwardAiResponse, failAiResponse } from "./src/server/ai-response";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 
@@ -486,6 +487,12 @@ function aiProviderProxy(): Plugin {
         }
         if (!channelId || providerPath.includes("..") || providerPath.includes("\\") || !providerPath.startsWith("/")) return sendJson(res, 400, { error: "Invalid AI request" });
 
+        const requestId = randomUUID();
+        const started = Date.now();
+        const controller = new AbortController();
+        const onClose = () => { if (!res.writableEnded) controller.abort(); };
+        res.once("close", onClose);
+        res.setHeader("X-Request-ID", requestId);
         try {
             const stored = await readStoredServerConfig();
             const channel = findStoredChannel(stored, channelId);
@@ -505,21 +512,19 @@ function aiProviderProxy(): Plugin {
             if (typeof contentType === "string") headers.set("content-type", contentType);
             if (channel.apiFormat === "gemini") headers.set("x-goog-api-key", apiKey);
             else headers.set("authorization", `Bearer ${apiKey}`);
-            const upstream = await fetch(target, { method: req.method, headers, body, redirect: "error" });
+            const upstream = await fetch(target, { method: req.method, headers, body, redirect: "error", signal: controller.signal });
             res.statusCode = upstream.status;
             copyProxyHeaders(upstream.headers, res);
             if (!upstream.body) return res.end();
-            const reader = upstream.body.getReader();
-            for (;;) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                res.write(Buffer.from(value));
-            }
-            return res.end();
+            await forwardAiResponse(upstream, res);
+            return;
         } catch (error) {
             if (error instanceof RequestBodyError) return sendJson(res, error.status, { error: error.message });
-            console.error("AI provider proxy failed", error);
-            return sendJson(res, 502, { error: "AI provider request failed" });
+            const failure = error as { name?: string; code?: string; cause?: { code?: string } };
+            console.error("AI provider proxy failed", { requestId, elapsedMs: Date.now() - started, name: failure?.name, code: failure?.cause?.code || failure?.code, headersSent: res.headersSent });
+            return failAiResponse(res);
+        } finally {
+            res.off("close", onClose);
         }
     };
     return {
@@ -580,7 +585,7 @@ async function readRequestBuffer(req: IncomingMessage, limit: number, tooLargeMe
 }
 
 function copyProxyHeaders(source: Headers, target: ServerResponse) {
-    for (const name of ["content-type", "content-length", "cache-control", "etag", "last-modified", "retry-after"]) {
+    for (const name of ["content-type", "cache-control", "etag", "last-modified", "retry-after"]) {
         const value = source.get(name);
         if (value) target.setHeader(name, value);
     }
