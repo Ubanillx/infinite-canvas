@@ -348,8 +348,8 @@ function serverWebdavProxy(): Plugin {
 
         const isPropfind = req.method === "PROPFIND";
         const isWrite = Boolean(req.method && ["MKCOL", "PUT", "DELETE"].includes(req.method));
-        if (isWrite && req.headers["x-infinite-canvas-sync-mode"] !== "manual") {
-            return sendJson(res, 409, { error: "Automatic WebDAV writes are disabled; refresh the page and use manual sync" });
+        if (isWrite && !["automatic", "manual"].includes(String(req.headers["x-infinite-canvas-sync-mode"] || ""))) {
+            return sendJson(res, 409, { error: "WebDAV write mode is invalid" });
         }
         const headers: Record<string, string | string[] | undefined> = { ...req.headers, authorization };
         delete headers["x-infinite-canvas-workspace"];
@@ -653,7 +653,7 @@ function redactServerSecrets(value: unknown) {
             });
         }
     }
-    if (webdav) Object.assign(webdav, { url: "/api/webdav", username: "", password: "", directory: "", autoSyncEnabled: false });
+    if (webdav) Object.assign(webdav, { url: "/api/webdav", username: "", password: "", directory: "", autoSyncEnabled: true, autoSyncIntervalMinutes: 5 });
     return result;
 }
 
@@ -719,9 +719,8 @@ function mergeServerSecrets(incoming: unknown, stored: unknown) {
         }
     }
     if (nextWebdav) {
-        // WebDAV is server-managed and synchronization is manual. Enforce this
-        // server-side so an old client cannot re-enable background uploads.
-        nextWebdav.autoSyncEnabled = false;
+        nextWebdav.autoSyncEnabled = true;
+        nextWebdav.autoSyncIntervalMinutes = 5;
         nextWebdav.url = typeof previousWebdav?.url === "string" ? previousWebdav.url : nextWebdav.url;
         nextWebdav.username = typeof previousWebdav?.username === "string" ? previousWebdav.username : nextWebdav.username;
         nextWebdav.directory = typeof previousWebdav?.directory === "string" ? previousWebdav.directory : nextWebdav.directory;

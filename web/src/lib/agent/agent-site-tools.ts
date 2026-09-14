@@ -137,6 +137,7 @@ function listCanvasProjects(input: SiteToolInput) {
     const items = filtered.slice(start, end).map((project) => ({
         id: project.id,
         title: project.title,
+        folderId: project.folderId,
         createdAt: project.createdAt,
         updatedAt: project.updatedAt,
         nodeCount: project.nodes.length,

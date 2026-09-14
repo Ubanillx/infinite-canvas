@@ -7,6 +7,7 @@ import { applyServerConfig } from "@/services/config-file";
 import { loadServerConfig } from "@/services/server-config";
 import { createModelChannel, useConfigStore } from "@/stores/use-config-store";
 import { usePromptSourceScheduler } from "@/hooks/use-prompt-source-scheduler";
+import { useWebdavAutoSync } from "@/hooks/use-webdav-auto-sync";
 
 export function ClientRootInit({ children }: { children: ReactNode }) {
     const { t } = useTranslation();
@@ -39,6 +40,7 @@ function ReadyClientRoot({ children }: { children: ReactNode }) {
     const [conflict, setConflict] = useState<string>("");
 
     usePromptSourceScheduler();
+    useWebdavAutoSync();
 
     useEffect(() => {
         const onConflict = (event: Event) => {

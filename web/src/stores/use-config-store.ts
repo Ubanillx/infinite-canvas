@@ -122,8 +122,7 @@ export const defaultWebdavSyncConfig: WebdavSyncConfig = {
     directory: "",
     lastSyncedAt: "",
     lastConfigSyncedAt: "",
-    // Configuration and WebDAV synchronization are intentionally manual.
-    autoSyncEnabled: false,
+    autoSyncEnabled: true,
     autoSyncIntervalMinutes: 5,
 };
 

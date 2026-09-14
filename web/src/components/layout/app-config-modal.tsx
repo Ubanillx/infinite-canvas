@@ -1,6 +1,6 @@
 import { App, Alert, Button, Form, Input, Modal, Progress, Select, Tabs } from "antd";
 import type { TFunction } from "i18next";
-import { Cloud, Download, Pencil, Plus, RefreshCw, Trash2, Upload, Wifi } from "lucide-react";
+import { Cloud, CloudDownload, CloudUpload, Download, Pencil, Plus, Trash2, Upload, Wifi } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -11,8 +11,8 @@ import { ConfigLocalStorage } from "@/components/layout/config-local-storage";
 import type { AppLocale } from "@/i18n";
 import { createAppConfigSnapshot, exportAppConfig, importAppConfig } from "@/services/config-file";
 import { saveServerConfig } from "@/services/server-config";
-import { importWorkspaceSnapshot, listWorkspaceSnapshots, type AppSyncDomainKey, type AppSyncProgressEvent, type WebdavSnapshot } from "@/services/app-sync";
-import { syncAllDataToWebdav } from "@/services/webdav-auto-sync";
+import { listWorkspaceAssetSnapshots, type AppSyncDomainKey, type AppSyncProgressEvent, type WebdavSnapshot } from "@/services/app-sync";
+import { pullAssetsFromWebdav, syncAssetsToWebdav } from "@/services/webdav-auto-sync";
 import { testWebdavConnection } from "@/services/webdav-sync";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
 import { createModelChannel, modelOptionsFromChannels, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore, type AiConfig, type ApiCallFormat, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
@@ -37,7 +37,7 @@ const modelGroups: ModelGroup[] = [
     { capability: "audio", modelKey: "audioModel", labelKey: "config.preferences.defaultAudioModel" },
 ];
 
-const webdavDomainKeys: AppSyncDomainKey[] = ["canvas", "assets", "image-workbench", "video-workbench"];
+const webdavDomainKeys: AppSyncDomainKey[] = ["assets"];
 function createWebdavDomainProgress(): Record<AppSyncDomainKey, WebdavDomainProgress> {
     return webdavDomainKeys.reduce(
         (progress, key) => ({
@@ -170,8 +170,8 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
         setWebdavDomainProgress(createWebdavDomainProgress());
         setWebdavSyncStatus(t("config.webdav.preparing"));
         try {
-            const result = await syncAllDataToWebdav(webdav, "manual", updateWebdavProgress);
-            message.success(t("config.webdav.completed", { projects: result.projects, assets: result.assets, records: result.imageLogs + result.videoLogs, files: result.uploadedFiles, bytes: formatBytes(result.uploadedBytes) }));
+            const result = await syncAssetsToWebdav(webdav, "manual", updateWebdavProgress);
+            message.success(t("config.webdav.completed", { assets: result.assets, files: result.uploadedFiles, bytes: formatBytes(result.uploadedBytes) }));
         } catch (error) {
             setWebdavSyncStatus(error instanceof Error ? error.message : t("config.webdav.failed"));
             message.error(error instanceof Error ? error.message : t("config.webdav.failed"));
@@ -187,9 +187,9 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
         }
         setLoadingSnapshots(true);
         try {
-            setWebdavSnapshots(await listWorkspaceSnapshots(webdav));
+            setWebdavSnapshots(await listWorkspaceAssetSnapshots(webdav));
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "读取工作区快照失败");
+            message.error(error instanceof Error ? error.message : t("config.webdav.snapshotLoadFailed"));
         } finally {
             setLoadingSnapshots(false);
         }
@@ -197,16 +197,16 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
 
     const importSnapshot = async () => {
         if (!selectedSnapshot) {
-            message.warning("请先选择一个快照");
+            message.warning(t("config.webdav.selectSnapshotFirst"));
             return;
         }
         setImportingSnapshot(true);
-        setWebdavSyncStatus("正在导入快照");
+        setWebdavSyncStatus(t("config.webdav.importing"));
         try {
-            const result = await importWorkspaceSnapshot(webdav, selectedSnapshot, updateWebdavProgress);
-            message.success(`快照已导入：${result.projects} 个画布、${result.assets} 个素材`);
+            const result = await pullAssetsFromWebdav(webdav, selectedSnapshot, updateWebdavProgress);
+            message.success(t("config.webdav.imported", { assets: result.assets }));
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "导入工作区快照失败");
+            message.error(error instanceof Error ? error.message : t("config.webdav.importFailed"));
         } finally {
             setImportingSnapshot(false);
         }
@@ -346,12 +346,12 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                         <Button icon={<Wifi className="size-4" />} disabled={!webdavReady || syncingWebdav} loading={testingWebdav} onClick={() => void testWebdav()}>
                                             {t("config.webdav.test")}
                                         </Button>
-                                        <Button type="primary" icon={<RefreshCw className="size-4" />} disabled={!webdavReady || testingWebdav} loading={syncingWebdav} onClick={() => void syncWebdav()}>
+                                        <Button type="primary" icon={<CloudUpload className="size-4" />} disabled={!webdavReady || testingWebdav} loading={syncingWebdav} onClick={() => void syncWebdav()}>
                                             {t(syncingWebdav ? "config.webdav.syncing" : "config.webdav.syncNow")}
                                         </Button>
-                                        <Button icon={<Download className="size-4" />} disabled={!webdavReady || loadingSnapshots || importingSnapshot} loading={loadingSnapshots} onClick={() => void loadSnapshots()}>读取快照</Button>
-                                        <Select className="min-w-52" disabled={!webdavSnapshots.length || importingSnapshot} value={selectedSnapshot || undefined} placeholder="选择要导入的快照" options={webdavSnapshots.map((snapshot) => ({ value: snapshot.id, label: formatWebdavTime(snapshot.createdAt, locale) }))} onChange={setSelectedSnapshot} />
-                                        <Button icon={<Upload className="size-4" />} disabled={!selectedSnapshot || !webdavReady || loadingSnapshots} loading={importingSnapshot} onClick={() => void importSnapshot()}>导入快照</Button>
+                                        <Button icon={<CloudDownload className="size-4" />} disabled={!webdavReady || loadingSnapshots || importingSnapshot} loading={loadingSnapshots} onClick={() => void loadSnapshots()}>{t("config.webdav.readRemoteAssets")}</Button>
+                                        <Select className="min-w-52" disabled={!webdavSnapshots.length || importingSnapshot} value={selectedSnapshot || undefined} placeholder={t("config.webdav.selectAssetSnapshot")} options={webdavSnapshots.map((snapshot) => ({ value: snapshot.id, label: formatWebdavTime(snapshot.createdAt, locale) }))} onChange={setSelectedSnapshot} />
+                                        <Button icon={<Download className="size-4" />} disabled={!selectedSnapshot || !webdavReady || loadingSnapshots} loading={importingSnapshot} onClick={() => void importSnapshot()}>{t("config.webdav.importAssets")}</Button>
                                         {webdavSyncStatus ? <span className="text-xs text-stone-500">{syncStageLabel(webdavSyncStatus, t)}</span> : null}
                                     </div>
                                     {syncingWebdav || webdavSyncStatus ? <WebdavProgressGrid progress={webdavDomainProgress} t={t} /> : null}
@@ -466,8 +466,6 @@ function WebdavProgressGrid({ progress, t }: { progress: Record<AppSyncDomainKey
 }
 
 function domainTranslationKey(domain: AppSyncDomainKey) {
-    if (domain === "image-workbench") return "imageWorkbench";
-    if (domain === "video-workbench") return "videoWorkbench";
     return domain;
 }
 
@@ -477,6 +475,12 @@ function syncStageLabel(stage: string, t: TFunction) {
     if (stage === "等待同步") return t("config.webdav.stages.waiting");
     if (stage === "读取远端清单") return t("config.webdav.stages.remoteManifest");
     if (stage === "读取本地数据") return t("config.webdav.stages.localData");
+    if (stage === "读取远端快照") return t("config.webdav.stages.remoteSnapshot");
+    if (stage === "写入导入数据") return t("config.webdav.stages.writeImport");
+    if (stage === "下载导入媒体") return t("config.webdav.stages.importMedia");
+    if (stage === "完成快照") return t("config.webdav.stages.completingSnapshot");
+    if (stage === "资产快照已上传") return t("config.webdav.stages.assetSnapshotUploaded");
+    if (stage === "资产导入完成") return t("config.webdav.stages.assetImportComplete");
     if (stage === "下载缺失媒体") return t("config.webdav.stages.downloadMedia");
     if (stage === "写入本地合并结果") return t("config.webdav.stages.writeMerge");
     if (stage === "上传新增媒体") return t("config.webdav.stages.uploadMedia");
@@ -487,7 +491,7 @@ function syncStageLabel(stage: string, t: TFunction) {
     if (stage === "检查本地媒体") return t("config.webdav.stages.checkLocalMedia");
     if (stage.startsWith("上传媒体 ")) return t("config.webdav.stages.uploadMediaFile", { size: stage.slice(5) });
     if (stage === "完成") return t("config.webdav.stages.complete");
-    if (stage.startsWith("上传清单 ")) return t("config.webdav.stages.uploadManifest", { size: stage.slice(5) });
+    if (stage.startsWith("上传快照清单 ")) return t("config.webdav.stages.uploadManifest", { size: stage.slice(7) });
     return stage;
 }
 

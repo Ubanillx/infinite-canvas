@@ -1,4 +1,5 @@
 import { Check, Download, Pencil, Trash2, X } from "lucide-react";
+import type { DragEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Button, Input } from "antd";
 import { useTranslation } from "react-i18next";
@@ -8,7 +9,7 @@ import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { hasAgentUrlBootstrap } from "@/lib/agent/agent-url-bootstrap";
 
-export function CanvasProjectCard({ project }: { project: CanvasProject }) {
+export function CanvasProjectCard({ project, onDragStart, onDragEnd }: { project: CanvasProject; onDragStart?: (event: DragEvent<HTMLElement>, project: CanvasProject) => void; onDragEnd?: () => void }) {
     const { i18n, t } = useTranslation();
     const navigate = useNavigate();
     const [searchParams] = useSearchParams();
@@ -33,7 +34,19 @@ export function CanvasProjectCard({ project }: { project: CanvasProject }) {
     };
 
     return (
-        <article className="group flex min-h-44 cursor-pointer flex-col justify-between rounded-2xl bg-[#f1eee8] p-5 transition hover:bg-[#ebe6dc] dark:bg-white/5 dark:hover:bg-white/10" onClick={() => !editing && open()}>
+        <article
+            className="group flex min-h-44 cursor-grab flex-col justify-between rounded-2xl bg-[#f1eee8] p-5 transition hover:bg-[#ebe6dc] active:cursor-grabbing dark:bg-white/5 dark:hover:bg-white/10"
+            draggable={!editing}
+            onDragStart={(event) => {
+                if ((event.target as HTMLElement).closest("button,input")) {
+                    event.preventDefault();
+                    return;
+                }
+                onDragStart?.(event, project);
+            }}
+            onDragEnd={onDragEnd}
+            onClick={() => !editing && open()}
+        >
             <div className="flex items-start gap-3">
                 <input
                     type="checkbox"
