@@ -6,7 +6,8 @@
 - [功能介绍](/zh-CN/docs/overview/features)
 - [Render 部署](/zh-CN/docs/overview/render)
 - [Docker 部署](/zh-CN/docs/overview/docker)
-- [第三方 GitHub 提示词仓库](/zh-CN/docs/overview/third-party-prompt-repositories)
+- [Jenkins 自动部署](/zh-CN/docs/overview/jenkins)
+- [第三方提示词来源](/zh-CN/docs/overview/third-party-prompt-repositories)
 
 ## 操作手册
 
@@ -36,8 +37,8 @@
 
 ## 说明
 
-- 当前画布项目和“我的素材”主要保存在浏览器本地，跨设备可自行配置 WebDAV 同步。
-- AI API Key 保存在浏览器本地，并由前端直接请求 OpenAI 兼容接口。
+- 画布、素材和记录按工作区在服务器保存并保留浏览器缓存，WebDAV 仅手动上传和选择导入快照。
+- AI API Key 由服务器托管，浏览器使用认证同源代理；配置导出与工作区快照不包含服务器密钥。
 
 ## 原理说明
 

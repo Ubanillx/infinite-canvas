@@ -1,18 +1,25 @@
 services:
   app:
-    image: ghcr.io/basketikun/infinite-canvas:latest
-    container_name: infinite-canvas
+    image: ${APP_IMAGE:-infinite-canvas:local}
+    init: true
     ports:
-      - "3000:3000"
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-3000}:3000"
+    environment:
+      PORT: "3000"
+      INFINITE_CANVAS_DATA_DIR: /data
+      INFINITE_CANVAS_ALLOWED_NETWORKS: ${INFINITE_CANVAS_ALLOWED_NETWORKS:-127.0.0.1,::1,192.168.0.0/22,172.16.0.0/12}
+      INFINITE_CANVAS_ALLOWED_HOSTS: ${INFINITE_CANVAS_ALLOWED_HOSTS:-localhost,ubuntu-server}
+      ANALYTICS_GA4_ID: ${ANALYTICS_GA4_ID:-}
+      ANALYTICS_BAIDU_ID: ${ANALYTICS_BAIDU_ID:-}
     volumes:
       - infinite-canvas-data:/data
-      - infinite-canvas-agent:/root/.infinite-canvas
+      - infinite-canvas-agent:/home/node/.infinite-canvas
+      - infinite-canvas-codex:/home/node/.codex
     restart: unless-stopped
-    # 统计分析（可选，默认关闭）。每家一个独立变量，填了谁就启用谁，可同时启用多家：
-    # environment:
-    #   ANALYTICS_GA4_ID: G-XXXXXXXXXX                    # Google Analytics 4 衡量 ID
-    #   ANALYTICS_BAIDU_ID: xxxxxxxxxxxxxxxxxxxxxxxxxxxx   # 百度统计站点 ID
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   infinite-canvas-data:
   infinite-canvas-agent:
+  infinite-canvas-codex:

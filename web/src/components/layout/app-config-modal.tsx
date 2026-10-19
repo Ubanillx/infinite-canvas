@@ -1,20 +1,23 @@
-import { App, Alert, Button, Form, Input, Modal, Progress, Select, Tabs } from "antd";
+import { App, Alert, Button, Form, Input, Modal, Progress, Radio, Select, Switch, Tabs } from "antd";
 import type { TFunction } from "i18next";
-import { Cloud, CloudDownload, CloudUpload, Download, Pencil, Plus, Trash2, Upload, Wifi } from "lucide-react";
+import { Cloud, Download, Pencil, Plus, RefreshCw, Trash2, Upload, Wifi } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { ModelPicker } from "@/components/model-picker";
+import { videoResolutionOptions } from "@/components/video-settings-panel";
 import { ChannelEditorDrawer } from "@/components/layout/channel-editor-drawer";
+import { ConfigLocalProxy } from "@/components/layout/config-local-proxy";
 import { ConfigPromptSources } from "@/components/layout/config-prompt-sources";
 import { ConfigLocalStorage } from "@/components/layout/config-local-storage";
 import type { AppLocale } from "@/i18n";
 import { createAppConfigSnapshot, exportAppConfig, importAppConfig } from "@/services/config-file";
 import { saveServerConfig } from "@/services/server-config";
-import { listWorkspaceAssetSnapshots, type AppSyncDomainKey, type AppSyncProgressEvent, type WebdavSnapshot } from "@/services/app-sync";
-import { pullAssetsFromWebdav, syncAssetsToWebdav } from "@/services/webdav-auto-sync";
+import { importWorkspaceSnapshot, listWorkspaceSnapshots, type AppSyncDomainKey, type AppSyncProgressEvent, type WebdavSnapshot } from "@/services/app-sync";
+import { syncAllDataToWebdav } from "@/services/webdav-auto-sync";
 import { testWebdavConnection } from "@/services/webdav-sync";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
+import { computeMediaSize, inferMediaRatio, inferMediaScale, mediaScaleOptions, parseVideoResolution } from "@/lib/media-size";
 import { createModelChannel, modelOptionsFromChannels, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore, type AiConfig, type ApiCallFormat, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
 
 type ModelGroup = {
@@ -37,7 +40,7 @@ const modelGroups: ModelGroup[] = [
     { capability: "audio", modelKey: "audioModel", labelKey: "config.preferences.defaultAudioModel" },
 ];
 
-const webdavDomainKeys: AppSyncDomainKey[] = ["assets"];
+const webdavDomainKeys: AppSyncDomainKey[] = ["canvas", "assets", "image-workbench", "video-workbench"];
 function createWebdavDomainProgress(): Record<AppSyncDomainKey, WebdavDomainProgress> {
     return webdavDomainKeys.reduce(
         (progress, key) => ({
@@ -73,6 +76,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     const webdavReady = webdav.url.trim() === "/api/webdav";
     const editingChannel = config.channels.find((channel) => channel.id === editingChannelId) || null;
     const locale = i18n.resolvedLanguage as AppLocale;
+    const imageResolutionOptions = mediaScaleOptions.map((value) => ({ value, label: value === "auto" ? t("settingsPanels.common.auto") : value.toUpperCase() }));
     useEffect(() => setActiveTab(initialTab), [initialTab]);
 
     const saveConfig = (nextConfig: AiConfig) => {
@@ -170,8 +174,8 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
         setWebdavDomainProgress(createWebdavDomainProgress());
         setWebdavSyncStatus(t("config.webdav.preparing"));
         try {
-            const result = await syncAssetsToWebdav(webdav, "manual", updateWebdavProgress);
-            message.success(t("config.webdav.completed", { assets: result.assets, files: result.uploadedFiles, bytes: formatBytes(result.uploadedBytes) }));
+            const result = await syncAllDataToWebdav(webdav, "manual", updateWebdavProgress);
+            message.success(t("config.webdav.completed", { projects: result.projects, assets: result.assets, records: result.imageLogs + result.videoLogs, files: result.uploadedFiles, bytes: formatBytes(result.uploadedBytes) }));
         } catch (error) {
             setWebdavSyncStatus(error instanceof Error ? error.message : t("config.webdav.failed"));
             message.error(error instanceof Error ? error.message : t("config.webdav.failed"));
@@ -187,9 +191,9 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
         }
         setLoadingSnapshots(true);
         try {
-            setWebdavSnapshots(await listWorkspaceAssetSnapshots(webdav));
+            setWebdavSnapshots(await listWorkspaceSnapshots(webdav));
         } catch (error) {
-            message.error(error instanceof Error ? error.message : t("config.webdav.snapshotLoadFailed"));
+            message.error(error instanceof Error ? error.message : "读取工作区快照失败");
         } finally {
             setLoadingSnapshots(false);
         }
@@ -197,16 +201,16 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
 
     const importSnapshot = async () => {
         if (!selectedSnapshot) {
-            message.warning(t("config.webdav.selectSnapshotFirst"));
+            message.warning("请先选择一个快照");
             return;
         }
         setImportingSnapshot(true);
-        setWebdavSyncStatus(t("config.webdav.importing"));
+        setWebdavSyncStatus("正在导入快照");
         try {
-            const result = await pullAssetsFromWebdav(webdav, selectedSnapshot, updateWebdavProgress);
-            message.success(t("config.webdav.imported", { assets: result.assets }));
+            const result = await importWorkspaceSnapshot(webdav, selectedSnapshot, updateWebdavProgress);
+            message.success(`快照已导入：${result.projects} 个画布、${result.assets} 个素材`);
         } catch (error) {
-            message.error(error instanceof Error ? error.message : t("config.webdav.importFailed"));
+            message.error(error instanceof Error ? error.message : "导入工作区快照失败");
         } finally {
             setImportingSnapshot(false);
         }
@@ -250,7 +254,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                             <div className="min-w-0">
                                                 <div className="truncate text-sm font-semibold">{channel.name || t("config.channels.unnamed")}</div>
                                                 <div className="mt-1 truncate text-xs text-stone-500">
-                                                    {apiFormatLabel(channel.apiFormat, t)} · {t("config.channels.modelCount", { count: channel.models.length })} · {channel.baseUrl || t("config.channels.missingUrl")}
+                                                    {apiFormatLabel(channel.apiFormat)} · {t("config.channels.modelCount", { count: channel.models.length })} · {channel.baseUrl || t("config.channels.missingUrl")}
                                                 </div>
                                             </div>
                                             <div className="flex shrink-0 gap-2">
@@ -264,6 +268,11 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                 </div>
                             </div>
                         ),
+                    },
+                    {
+                        key: "local-proxy",
+                        label: t("config.tabs.localProxy"),
+                        children: <ConfigLocalProxy />,
                     },
                     {
                         key: "preferences",
@@ -290,6 +299,12 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                             onBlur={(event) => updateConfig("canvasImageCount", normalizeImageCount(event.target.value))}
                                         />
                                     </Form.Item>
+                                    <Form.Item label={t("config.preferences.imageResolution")} className="mb-4">
+                                        <Select value={inferMediaScale(config.size)} options={imageResolutionOptions} onChange={(scale) => updateConfig("size", computeMediaSize(scale, inferMediaRatio(config.size)))} />
+                                    </Form.Item>
+                                    <Form.Item label={t("config.preferences.videoResolution")} className="mb-4">
+                                        <Select value={parseVideoResolution(config.vquality)} options={videoResolutionOptions} onChange={(value) => updateConfig("vquality", value)} />
+                                    </Form.Item>
                                     <Form.Item label={t("config.preferences.audioVoice")} className="mb-4">
                                         <Select value={config.audioVoice} options={audioVoiceOptions} onChange={(value) => updateConfig("audioVoice", value)} />
                                     </Form.Item>
@@ -308,6 +323,24 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                         />
                                     </Form.Item>
                                 </div>
+                                <Form.Item label={t("config.preferences.regenerateBehavior")} className="mb-4">
+                                    <Radio.Group value={config.nodeRegenerateBehavior} onChange={(event) => updateConfig("nodeRegenerateBehavior", event.target.value)} className="flex flex-col gap-2">
+                                        <Radio value="overwrite">
+                                            <span className="block text-sm font-medium">{t("config.preferences.regenerateBehaviorOverwrite")}</span>
+                                            <span className="mt-0.5 block text-xs opacity-60">{t("config.preferences.regenerateBehaviorOverwriteDescription")}</span>
+                                        </Radio>
+                                        <Radio value="new-node">
+                                            <span className="block text-sm font-medium">{t("config.preferences.regenerateBehaviorNewNode")}</span>
+                                            <span className="mt-0.5 block text-xs opacity-60">{t("config.preferences.regenerateBehaviorNewNodeDescription")}</span>
+                                        </Radio>
+                                    </Radio.Group>
+                                </Form.Item>
+                                <Form.Item className="mb-4">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <span className="text-sm">{t("config.preferences.autoFocusOnSelect")}</span>
+                                        <Switch checked={config.autoFocusOnSelect} onChange={(checked) => updateConfig("autoFocusOnSelect", checked)} />
+                                    </div>
+                                </Form.Item>
                                 <Form.Item label={t("config.preferences.audioInstructions")} className="mb-4">
                                     <Input.TextArea rows={2} value={config.audioInstructions} placeholder={t("config.preferences.audioInstructionsPlaceholder")} onChange={(event) => updateConfig("audioInstructions", event.target.value)} />
                                 </Form.Item>
@@ -346,12 +379,12 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                         <Button icon={<Wifi className="size-4" />} disabled={!webdavReady || syncingWebdav} loading={testingWebdav} onClick={() => void testWebdav()}>
                                             {t("config.webdav.test")}
                                         </Button>
-                                        <Button type="primary" icon={<CloudUpload className="size-4" />} disabled={!webdavReady || testingWebdav} loading={syncingWebdav} onClick={() => void syncWebdav()}>
+                                        <Button type="primary" icon={<RefreshCw className="size-4" />} disabled={!webdavReady || testingWebdav} loading={syncingWebdav} onClick={() => void syncWebdav()}>
                                             {t(syncingWebdav ? "config.webdav.syncing" : "config.webdav.syncNow")}
                                         </Button>
-                                        <Button icon={<CloudDownload className="size-4" />} disabled={!webdavReady || loadingSnapshots || importingSnapshot} loading={loadingSnapshots} onClick={() => void loadSnapshots()}>{t("config.webdav.readRemoteAssets")}</Button>
-                                        <Select className="min-w-52" disabled={!webdavSnapshots.length || importingSnapshot} value={selectedSnapshot || undefined} placeholder={t("config.webdav.selectAssetSnapshot")} options={webdavSnapshots.map((snapshot) => ({ value: snapshot.id, label: formatWebdavTime(snapshot.createdAt, locale) }))} onChange={setSelectedSnapshot} />
-                                        <Button icon={<Download className="size-4" />} disabled={!selectedSnapshot || !webdavReady || loadingSnapshots} loading={importingSnapshot} onClick={() => void importSnapshot()}>{t("config.webdav.importAssets")}</Button>
+                                        <Button icon={<Download className="size-4" />} disabled={!webdavReady || loadingSnapshots || importingSnapshot} loading={loadingSnapshots} onClick={() => void loadSnapshots()}>读取快照</Button>
+                                        <Select className="min-w-52" disabled={!webdavSnapshots.length || importingSnapshot} value={selectedSnapshot || undefined} placeholder="选择要导入的快照" options={webdavSnapshots.map((snapshot) => ({ value: snapshot.id, label: formatWebdavTime(snapshot.createdAt, locale) }))} onChange={setSelectedSnapshot} />
+                                        <Button icon={<Upload className="size-4" />} disabled={!selectedSnapshot || !webdavReady || loadingSnapshots} loading={importingSnapshot} onClick={() => void importSnapshot()}>导入快照</Button>
                                         {webdavSyncStatus ? <span className="text-xs text-stone-500">{syncStageLabel(webdavSyncStatus, t)}</span> : null}
                                     </div>
                                     {syncingWebdav || webdavSyncStatus ? <WebdavProgressGrid progress={webdavDomainProgress} t={t} /> : null}
@@ -431,7 +464,7 @@ function normalizeImageCount(value: string) {
     return String(Math.max(1, Math.min(15, Math.floor(Math.abs(Number(value)) || 3))));
 }
 
-function apiFormatLabel(apiFormat: ApiCallFormat, t: TFunction) {
+function apiFormatLabel(apiFormat: ApiCallFormat) {
     if (apiFormat === "gemini") return "Gemini";
     if (apiFormat === "ark") return t("config.protocols.ark");
     if (apiFormat === "custom") return t("config.protocols.customVideo");
@@ -466,6 +499,8 @@ function WebdavProgressGrid({ progress, t }: { progress: Record<AppSyncDomainKey
 }
 
 function domainTranslationKey(domain: AppSyncDomainKey) {
+    if (domain === "image-workbench") return "imageWorkbench";
+    if (domain === "video-workbench") return "videoWorkbench";
     return domain;
 }
 
@@ -475,12 +510,6 @@ function syncStageLabel(stage: string, t: TFunction) {
     if (stage === "等待同步") return t("config.webdav.stages.waiting");
     if (stage === "读取远端清单") return t("config.webdav.stages.remoteManifest");
     if (stage === "读取本地数据") return t("config.webdav.stages.localData");
-    if (stage === "读取远端快照") return t("config.webdav.stages.remoteSnapshot");
-    if (stage === "写入导入数据") return t("config.webdav.stages.writeImport");
-    if (stage === "下载导入媒体") return t("config.webdav.stages.importMedia");
-    if (stage === "完成快照") return t("config.webdav.stages.completingSnapshot");
-    if (stage === "资产快照已上传") return t("config.webdav.stages.assetSnapshotUploaded");
-    if (stage === "资产导入完成") return t("config.webdav.stages.assetImportComplete");
     if (stage === "下载缺失媒体") return t("config.webdav.stages.downloadMedia");
     if (stage === "写入本地合并结果") return t("config.webdav.stages.writeMerge");
     if (stage === "上传新增媒体") return t("config.webdav.stages.uploadMedia");
@@ -491,7 +520,7 @@ function syncStageLabel(stage: string, t: TFunction) {
     if (stage === "检查本地媒体") return t("config.webdav.stages.checkLocalMedia");
     if (stage.startsWith("上传媒体 ")) return t("config.webdav.stages.uploadMediaFile", { size: stage.slice(5) });
     if (stage === "完成") return t("config.webdav.stages.complete");
-    if (stage.startsWith("上传快照清单 ")) return t("config.webdav.stages.uploadManifest", { size: stage.slice(7) });
+    if (stage.startsWith("上传清单 ")) return t("config.webdav.stages.uploadManifest", { size: stage.slice(5) });
     return stage;
 }
 

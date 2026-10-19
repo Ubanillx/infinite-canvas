@@ -9,6 +9,7 @@ data-test/
 *.tsbuildinfo
 .DS_Store
 .idea
+.ci/
 web/dist
 
 **/dist

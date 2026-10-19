@@ -197,7 +197,7 @@ type UploadedImage = {
 ```ts
 {
   content: image.url,
-  storageKey: image.storageKey,
+  ...(image.storageKey ? { storageKey: image.storageKey } : {}),
   status: "success",
   naturalWidth: image.width,
   naturalHeight: image.height,
@@ -206,7 +206,7 @@ type UploadedImage = {
 }
 ```
 
-因此，`content` 只适合当前浏览器会话展示，不能作为长期文件标识；长期标识是 `storageKey`。
+因此，已保存图片的 `content` 只适合当前浏览器会话展示，长期标识是 `storageKey`。如果跨域限制导致图片无法读取，节点会保留可能过期的远程 `content`，并且没有 `storageKey`，不能视为已经完成本地持久化。
 
 ## 图片读取和旧数据迁移
 

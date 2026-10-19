@@ -1,4 +1,4 @@
-import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type ConnectionHandle } from "@/types/canvas";
+import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type ConnectionHandle, type ViewportTransform } from "@/types/canvas";
 
 export function nodeBounds(nodes: CanvasNodeData[]) {
     return nodes.reduce(
@@ -12,20 +12,23 @@ export function nodeBounds(nodes: CanvasNodeData[]) {
     );
 }
 
+function containsCenter(group: CanvasNodeData, node: CanvasNodeData) {
+    const centerX = node.position.x + node.width / 2;
+    const centerY = node.position.y + node.height / 2;
+    return centerX >= group.position.x && centerX <= group.position.x + group.width && centerY >= group.position.y && centerY <= group.position.y + group.height;
+}
+
 export function findGroupDropTarget(movedIds: Set<string>, nodes: CanvasNodeData[]) {
     if (nodes.some((node) => movedIds.has(node.id) && node.type === CanvasNodeType.Group)) return null;
     const movingNodes = nodes.filter((node) => movedIds.has(node.id) && node.type !== CanvasNodeType.Group);
     if (!movingNodes.length) return null;
-    return (
-        [...nodes].reverse().find((group) => {
-            if (group.type !== CanvasNodeType.Group || movedIds.has(group.id)) return false;
-            return movingNodes.some((node) => {
-                const centerX = node.position.x + node.width / 2;
-                const centerY = node.position.y + node.height / 2;
-                return centerX >= group.position.x && centerX <= group.position.x + group.width && centerY >= group.position.y && centerY <= group.position.y + group.height;
-            });
-        }) || null
-    );
+    // Walk backwards instead of copying and reversing; this runs on every drag frame.
+    for (let index = nodes.length - 1; index >= 0; index -= 1) {
+        const group = nodes[index];
+        if (group.type !== CanvasNodeType.Group || movedIds.has(group.id)) continue;
+        if (movingNodes.some((node) => containsCenter(group, node))) return group;
+    }
+    return null;
 }
 
 export function snapNodesIntoGroup(movedIds: Set<string>, nodes: CanvasNodeData[], group: CanvasNodeData) {
@@ -120,14 +123,12 @@ export function applyUngroupSelection(selectedIds: Set<string>, nodes: CanvasNod
 }
 
 export function findContainingGroupId(node: CanvasNodeData, nodes: CanvasNodeData[]) {
-    const centerX = node.position.x + node.width / 2;
-    const centerY = node.position.y + node.height / 2;
-    return (
-        [...nodes]
-            .reverse()
-            .find((group) => group.type === CanvasNodeType.Group && group.id !== node.id && centerX >= group.position.x && centerX <= group.position.x + group.width && centerY >= group.position.y && centerY <= group.position.y + group.height)?.id ||
-        undefined
-    );
+    // Called once per moved node when a drag ends, so avoid copying the node list each time.
+    for (let index = nodes.length - 1; index >= 0; index -= 1) {
+        const group = nodes[index];
+        if (group.type === CanvasNodeType.Group && group.id !== node.id && containsCenter(group, node)) return group.id;
+    }
+    return undefined;
 }
 
 export function getConnectionTargetAnchor(node: CanvasNodeData, current: ConnectionHandle) {
@@ -147,4 +148,29 @@ export function normalizeConnection(firstNodeId: string, secondNodeId: string, n
     if (first.type === CanvasNodeType.Config && firstHandleType === "target") return { fromNodeId: second.id, toNodeId: first.id };
     if (first.type === CanvasNodeType.Config) return { fromNodeId: first.id, toNodeId: second.id };
     return { fromNodeId: first.id, toNodeId: second.id };
+}
+
+export type FocusFrame = {
+    // Screen-space room taken above/below the node by open overlays (hover toolbar, prompt panel), gaps included.
+    above?: number;
+    below?: number;
+    // Fixed chrome covering the bottom edge of the canvas (dock), excluded from the usable area.
+    bottomInset?: number;
+};
+
+// Viewport that centers the node (plus any open overlay above/below) in the usable canvas area, zoomed so the
+// whole thing fits (the node itself is kept within 60% of the viewport). When an overlay is open below the node,
+// the remaining space is split 3:1 so the panel sits closer to the bottom dock (half the usual bottom gap).
+export function focusViewportForNode(node: Pick<CanvasNodeData, "position" | "width" | "height">, size: { width: number; height: number }, frame: FocusFrame = {}): ViewportTransform {
+    const above = frame.above ?? 0;
+    const below = frame.below ?? 0;
+    const usableBottom = Math.max(0, size.height - (frame.bottomInset ?? 0));
+    const nodeCenterX = node.position.x + node.width / 2;
+    const nodeCenterY = node.position.y + node.height / 2;
+    const verticalRoom = usableBottom * 0.92 - above - below;
+    const k = Math.min(Math.max(Math.min((size.width * 0.6) / node.width, (size.height * 0.6) / node.height, verticalRoom / node.height), 0.05), 1);
+    const groupHeight = above + node.height * k + below;
+    const slack = usableBottom - groupHeight;
+    const groupTop = slack * (below > 0 && slack > 0 ? 0.75 : 0.5);
+    return { x: size.width / 2 - nodeCenterX * k, y: groupTop + groupHeight / 2 - nodeCenterY * k - (below - above) / 2, k };
 }

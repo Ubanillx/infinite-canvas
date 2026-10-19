@@ -32,10 +32,16 @@ export type CanvasFolder = {
     updatedAt: string;
 };
 
+export type CanvasDeletedProject = {
+    id: string;
+    deletedAt: string;
+};
+
 type CanvasStore = {
     hydrated: boolean;
     projects: CanvasProject[];
     folders: CanvasFolder[];
+    deletedProjects: CanvasDeletedProject[];
     createProject: (title?: string, folderId?: string | null) => string;
     importProject: (project: Partial<CanvasProject>, folderId?: string | null) => string;
     createFolder: (title?: string, parentId?: string | null) => string;
@@ -46,14 +52,14 @@ type CanvasStore = {
     openProject: (id: string) => CanvasProject | null;
     renameProject: (id: string, title: string) => void;
     deleteProjects: (ids: string[]) => void;
-    replaceProjects: (projects: CanvasProject[]) => void;
-    replaceCanvasData: (projects: CanvasProject[], folders: CanvasFolder[]) => void;
+    replaceProjects: (projects: CanvasProject[], deletedProjects?: CanvasDeletedProject[]) => void;
+    replaceCanvasData: (projects: CanvasProject[], folders: CanvasFolder[], deletedProjects?: CanvasDeletedProject[]) => void;
     updateProject: (id: string, patch: Partial<Pick<CanvasProject, "nodes" | "connections" | "chatSessions" | "activeChatId" | "backgroundMode" | "showImageInfo" | "viewport">>) => void;
 };
 
 const initialViewport: ViewportTransform = { x: 0, y: 0, k: 1 };
 const CANVAS_STORE_KEY = "infinite-canvas:canvas_store";
-type PersistedCanvasState = Pick<CanvasStore, "projects" | "folders">;
+type PersistedCanvasState = Pick<CanvasStore, "projects" | "folders" | "deletedProjects">;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let queuedPersistState: PersistedCanvasState | null = null;
 
@@ -86,7 +92,7 @@ const canvasStorage: PersistStorage<CanvasStore> = {
     },
     setItem: (name, value) => {
         const nextState = value.state as PersistedCanvasState;
-        if (queuedPersistState && queuedPersistState.projects === nextState.projects && queuedPersistState.folders === nextState.folders) return;
+        if (queuedPersistState && queuedPersistState.projects === nextState.projects && queuedPersistState.folders === nextState.folders && queuedPersistState.deletedProjects === nextState.deletedProjects) return;
         queuedPersistState = nextState;
         if (saveTimer) clearTimeout(saveTimer);
         saveTimer = setTimeout(() => {
@@ -100,6 +106,8 @@ const canvasStorage: PersistStorage<CanvasStore> = {
 
 function normalizeCanvasStorageValue(value: unknown): StorageValue<CanvasStore> | null {
     if (!isRecord(value) || (value.version !== undefined && value.version !== 0) || !isRecord(value.state) || !Array.isArray(value.state.projects)) return null;
+    const deletedProjects = value.state.deletedProjects ?? [];
+    if (!Array.isArray(deletedProjects) || deletedProjects.some((item) => !isRecord(item) || typeof item.id !== "string" || typeof item.deletedAt !== "string")) return null;
     const rawFolders = value.state.folders === undefined ? [] : value.state.folders;
     if (!Array.isArray(rawFolders)) return null;
 
@@ -119,7 +127,7 @@ function normalizeCanvasStorageValue(value: unknown): StorageValue<CanvasStore> 
         return { ...item, folderId } as unknown as CanvasProject;
     });
     if (normalizedProjects.some((project) => !project)) return null;
-    return { ...value, state: { ...value.state, projects: normalizedProjects as CanvasProject[], folders: normalizedFolders } } as unknown as StorageValue<CanvasStore>;
+    return { ...value, state: { ...value.state, projects: normalizedProjects as CanvasProject[], folders: normalizedFolders, deletedProjects } } as unknown as StorageValue<CanvasStore>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -143,6 +151,7 @@ export const useCanvasStore = create<CanvasStore>()(
             hydrated: false,
             projects: [],
             folders: [],
+            deletedProjects: [],
             createProject: (title = i18n.t("canvas.project.untitled"), folderId = null) => {
                 const now = new Date().toISOString();
                 const id = nanoid();
@@ -206,7 +215,8 @@ export const useCanvasStore = create<CanvasStore>()(
                     });
                 }
                 const projectIds = state.projects.filter((project) => project.folderId && removedFolders.has(project.folderId)).map((project) => project.id);
-                set({ folders: state.folders.filter((folder) => !removedFolders.has(folder.id)), projects: state.projects.filter((project) => !project.folderId || !removedFolders.has(project.folderId)) });
+                get().deleteProjects(projectIds);
+                set({ folders: state.folders.filter((folder) => !removedFolders.has(folder.id)) });
                 return projectIds;
             },
             moveProject: (id, folderId) =>
@@ -225,11 +235,18 @@ export const useCanvasStore = create<CanvasStore>()(
                 })),
             deleteProjects: (ids) =>
                 set((state) => {
-                    const projects = state.projects.filter((project) => !ids.includes(project.id));
-                    return { projects };
+                    const now = new Date().toISOString();
+                    const removing = new Set(ids);
+                    const projects = state.projects.filter((project) => !removing.has(project.id));
+                    const deletedProjects = [...state.deletedProjects.filter((item) => !removing.has(item.id)), ...ids.map((id) => ({ id, deletedAt: now }))];
+                    return { projects, deletedProjects };
                 }),
-            replaceProjects: (projects) => set({ projects: projects.map((project) => ({ ...project, folderId: project.folderId ?? null })) }),
-            replaceCanvasData: (projects, folders) => set({ projects: projects.map((project) => ({ ...project, folderId: project.folderId ?? null })), folders }),
+            replaceProjects: (projects, deletedProjects = []) => set({ projects: projects.map((project) => ({ ...project, folderId: get().folders.some((folder) => folder.id === project.folderId) ? project.folderId : null })), deletedProjects }),
+            replaceCanvasData: (projects, folders, deletedProjects = []) => {
+                const normalized = normalizeCanvasStorageValue({ state: { projects, folders, deletedProjects } });
+                if (!normalized) throw new Error("Invalid canvas snapshot");
+                set(normalized.state);
+            },
             updateProject: (id, patch) =>
                 set((state) => ({
                     projects: state.projects.map((project) => (project.id === id ? { ...project, ...patch, updatedAt: new Date().toISOString() } : project)),
@@ -242,6 +259,7 @@ export const useCanvasStore = create<CanvasStore>()(
                 ({
                     projects: state.projects,
                     folders: state.folders,
+                    deletedProjects: state.deletedProjects,
                 }) as StorageValue<CanvasStore>["state"],
             onRehydrateStorage: () => () => {
                 useCanvasStore.setState({ hydrated: true });

@@ -3,7 +3,6 @@ import { workspaceHeaders } from "@/lib/workspace";
 import type { WebdavSyncConfig } from "@/stores/use-config-store";
 
 export const WEBDAV_MANIFEST_FILE_NAME = "manifest.json";
-export type WebdavWriteMode = "automatic" | "manual";
 const WEBDAV_REQUEST_TIMEOUT_MS = 120000;
 const directoryChecks = new Map<string, Promise<void>>();
 const directoryPartChecks = new Map<string, Promise<void>>();
@@ -26,21 +25,21 @@ export async function downloadWebdavFile(config: WebdavSyncConfig, path: string)
     return file.size ? file : null;
 }
 
-export async function uploadWebdavFile(config: WebdavSyncConfig, path: string, file: Blob, contentType = "application/octet-stream", writeMode: WebdavWriteMode = "manual") {
+export async function uploadWebdavFile(config: WebdavSyncConfig, path: string, file: Blob, contentType = "application/octet-stream") {
     if (!file.size) throw new Error(webdavText("emptyUpload"));
-    await ensureWebdavDirectory(config, writeMode);
-    await ensureWebdavSubdirectory(config, path, writeMode);
+    await ensureWebdavDirectory(config);
+    await ensureWebdavSubdirectory(config, path);
     const response = await webdavFetch(config, path, {
         method: "PUT",
         headers: { "Content-Type": contentType },
         body: file,
-    }, writeMode);
+    });
     if (!response.ok) await throwWebdavError(response, webdavText("uploadFailed"));
 }
 
-export async function deleteWebdavPath(config: WebdavSyncConfig, path: string, writeMode: WebdavWriteMode = "manual") {
-    await ensureWebdavDirectory(config, writeMode);
-    const response = await webdavFetch(config, path, { method: "DELETE" }, writeMode);
+export async function deleteWebdavPath(config: WebdavSyncConfig, path: string) {
+    await ensureWebdavDirectory(config);
+    const response = await webdavFetch(config, path, { method: "DELETE" });
     if (response.ok || response.status === 404) return;
     await throwWebdavError(response, webdavText("uploadFailed"));
 }
@@ -55,24 +54,24 @@ export async function listWebdavDirectory(config: WebdavSyncConfig, path: string
     return [...new Set(names)];
 }
 
-async function ensureWebdavDirectory(config: WebdavSyncConfig, writeMode: WebdavWriteMode = "manual") {
+async function ensureWebdavDirectory(config: WebdavSyncConfig) {
     assertWebdavConfig(config);
-    await ensureWebdavDirectoryPath(config, config.directory, writeMode);
+    await ensureWebdavDirectoryPath(config, config.directory);
 }
 
-async function ensureWebdavSubdirectory(config: WebdavSyncConfig, path: string, writeMode: WebdavWriteMode) {
+async function ensureWebdavSubdirectory(config: WebdavSyncConfig, path: string) {
     const directory = normalizePath(path).split("/").slice(0, -1).join("/");
     if (!directory) return;
-    await ensureWebdavDirectoryPath(config, [config.directory, directory].filter(Boolean).join("/"), writeMode);
+    await ensureWebdavDirectoryPath(config, [config.directory, directory].filter(Boolean).join("/"));
 }
 
-async function ensureWebdavDirectoryPath(config: WebdavSyncConfig, directory: string, writeMode: WebdavWriteMode) {
+async function ensureWebdavDirectoryPath(config: WebdavSyncConfig, directory: string) {
     const parts = normalizePath(directory).split("/").filter(Boolean);
     const cacheKey = `${config.url}:${parts.join("/")}`;
     const pending = directoryChecks.get(cacheKey);
     if (pending) return pending;
 
-    const check = ensureWebdavDirectoryParts(config, parts, writeMode);
+    const check = ensureWebdavDirectoryParts(config, parts);
     directoryChecks.set(cacheKey, check);
     try {
         await check;
@@ -82,20 +81,20 @@ async function ensureWebdavDirectoryPath(config: WebdavSyncConfig, directory: st
     }
 }
 
-async function ensureWebdavDirectoryParts(config: WebdavSyncConfig, parts: string[], writeMode: WebdavWriteMode) {
+async function ensureWebdavDirectoryParts(config: WebdavSyncConfig, parts: string[]) {
     let path = "";
     for (const part of parts) {
         path = path ? `${path}/${part}` : part;
-        await ensureWebdavDirectoryPart(config, path, writeMode);
+        await ensureWebdavDirectoryPart(config, path);
     }
 }
 
-async function ensureWebdavDirectoryPart(config: WebdavSyncConfig, path: string, writeMode: WebdavWriteMode) {
+async function ensureWebdavDirectoryPart(config: WebdavSyncConfig, path: string) {
     const cacheKey = `${config.url}:${normalizePath(path)}`;
     const pending = directoryPartChecks.get(cacheKey);
     if (pending) return pending;
 
-    const check = ensureWebdavDirectoryPartOnce(config, path, writeMode);
+    const check = ensureWebdavDirectoryPartOnce(config, path);
     directoryPartChecks.set(cacheKey, check);
     try {
         await check;
@@ -104,7 +103,7 @@ async function ensureWebdavDirectoryPart(config: WebdavSyncConfig, path: string,
     }
 }
 
-async function ensureWebdavDirectoryPartOnce(config: WebdavSyncConfig, path: string, writeMode: WebdavWriteMode) {
+async function ensureWebdavDirectoryPartOnce(config: WebdavSyncConfig, path: string) {
     const normalizedPath = normalizePath(path);
     const separator = normalizedPath.lastIndexOf("/");
     const parentPath = separator >= 0 ? normalizedPath.slice(0, separator) : "";
@@ -123,7 +122,7 @@ async function ensureWebdavDirectoryPartOnce(config: WebdavSyncConfig, path: str
         if (children.includes(directoryName)) return;
     }
 
-    const response = await webdavFetch(rootConfig, normalizedPath, { method: "MKCOL" }, writeMode);
+    const response = await webdavFetch(rootConfig, normalizedPath, { method: "MKCOL" });
     if (response.ok || ([403, 405, 409, 423].includes(response.status) && (await webdavDirectoryExists(config, path)))) return;
     await throwWebdavError(response, webdavText("directoryFailed"));
 }
@@ -133,11 +132,11 @@ async function webdavDirectoryExists(config: WebdavSyncConfig, path: string) {
     return response.ok || response.status === 207;
 }
 
-async function webdavFetch(config: WebdavSyncConfig, path: string, init: RequestInit, writeMode: WebdavWriteMode = "manual") {
+async function webdavFetch(config: WebdavSyncConfig, path: string, init: RequestInit) {
     const headers = new Headers(init.headers);
     headers.delete("Authorization");
     if (["MKCOL", "PUT", "DELETE"].includes((init.method || "GET").toUpperCase())) {
-        headers.set("X-Infinite-Canvas-Sync-Mode", writeMode);
+        headers.set("X-Infinite-Canvas-Sync-Mode", "manual");
     }
     Object.entries(workspaceHeaders()).forEach(([name, value]) => headers.set(name, value));
     const controller = new AbortController();

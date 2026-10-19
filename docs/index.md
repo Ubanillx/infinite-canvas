@@ -6,7 +6,8 @@
 - [Features](/docs/overview/features)
 - [Deploy on Render](/docs/overview/render)
 - [Docker Deployment](/docs/overview/docker)
-- [Third-party GitHub Prompt Repositories](/docs/overview/third-party-prompt-repositories)
+- [Jenkins Deployment](/docs/overview/jenkins)
+- [Third-party Prompt Sources](/docs/overview/third-party-prompt-repositories)
 
 ## Canvas Guide
 
@@ -37,5 +38,5 @@
 
 ## Notes
 
-- Canvas projects and My Assets are primarily stored in the browser. WebDAV can be configured for cross-device synchronization.
-- The AI API key is stored in the browser, which sends requests directly to OpenAI-compatible endpoints.
+- Workspace data is server-backed with browser caches; WebDAV uses manual snapshot upload/import.
+- AI keys are server-managed; browsers use authenticated same-origin proxies and snapshots exclude server credentials.

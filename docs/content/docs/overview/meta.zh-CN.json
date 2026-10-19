@@ -8,6 +8,7 @@
     "features",
     "render",
     "docker",
+    "jenkins",
     "third-party-prompt-repositories",
     "[在线体验](https://canvas.best/)"
   ]

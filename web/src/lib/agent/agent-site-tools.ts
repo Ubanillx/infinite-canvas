@@ -3,9 +3,11 @@ import type { NavigateFunction } from "react-router-dom";
 import i18n from "@/i18n";
 import { fetchPrompts } from "@/services/api/prompts";
 import { uploadImage } from "@/services/image-storage";
-import { imageAspectOptions, imageQualityOptions } from "@/components/image-settings-panel";
-import { videoResolutionOptions, videoSecondOptions, videoSizeOptions } from "@/components/video-settings-panel";
+import { imageAspectOptions, imageQualityOptions, imageScaleOptions } from "@/components/image-settings-panel";
+import { videoResolutionOptions, videoSecondsRange, videoSizeOptions } from "@/components/video-settings-panel";
 import type { CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
+import { clampVideoSeconds } from "@/lib/media-size";
+import { isSeedanceVideoConfig, normalizeSeedanceDuration, seedanceDurationOptions, seedanceRatioOptions, seedanceResolutionOptions } from "@/lib/seedance-video";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { modelOptionLabel, modelOptionName, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore } from "@/stores/use-config-store";
@@ -153,6 +155,7 @@ function getImageConfig() {
         current: { model, modelName: modelOptionName(model), quality: config.quality || "auto", size: config.size || "1:1", count: config.count || "1" },
         models: selectableModelsByCapability(config, "image").map((value) => ({ value, label: modelOptionLabel(config, value) })),
         qualityOptions: imageQualityOptions,
+        scaleOptions: imageScaleOptions,
         sizeOptions: imageAspectOptions,
         countRange: { min: 1, max: 15 },
     };
@@ -189,6 +192,7 @@ function runImageWorkbench(input: SiteToolInput, navigate: NavigateFunction) {
 function getVideoConfig() {
     const { config } = useConfigStore.getState();
     const model = config.videoModel || config.model;
+    const seedance = isSeedanceVideoConfig({ ...config, model });
     return {
         current: {
             model,
@@ -198,11 +202,16 @@ function getVideoConfig() {
             resolution: config.vquality || "720",
             generateAudio: config.videoGenerateAudio !== "false",
             watermark: config.videoWatermark === "true",
+            mode: config.videoMode === "reference" ? "reference" : "frames",
         },
         models: selectableModelsByCapability(config, "video").map((value) => ({ value, label: modelOptionLabel(config, value) })),
-        sizeOptions: videoSizeOptions,
-        secondsOptions: videoSecondOptions,
-        resolutionOptions: videoResolutionOptions,
+        sizeOptions: seedance ? seedanceRatioOptions : videoSizeOptions,
+        secondsRange: seedance ? { min: 4, max: 15, automatic: -1, options: seedanceDurationOptions } : videoSecondsRange,
+        resolutionOptions: seedance ? seedanceResolutionOptions : videoResolutionOptions,
+        modeOptions: [
+            { value: "frames", label: i18n.t("settingsPanels.video.modes.frames") },
+            { value: "reference", label: i18n.t("settingsPanels.video.modes.reference") },
+        ],
     };
 }
 
@@ -218,9 +227,12 @@ function runVideoWorkbench(input: SiteToolInput, navigate: NavigateFunction) {
         configStore.updateConfig("size", input.size);
         applied.size = input.size;
     }
-    if (typeof input.seconds === "string" && input.seconds.trim()) {
-        configStore.updateConfig("videoSeconds", input.seconds);
-        applied.seconds = input.seconds;
+    if (input.seconds != null && String(input.seconds).trim()) {
+        const seconds = isSeedanceVideoConfig({ ...configStore.config, model: configStore.config.videoModel })
+            ? String(normalizeSeedanceDuration(String(input.seconds)))
+            : clampVideoSeconds(String(input.seconds));
+        configStore.updateConfig("videoSeconds", seconds);
+        applied.seconds = seconds;
     }
     if (typeof input.resolution === "string" && input.resolution.trim()) {
         configStore.updateConfig("vquality", input.resolution);
@@ -233,6 +245,10 @@ function runVideoWorkbench(input: SiteToolInput, navigate: NavigateFunction) {
     if (typeof input.watermark === "boolean") {
         configStore.updateConfig("videoWatermark", String(input.watermark));
         applied.watermark = input.watermark;
+    }
+    if (input.mode === "frames" || input.mode === "reference") {
+        configStore.updateConfig("videoMode", input.mode);
+        applied.mode = input.mode;
     }
     const prompt = typeof input.prompt === "string" ? input.prompt : undefined;
     const run = input.run !== false;

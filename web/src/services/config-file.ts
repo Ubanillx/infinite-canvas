@@ -1,7 +1,7 @@
 import { saveAs } from "file-saver";
 
 import i18n from "@/i18n";
-import { defaultWebdavSyncConfig, redactAiConfigSecrets, useConfigStore, type AiConfig, type WebdavSyncConfig } from "@/stores/use-config-store";
+import { defaultConfig, defaultWebdavSyncConfig, redactAiConfigSecrets, useConfigStore, type AiConfig, type WebdavSyncConfig } from "@/stores/use-config-store";
 import { usePromptSourceStore, type PromptSourceSchedule } from "@/stores/use-prompt-source-store";
 import type { PromptSource } from "@/services/api/prompt-source-presets";
 
@@ -29,12 +29,12 @@ export function createAppConfigSnapshot(): AppConfigFile {
 }
 
 export function applyAppConfig(data: AppConfigFile) {
-    useConfigStore.setState({ config: data.config, webdav: { ...defaultWebdavSyncConfig, ...data.webdav, autoSyncEnabled: true, autoSyncIntervalMinutes: 5 } });
+    useConfigStore.setState({ config: { ...defaultConfig, ...data.config }, webdav: { ...defaultWebdavSyncConfig, ...data.webdav, autoSyncEnabled: false } });
     usePromptSourceStore.setState(data.promptSources);
 }
 
 export function applyServerConfig(data: AppConfigFile) {
-    useConfigStore.setState({ config: redactAiConfigSecrets(data.config), webdav: { ...defaultWebdavSyncConfig, ...data.webdav, autoSyncEnabled: true, autoSyncIntervalMinutes: 5, password: "" } });
+    useConfigStore.setState({ config: redactAiConfigSecrets({ ...defaultConfig, ...data.config }), webdav: { ...defaultWebdavSyncConfig, ...data.webdav, autoSyncEnabled: false, password: "" } });
     usePromptSourceStore.setState(data.promptSources);
 }
 

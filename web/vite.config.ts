@@ -348,8 +348,8 @@ function serverWebdavProxy(): Plugin {
 
         const isPropfind = req.method === "PROPFIND";
         const isWrite = Boolean(req.method && ["MKCOL", "PUT", "DELETE"].includes(req.method));
-        if (isWrite && !["automatic", "manual"].includes(String(req.headers["x-infinite-canvas-sync-mode"] || ""))) {
-            return sendJson(res, 409, { error: "WebDAV write mode is invalid" });
+        if (isWrite && req.headers["x-infinite-canvas-sync-mode"] !== "manual") {
+            return sendJson(res, 409, { error: "Automatic WebDAV writes are disabled; refresh the page and use manual sync" });
         }
         const headers: Record<string, string | string[] | undefined> = { ...req.headers, authorization };
         delete headers["x-infinite-canvas-workspace"];
@@ -565,7 +565,7 @@ function isBlockedProviderHost(hostname: string) {
 }
 
 function isAllowedAiProviderPath(apiFormat: unknown, path: string) {
-    if (apiFormat === "gemini") return /^\/(?:models|operations)(?:\/|$)/.test(path);
+    if (apiFormat === "gemini") return /^\/(?:models|operations)(?:\/|$)/.test(path) || /^\/files\/[^/]+:download$/.test(path);
     if (apiFormat === "custom") return /^\/(?:models|video\/generations)(?:\/|$)/.test(path);
     return /^\/(?:models|images|responses|chat\/completions|audio|videos|contents\/generations\/tasks)(?:\/|$)/.test(path);
 }
@@ -653,7 +653,7 @@ function redactServerSecrets(value: unknown) {
             });
         }
     }
-    if (webdav) Object.assign(webdav, { url: "/api/webdav", username: "", password: "", directory: "", autoSyncEnabled: true, autoSyncIntervalMinutes: 5 });
+    if (webdav) Object.assign(webdav, { url: "/api/webdav", username: "", password: "", directory: "", autoSyncEnabled: false });
     return result;
 }
 
@@ -704,7 +704,6 @@ function mergeServerSecrets(incoming: unknown, stored: unknown) {
                 nextConfig[key] = previousConfig[key];
             }
         }
-        const availableModels = new Set(Array.isArray(nextConfig.models) ? nextConfig.models.filter((model): model is string => typeof model === "string" && Boolean(model)) : []);
         for (const [key, capability] of [
             ["model", "image"],
             ["imageModel", "image"],
@@ -713,14 +712,14 @@ function mergeServerSecrets(incoming: unknown, stored: unknown) {
             ["audioModel", "audio"],
         ] as const) {
             const selected = typeof nextConfig[key] === "string" ? nextConfig[key] : "";
-            if (availableModels.has(selected)) continue;
-            const channelId = selected.includes("::") ? selected.slice(0, selected.indexOf("::")) : "";
-            nextConfig[key] = firstModelOption(nextConfig.channels, capability, channelId);
+            if (selected) continue;
+            nextConfig[key] = firstModelOption(nextConfig.channels, capability, "");
         }
     }
     if (nextWebdav) {
-        nextWebdav.autoSyncEnabled = true;
-        nextWebdav.autoSyncIntervalMinutes = 5;
+        // WebDAV is server-managed and synchronization is manual. Enforce this
+        // server-side so an old client cannot re-enable background uploads.
+        nextWebdav.autoSyncEnabled = false;
         nextWebdav.url = typeof previousWebdav?.url === "string" ? previousWebdav.url : nextWebdav.url;
         nextWebdav.username = typeof previousWebdav?.username === "string" ? previousWebdav.username : nextWebdav.username;
         nextWebdav.directory = typeof previousWebdav?.directory === "string" ? previousWebdav.directory : nextWebdav.directory;
@@ -904,7 +903,7 @@ export default defineConfig({
     base: process.env.VITE_BASE || "/",
     plugins: [react(), localPluginsManifest(), sessionContext(), authAccess(), serverApiAccessControl(), workspaceAccess(), workspaceDataAccess(), serverWebdavProxy(), serverConfigStorage(), aiProviderProxy(), imageProxy()],
     server: { proxy: { [canvasAgentProxyPath]: canvasAgentProxy } },
-    preview: { allowedHosts: ["ubuntu-server"], proxy: { [canvasAgentProxyPath]: canvasAgentProxy } },
+    preview: { allowedHosts: (process.env.INFINITE_CANVAS_ALLOWED_HOSTS || "ubuntu-server").split(",").map((host) => host.trim()).filter(Boolean), proxy: { [canvasAgentProxyPath]: canvasAgentProxy } },
     resolve: {
         alias: {
             "@": resolve(webDir, "src"),

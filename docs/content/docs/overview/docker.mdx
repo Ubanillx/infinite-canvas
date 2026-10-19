@@ -1,64 +1,31 @@
 ---
 title: Docker Deployment
-description: Deploy Infinite Canvas with Docker Compose
+description: Run the server-capable Web service and Canvas Agent
 ---
 
 # Docker Deployment
 
-## Use the published image
+## Build this repository
 
 ```bash
-git clone git@github.com:basketikun/infinite-canvas.git
+git clone https://github.com/Ubanillx/infinite-canvas.git
 cd infinite-canvas
-docker compose up -d
+git switch dev
+docker compose -f docker-compose.local.yml up -d --build --wait --wait-timeout 120
 ```
 
-Open `http://localhost:3000`.
+The default binding is `127.0.0.1:3000`. Use an HTTPS reverse proxy in production and explicitly configure `INFINITE_CANVAS_ALLOWED_HOSTS`. LAN access requires an explicit bind address and firewall policy. Image builds include regression tests.
 
-## Build locally
+The main `docker-compose.yml` runs an already loaded image from this fork. Set `APP_IMAGE` to the release image; the default `infinite-canvas:local` must be built first. The upstream published latest image is not a substitute for this dev branch's server implementation.
 
-```bash
-docker compose -f docker-compose.local.yml up -d --build
-```
+## Services and storage
 
-## Documentation image
+The non-root container (UID/GID 1000) supervises a Bun/Vite preview Web service and a Node Canvas Agent. The Web service retains authentication, SQLite, workspace data, media, server-owned credentials and same-origin proxies. The Agent listens only on loopback port 17371. This is not a static nginx or Next.js application.
 
-The documentation in `docs/` is a separate Next.js standalone application with server capabilities.
+Named volumes persist `/data`, `/home/node/.infinite-canvas` and `/home/node/.codex`. WebDAV uses manual snapshot upload/import. Do not delete volumes during updates. Back up SQLite consistently, including WAL state. Existing root-owned volumes require an explicit offline migration review of ownership and absolute workspace paths. Codex authentication is provisioned after startup and must never be baked into the image.
 
-```bash
-cd docs
-docker compose up -d
-```
+## Automatic releases
 
-To build it from the current source:
+[Jenkins Deployment](/docs/overview/jenkins) accepts only deploy-branch pushes through a GitHub Webhook, transfers images over pinned SSH and verifies Compose health before recording success. Failed updates attempt to restore the previous image and runtime configuration, not business data. See deploy/README.md in the repository for setup and rollback.
 
-```bash
-cd docs
-docker compose -f docker-compose.local.yml up -d --build
-```
-
-The application container runs both the Vite preview server and Canvas Agent. The preview server keeps the workspace registry and same-origin WebDAV/Agent proxies available, while the Agent listens only on the container loopback interface. The included Compose volumes persist the workspace registry, Agent conversations, and server configuration across upgrades. AI channels and API keys remain global to the installation and are never copied into workspace snapshots.
-
-Automatic WebDAV sync uploads only the active workspace's snapshots. Remote snapshots are listed and imported only after the user explicitly chooses one in WebDAV settings.
-
-## Optional analytics
-
-No analytics are enabled by default. A deployment can enable GA4, Baidu Analytics, or both at runtime:
-
-| Variable | Description |
-| --- | --- |
-| `ANALYTICS_GA4_ID` | Google Analytics 4 measurement ID (`G-XXXX`) |
-| `ANALYTICS_BAIDU_ID` | Baidu site ID, the hash after `hm.js?` |
-
-```yaml
-services:
-  app:
-    image: ghcr.io/basketikun/infinite-canvas:latest
-    ports:
-      - "3000:3000"
-    environment:
-      ANALYTICS_GA4_ID: G-XXXXXXXXXX
-      ANALYTICS_BAIDU_ID: e8263761cc5c32f5f7a855b8203b965a
-```
-
-SPA route changes automatically report page views to enabled providers. Only configure analytics IDs on sites you control, and do not commit them to the repository.
+Runtime analytics IDs default to empty; config.js also sets `/api/canvas-agent`. The separate Next.js documentation application in `docs/` is not part of this release pipeline. Real image, provider, Codex and deployment acceptance remain required.

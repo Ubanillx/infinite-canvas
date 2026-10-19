@@ -5,9 +5,8 @@ import { useTranslation } from "react-i18next";
 
 import { applyServerConfig } from "@/services/config-file";
 import { loadServerConfig } from "@/services/server-config";
-import { createModelChannel, useConfigStore } from "@/stores/use-config-store";
+import { useConfigStore } from "@/stores/use-config-store";
 import { usePromptSourceScheduler } from "@/hooks/use-prompt-source-scheduler";
-import { useWebdavAutoSync } from "@/hooks/use-webdav-auto-sync";
 
 export function ClientRootInit({ children }: { children: ReactNode }) {
     const { t } = useTranslation();
@@ -34,13 +33,11 @@ function ReadyClientRoot({ children }: { children: ReactNode }) {
     const { message } = App.useApp();
     const { t } = useTranslation();
     const handledConfigParams = useRef(false);
-    const updateConfig = useConfigStore((state) => state.updateConfig);
-    const config = useConfigStore((state) => state.config);
+    const importChannelCredentials = useConfigStore((state) => state.importChannelCredentials);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const [conflict, setConflict] = useState<string>("");
 
     usePromptSourceScheduler();
-    useWebdavAutoSync();
 
     useEffect(() => {
         const onConflict = (event: Event) => {
@@ -64,26 +61,13 @@ function ReadyClientRoot({ children }: { children: ReactNode }) {
         searchParams.delete("apiKey");
         searchParams.delete("apikey");
         window.history.replaceState(null, "", `${window.location.pathname}${searchParams.size ? `?${searchParams}` : ""}${window.location.hash}`);
-        const firstChannel = config.channels[0];
-        updateConfig(
-            "channels",
-            firstChannel
-                ? config.channels.map((channel, index) =>
-                      index === 0
-                          ? {
-                                ...channel,
-                                ...(baseUrl ? { baseUrl } : {}),
-                                ...(apiKey ? { apiKey } : {}),
-                            }
-                          : channel,
-                  )
-                : [createModelChannel({ id: "default", name: t("config.channels.defaultName"), baseUrl: baseUrl || undefined, apiKey: apiKey || "" })],
-        );
-        if (baseUrl) updateConfig("baseUrl", baseUrl);
-        if (apiKey) updateConfig("apiKey", apiKey);
-        openConfigDialog(false);
-        message.success(t("config.importedDirectConfig"));
-    }, [config.channels, message, openConfigDialog, t, updateConfig]);
+        const result = importChannelCredentials({ baseUrl, apiKey });
+        openConfigDialog(false, "channels");
+        if (result.status === "created") message.success(t("config.importedChannelCreated", { name: result.channelName }));
+        else if (result.status === "updated") message.success(t("config.importedChannelUpdated", { name: result.channelName }));
+        else if (result.status === "missing-base-url") message.error(t("config.importedChannelBaseUrlRequired"));
+        else message.error(t("config.importedChannelBaseUrlInvalid"));
+    }, [importChannelCredentials, message, openConfigDialog, t]);
 
     return <>{children}<Modal open={Boolean(conflict)} title="检测到多人编辑冲突" okText="刷新并读取服务器版本" cancelText="继续保留本机内容" onOk={() => window.location.reload()} onCancel={() => setConflict("")}>“{conflict}”已被另一位成员更新。系统没有覆盖对方的数据；请刷新读取服务器版本，再决定如何合并本机修改。</Modal></>;
 }

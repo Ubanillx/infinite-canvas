@@ -1,4 +1,4 @@
-import { importWorkspaceAssetsSnapshot, syncWorkspaceAssetsToWebdav, type AppSyncProgress } from "@/services/app-sync";
+import { syncAppDataToWebdav, type AppSyncProgress } from "@/services/app-sync";
 import { useConfigStore, type WebdavSyncConfig } from "@/stores/use-config-store";
 
 export type WebdavAutoSyncStatus = {
@@ -27,22 +27,15 @@ export function getWebdavAutoSyncStatus() {
     return status;
 }
 
-export function syncAssetsToWebdav(config = useConfigStore.getState().webdav, reason: "data" | "manual" = "data", onProgress?: AppSyncProgress) {
+export function syncAllDataToWebdav(config = useConfigStore.getState().webdav, reason: "data" | "manual" = "data", onProgress?: AppSyncProgress) {
     return enqueue(reason, async () => {
-        const result = await syncWorkspaceAssetsToWebdav(config, (event) => {
+        const result = await syncAppDataToWebdav(config, (event) => {
             updateStatus({ stage: event.stage });
             onProgress?.(event);
-        }, reason === "data" ? "automatic" : "manual");
+        });
         useConfigStore.getState().updateWebdavConfig("lastSyncedAt", result.syncedAt);
         return result;
     });
-}
-
-export function pullAssetsFromWebdav(config: WebdavSyncConfig, snapshotId: string, onProgress?: AppSyncProgress) {
-    return enqueue("manual", () => importWorkspaceAssetsSnapshot(config, snapshotId, (event) => {
-        updateStatus({ stage: event.stage });
-        onProgress?.(event);
-    }));
 }
 
 export function isWebdavConfigured(config: WebdavSyncConfig) {

@@ -1,4 +1,17 @@
 .git
+.ci
+deploy/*.env
+deploy/shared
+deploy/incoming
+deploy/releases
+**/auth.json
+**/node_modules
+**/dist
+**/.infinite-canvas
+**/.codex
+**/*.sqlite*
+**/*.pem
+**/*.key
 .idea
 docs2
 data
