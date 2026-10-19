@@ -13,6 +13,7 @@ description: Implemented changes that still need manual verification
 
 ## deploy Branch CI/CD
 
+- Run Web response-stream regressions on the Dockerfile-pinned Bun 1.3.13: gzip decoding, interrupted upstream bodies, a subsequent healthy request, readable pre-header 502 errors and upstream cancellation on downstream failure must pass without unhandled errors. Do not substitute a newer host Bun for this check.
 - Verify the Docker test target contains `/app/docker-compose.yml` and `/app/docker-entrypoint.sh` inherited from source, and all deployment tests run without missing-file errors. A host-mounted full repository is not sufficient evidence of the image contents.
 - On Jenkins without Timestamper, build the latest deploy revision and confirm pipeline compilation no longer fails on the timestamps option. Do not replay the old Jenkinsfile; runtime stages still require separate acceptance.
 - Configure single-branch SCM */deploy, persist deployment parameter defaults after initial registration, and verify GitHub push hooks. dev/main, PRs and stale checkouts must not build or deploy.

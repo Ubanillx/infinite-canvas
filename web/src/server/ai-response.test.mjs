@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { gzipSync } from "node:zlib";
 import { test } from "node:test";
+import { Writable } from "node:stream";
 import { forwardAiResponse, failAiResponse } from "./ai-response.ts";
 
 async function listen(server) {
@@ -64,4 +65,18 @@ test("failure before headers returns readable JSON 502", async () => {
         assert.equal(response.status, 502);
         assert.match((await response.json()).error, /connection failed/);
     } finally { proxy.closeAllConnections(); proxy.close(); }
+});
+
+test("downstream failure cancels the upstream stream", async () => {
+    let cancelled = false;
+    const body = new ReadableStream({
+        pull(controller) { controller.enqueue(new TextEncoder().encode("chunk")); },
+        cancel() { cancelled = true; },
+    });
+    const res = new Writable({
+        write(_chunk, _encoding, callback) { callback(new Error("client disconnected")); },
+    });
+    res.removeHeader = () => {};
+    await assert.rejects(forwardAiResponse(new Response(body), res), /client disconnected/);
+    assert.equal(cancelled, true);
 });
