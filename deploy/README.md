@@ -11,7 +11,8 @@
 ## Jenkins 前置条件
 
 - Linux Agent 标签为 `docker-linux`，装有 Git、Bash、Docker Engine、OpenSSH client、tar、gzip、sha256sum。Docker 开启 BuildKit，构建节点可访问 npm、Docker Hub 和系统包源。
-- Jenkins 插件：Pipeline、Git、GitHub、Credentials Binding、Timestamper。该方案不依赖 SSH Publisher、SSH Agent 或 Docker Pipeline 插件。
+- Jenkins 插件：Pipeline、Git、GitHub、Credentials Binding。该方案不依赖 Timestamper、SSH Publisher、SSH Agent 或 Docker Pipeline 插件。
+- 若旧构建提示 `Invalid option type "timestamps"`，说明当前 Jenkins 未提供 Timestamper 选项。仓库已移除该非必需选项；使用最新 deploy 分支重新构建，不要直接回放旧 Jenkinsfile。需要日志时间戳时可由管理员另行安装并配置 Timestamper。
 - Docker 权限相当于主机 root 权限，使用专用可信构建节点和部署账号，不向容器挂载宿主机 Docker socket。
 - 镜像基础版本在 Dockerfile 的 `NODE_IMAGE` / `BUN_IMAGE` 参数中定义；生产可改用审核后的 digest，更新需要重新验收。
 

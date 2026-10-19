@@ -3,7 +3,6 @@ pipeline {
     options {
         skipDefaultCheckout(true)
         disableConcurrentBuilds()
-        timestamps()
     }
     triggers { githubPush() }
     parameters {
