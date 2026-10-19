@@ -565,7 +565,7 @@ function isBlockedProviderHost(hostname: string) {
 }
 
 function isAllowedAiProviderPath(apiFormat: unknown, path: string) {
-    if (apiFormat === "gemini") return /^\/(?:models|operations)(?:\/|$)/.test(path);
+    if (apiFormat === "gemini") return /^\/(?:models|operations)(?:\/|$)/.test(path) || /^\/files\/[^/]+:download$/.test(path);
     if (apiFormat === "custom") return /^\/(?:models|video\/generations)(?:\/|$)/.test(path);
     return /^\/(?:models|images|responses|chat\/completions|audio|videos|contents\/generations\/tasks)(?:\/|$)/.test(path);
 }
@@ -704,7 +704,6 @@ function mergeServerSecrets(incoming: unknown, stored: unknown) {
                 nextConfig[key] = previousConfig[key];
             }
         }
-        const availableModels = new Set(Array.isArray(nextConfig.models) ? nextConfig.models.filter((model): model is string => typeof model === "string" && Boolean(model)) : []);
         for (const [key, capability] of [
             ["model", "image"],
             ["imageModel", "image"],
@@ -713,9 +712,8 @@ function mergeServerSecrets(incoming: unknown, stored: unknown) {
             ["audioModel", "audio"],
         ] as const) {
             const selected = typeof nextConfig[key] === "string" ? nextConfig[key] : "";
-            if (availableModels.has(selected)) continue;
-            const channelId = selected.includes("::") ? selected.slice(0, selected.indexOf("::")) : "";
-            nextConfig[key] = firstModelOption(nextConfig.channels, capability, channelId);
+            if (selected) continue;
+            nextConfig[key] = firstModelOption(nextConfig.channels, capability, "");
         }
     }
     if (nextWebdav) {

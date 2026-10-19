@@ -9,6 +9,7 @@ import { readLocalStorageUsage, type LocalStorageUsage } from "@/services/local-
 const storeLabelKeys: Record<string, string> = {
     app_state: "appState",
     image_files: "images",
+    image_previews: "imagePreviews",
     media_files: "media",
     image_generation_logs: "imageLogs",
     video_generation_logs: "videoLogs",
@@ -64,15 +65,17 @@ export function ConfigLocalStorage({ active }: { active: boolean }) {
                         <div className="mt-4 grid gap-3 sm:grid-cols-3">
                             <StorageMetric icon={<Database className="size-4" />} label={t("config.localStorage.indexedDbUsage")} value={formatStorageBytes(indexedDbBytes)} hint={t("config.localStorage.contentEstimate")} />
                             <StorageMetric icon={<HardDrive className="size-4" />} label={t("config.localStorage.siteUsage")} value={formatStorageBytes(usage.usage)} hint={t("config.localStorage.siteUsageHint")} />
-                            <StorageMetric icon={<Layers3 className="size-4" />} label={t("config.localStorage.quota")} value={formatStorageBytes(usage.quota)} hint={t("config.localStorage.quotaHint")} />
+                            <StorageMetric icon={<Layers3 className="size-4" />} label={t("config.localStorage.quota")} value={formatStorageBytes(usage.quota)} hint={usage.quota ? t("config.localStorage.quotaHint") : t("config.localStorage.quotaUnavailable")} />
                         </div>
-                        <div className="mt-4">
-                            <div className="mb-1 flex justify-between text-xs text-stone-500">
-                                <span>{t("config.localStorage.quotaProgress")}</span>
-                                <span className="tabular-nums">{percent.toFixed(2)}%</span>
+                        {usage.quota ? (
+                            <div className="mt-4">
+                                <div className="mb-1 flex justify-between text-xs text-stone-500">
+                                    <span>{t("config.localStorage.quotaProgress")}</span>
+                                    <span className="tabular-nums">{percent.toFixed(2)}%</span>
+                                </div>
+                                <Progress percent={percent} showInfo={false} />
                             </div>
-                            <Progress percent={percent} showInfo={false} />
-                        </div>
+                        ) : null}
                     </>
                 ) : null}
             </section>

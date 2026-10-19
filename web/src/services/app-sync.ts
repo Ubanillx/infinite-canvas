@@ -3,19 +3,19 @@ import localforage from "localforage";
 import i18n from "@/i18n";
 import { getActiveWorkspace, workspaceHeaders, workspaceStoreName } from "@/lib/workspace";
 import { randomId } from "@/lib/utils";
+import { mergeCanvasSnapshot, type CanvasSnapshotData } from "@/lib/canvas/canvas-snapshot-merge";
 import { getMediaBlob, resolveMediaUrl, setMediaBlob } from "@/services/file-storage";
 import { getImageBlob, resolveImageUrl, setImageBlob } from "@/services/image-storage";
 import { deleteWebdavPath, downloadWebdavFile, listWebdavDirectory, uploadWebdavFile, WEBDAV_MANIFEST_FILE_NAME } from "@/services/webdav-sync";
 import type { Asset } from "@/stores/use-asset-store";
 import { useAssetStore } from "@/stores/use-asset-store";
 import type { WebdavSyncConfig } from "@/stores/use-config-store";
-import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 
 type StoredLog = Record<string, unknown> & { id?: string };
 export type AppSyncDomainKey = "canvas" | "assets" | "image-workbench" | "video-workbench";
 type DomainKey = AppSyncDomainKey;
-type CanvasDomainData = { projects: CanvasProject[] };
+type CanvasDomainData = CanvasSnapshotData;
 type AssetDomainData = { assets: Asset[] };
 type LogDomainData = { logs: StoredLog[] };
 type AppSyncFile = { storageKey: string; path: string; mimeType: string; bytes: number };
@@ -89,7 +89,7 @@ function domainOptions(): [SyncDomainOptions<CanvasDomainData>, SyncDomainOption
     const imageLogStore = localforage.createInstance({ name: "infinite-canvas", storeName: workspaceStoreName("image_generation_logs") });
     const videoLogStore = localforage.createInstance({ name: "infinite-canvas", storeName: workspaceStoreName("video_generation_logs") });
     return [
-        { key: "canvas", label: "画布", emptyData: { projects: [] }, localData: async () => ({ projects: useCanvasStore.getState().projects }), mergeData: (local, remote) => ({ projects: mergeImportedById(local.projects, remote.projects) }), applyData: async (data) => useCanvasStore.getState().replaceProjects(data.projects) },
+        { key: "canvas", label: "画布", emptyData: { projects: [], deleted: [] }, localData: async () => ({ projects: useCanvasStore.getState().projects, deleted: useCanvasStore.getState().deletedProjects }), mergeData: mergeCanvasSnapshot, applyData: async (data) => useCanvasStore.getState().replaceProjects(data.projects, data.deleted) },
         { key: "assets", label: "我的素材", emptyData: { assets: [] }, localData: async () => ({ assets: useAssetStore.getState().assets }), mergeData: (local, remote) => ({ assets: mergeImportedById(local.assets, remote.assets) }), applyData: async (data) => useAssetStore.getState().replaceAssets(await Promise.all(data.assets.map(hydrateAsset))) },
         { key: "image-workbench", label: "生图工作台", emptyData: { logs: [] }, localData: async () => ({ logs: await readStoredLogs(imageLogStore) }), mergeData: (local, remote) => ({ logs: mergeImportedById(local.logs, remote.logs) }), applyData: async (data) => replaceStoredLogs(imageLogStore, data.logs) },
         { key: "video-workbench", label: "视频创作台", emptyData: { logs: [] }, localData: async () => ({ logs: await readStoredLogs(videoLogStore) }), mergeData: (local, remote) => ({ logs: mergeImportedById(local.logs, remote.logs) }), applyData: async (data) => replaceStoredLogs(videoLogStore, data.logs) },
