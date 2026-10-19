@@ -2,6 +2,10 @@
 
 本地 Canvas Agent 用来连接画布网页和用户电脑上的 Codex / Claude Code。本地开发时优先连接 `http://localhost:3000`，不需要先使用线上站点。
 
+## 容器化部署
+
+本仓库 Dockerfile 已包含 Agent，Node 运行 Agent、Bun 运行 Web，Agent 仅监听容器回环 17371 并通过带工作区认证的同源代理访问。Agent 状态与 Codex 登录分别持久化到 /home/node/.infinite-canvas 和 /home/node/.codex；不把账号凭据放入镜像。Jenkins 的 deploy 分支发布和回滚配置见 [部署说明](../deploy/README.md)，真实 Codex 登录与容器运行仍需验收。
+
 ## 启动
 
 ```bash

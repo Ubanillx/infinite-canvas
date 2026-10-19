@@ -5,6 +5,17 @@ description: Implemented changes that still need manual verification
 
 # Pending Tests
 
+## deploy Branch CI/CD
+
+- Configure single-branch SCM */deploy, persist deployment parameter defaults after initial registration, and verify GitHub push hooks. dev/main, PRs and stale checkouts must not build or deploy.
+- Verify the first Linux image build and isolated smoke check: built JS assets, SQLite/authentication and Agent proxy health must work without credentials in runtime config.js.
+- Reject wrong SSH host keys, archive/image/revision mismatch, concurrent releases, project changes and unmanaged existing containers before updating services.
+- Exercise healthy updates, the 120-second failure/rollback paths, first-release failure and failed rollback alerts; current changes only after health succeeds, and business volumes are never deleted or automatically rolled back.
+- Verify process supervision, SIGTERM, non-root volume ownership, Codex login and persistence. Legacy root-volume migration requires a separate backed-up acceptance procedure.
+- Local verification covers targeted tests and Compose parsing only, not application builds/typechecks or real Jenkins/Webhook/SSH/production execution.
+
+## Existing Regression Checklist
+
 - AI proxy: verify compressed image responses and interrupted streams do not crash the service. Generate three canvas images with one failed request; successful images should remain and retrying one failed image should submit only one generation. Network failures should not be reported as confirmed CORS blocks. Restart the service and confirm previous logs remain in numbered files.
 
 - Custom video providers: add a provider using the Custom Video API protocol, configure a Base URL and write-only API key, manually add Seedance or Grok video models, and verify generation uses only `/api/ai/<channelId>/video/generations`. Reload in a fresh browser and confirm the provider still works while `/api/config` and browser storage contain no API key.

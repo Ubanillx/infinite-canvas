@@ -1,0 +1,14 @@
+---
+title: Jenkins 自动部署
+description: deploy 分支的 GitHub Webhook、SSH 与 Docker Compose 发布流程
+---
+
+# Jenkins 自动部署
+
+仓库提供 `Jenkinsfile`，固定检测 `deploy` 分支，由 GitHub Push Webhook 触发。流水线按顺序执行测试、镜像构建、隔离容器冒烟检查、SSH 传输、Docker Compose 更新和健康检查；发布失败尝试恢复上一个健康版本，部署和回滚各等待最多 120 秒。
+
+Jenkins 单分支 Pipeline 使用 `Pipeline script from SCM`，Git 分支设为 `*/deploy`，Script Path 为 `Jenkinsfile`，启用 `GitHub hook trigger for GITScm polling`。GitHub Webhook 地址为 `https://你的Jenkins地址/github-webhook/`，订阅 Push events，使用 HTTPS 并验证实际投递结果。dev/main 的更新不会直接发布。
+
+凭据 ID 为 `infinite-canvas-deploy-ssh`（SSH Username with private key）和 `infinite-canvas-known-hosts`（经独立核验的主机公钥 Secret file）。部署主机、端口、目录与稳定的 Compose 项目名通过 Job 参数配置；主机默认留空，必须持久化实际默认值后才能自动部署。
+
+完整的节点要求、Job 配置、Webhook、安全初始化、持久化卷、旧 root 卷迁移注意事项、Codex 登录、版本目录和回滚操作见仓库 [deploy/README.md](https://github.com/Ubanillx/infinite-canvas/blob/dev/deploy/README.md)。这些配置仍需真实 Jenkins、SSH 和容器运行环境验收，不代表站点已上线。

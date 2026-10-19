@@ -1,34 +1,43 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-
-agent_log=/tmp/infinite-canvas-agent.log
-web_log=/tmp/infinite-canvas-web.log
-
-health_check() {
-    bun -e 'fetch("http://127.0.0.1:17371/health").then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))'
-}
-
+umask 077
+agent_pid=""
+web_pid=""
 cleanup() {
-    if [[ -n "${agent_pid:-}" ]] && kill -0 "$agent_pid" 2>/dev/null; then
-        kill -TERM "$agent_pid" 2>/dev/null || true
-        wait "$agent_pid" 2>/dev/null || true
-    fi
+    local status=$?
+    trap - EXIT INT TERM
+    for pid in "$web_pid" "$agent_pid"; do
+        [[ -z "$pid" ]] || kill -TERM "$pid" 2>/dev/null || true
+    done
+    for pid in "$web_pid" "$agent_pid"; do
+        [[ -z "$pid" ]] || wait "$pid" 2>/dev/null || true
+    done
+    exit "$status"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
+bun /usr/local/lib/infinite-canvas/configure-runtime.mjs
 cd /app/canvas-agent
-bun dist/index.js --debug >>"$agent_log" 2>&1 &
+# Do not let the web PORT move the loopback-only Agent off its proxy target.
+PORT=17371 node dist/index.js &
 agent_pid=$!
-
 for _ in {1..60}; do
-    if health_check; then break; fi
-    if ! kill -0 "$agent_pid" 2>/dev/null; then
-        cat "$agent_log" >&2
-        exit 1
+    if bun -e 'fetch("http://127.0.0.1:17371/health").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))'; then
+        break
     fi
+    kill -0 "$agent_pid" 2>/dev/null || { echo "Canvas Agent exited during startup" >&2; exit 1; }
     sleep 0.25
 done
-health_check || { cat "$agent_log" >&2; exit 1; }
-
+bun -e 'fetch("http://127.0.0.1:17371/health").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))'
 cd /app/web
-exec bun x vite preview --host 0.0.0.0 --port "${PORT:-3000}" 2> >(tee "$web_log" >&2)
+bun node_modules/vite/bin/vite.js preview --host 0.0.0.0 --port "${PORT:-3000}" --strictPort &
+web_pid=$!
+set +e
+wait -n "$agent_pid" "$web_pid"
+status=$?
+set -e
+echo "An application process exited (status $status); stopping the container" >&2
+((status != 0)) || status=1
+exit "$status"

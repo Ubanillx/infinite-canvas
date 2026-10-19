@@ -1,91 +1,37 @@
 ---
 title: Docker 部署
-description: 使用 Docker Compose 部署无限画布
+description: 使用有服务端能力的容器运行 Web 与 Canvas Agent
 ---
 
 # Docker 部署
 
-如果你希望在自己的机器或服务器上运行项目，可以直接使用 Docker Compose。
-
-## 使用发布镜像
+## 基于本仓库构建
 
 ```bash
-git clone git@github.com:basketikun/infinite-canvas.git
+git clone https://github.com/Ubanillx/infinite-canvas.git
 cd infinite-canvas
-docker compose up -d
+git switch dev
+docker compose -f docker-compose.local.yml up -d --build --wait --wait-timeout 120
 ```
 
-启动后访问：
+默认只绑定 `127.0.0.1:3000`。生产环境请通过宿主机 HTTPS 反向代理访问，配置精确的 `INFINITE_CANVAS_ALLOWED_HOSTS`；局域网直连需要显式设置 `APP_BIND_ADDRESS` 并配置防火墙。镜像构建包含回归测试。
 
-```text
-http://localhost:3000
-```
+`docker-compose.yml` 用于已加载本仓库镜像的运行部署，`APP_IMAGE` 必须指向本次构建产物（默认 `infinite-canvas:local`，需先构建）。不能使用上游 `ghcr.io/basketikun/...:latest` 来代替这个 dev 分支的服务端实现。
 
-## 本地构建镜像
+## 服务与数据
 
-如果需要基于当前源码构建镜像：
+容器以 UID/GID 1000 运行 Web 的 Bun/Vite preview 服务和 Node Canvas Agent。Web 保留账号认证、SQLite、工作区数据、媒体、只写密钥配置及 AI/WebDAV/Agent 同源代理；Agent 仅监听容器回环 17371，不单独暴露端口。它不是 Next.js 或 nginx 纯静态应用。
 
-```bash
-docker compose -f docker-compose.local.yml up -d --build
-```
+命名卷分别持久化 `/data`、`/home/node/.infinite-canvas` 和 `/home/node/.codex`。AI API Key 保存在服务器，WebDAV 仅手动上传与选择导入快照。不要运行 `down -v` 或 volume prune。备份 SQLite 时需使用一致性备份方法，而非仅复制 WAL 数据库主文件。
 
-## 文档站镜像
+旧容器使用 root 目录的卷需要先离线备份并验证 UID、文件权限与配置内绝对路径；不自动修改未知卷。Codex 登录状态不能放入镜像，由管理员首次登录后保存在专用卷中。
 
-文档站位于 `docs/` 目录，按带服务端能力的 Next.js standalone 应用单独构建，不打进主应用镜像。
+## 自动发布
 
-使用发布镜像：
+[Jenkins 自动部署](/zh-CN/docs/overview/jenkins) 使用 deploy 分支、GitHub Push Webhook、SSH 严格主机密钥校验、镜像 ID 校验、Compose 健康检查及上一版本恢复。详细配置见仓库 deploy/README.md。
 
-```bash
-cd docs
-docker compose up -d
-```
+## 统计与文档站
 
-基于当前源码本地构建：
+运行参数 `ANALYTICS_GA4_ID` / `ANALYTICS_BAIDU_ID` 默认留空。入口脚本写入运行期 config.js，同时固定 Agent 地址为 `/api/canvas-agent`，不要放入业务密钥。
 
-```bash
-cd docs
-docker compose -f docker-compose.local.yml up -d --build
-```
-
-## 数据说明
-
-当前主应用镜像只启动 Next.js。画布、我的素材、生成记录和 AI API Key 默认保存在浏览器本地；第三方提示词由浏览器前端直连拉取，不需要额外挂载数据目录。
-
-## 统计分析（可选）
-
-项目**默认不接入任何统计**：不设置下列环境变量时，页面不会加载任何统计脚本，也不会发送任何外部请求。你在自己的部署上想查看流量时，设置对应环境变量即可，无需修改代码或重新构建镜像——镜像启动时会据此生成运行期配置。
-
-统计按「每家一个独立变量」配置：**填了谁就启用谁，可同时启用多家**（例如 GA4 + 百度一起开）。仅支持 GA4 与百度，两者都只接受 ID，脚本地址由代码固定拼接，不接受任意脚本地址或内联 JS。
-
-| 变量 | 说明 |
-| --- | --- |
-| `ANALYTICS_GA4_ID` | Google Analytics 4 衡量 ID（`G-XXXX`） |
-| `ANALYTICS_BAIDU_ID` | 百度统计站点 ID（`hm.js?` 后面那串 hash） |
-
-在 `docker-compose.yml` 的 `environment` 中配置（文件内已附注释示例），下例同时启用 GA4 与百度：
-
-```yaml
-services:
-  app:
-    image: ghcr.io/basketikun/infinite-canvas:latest
-    ports:
-      - "3000:3000"
-    environment:
-      ANALYTICS_GA4_ID: G-XXXXXXXXXX
-      ANALYTICS_BAIDU_ID: e8263761cc5c32f5f7a855b8203b965a
-```
-
-或使用 `docker run`：
-
-```bash
-docker run -d -p 3000:3000 \
-  -e ANALYTICS_GA4_ID=G-XXXXXXXXXX \
-  -e ANALYTICS_BAIDU_ID=e8263761cc5c32f5f7a855b8203b965a \
-  ghcr.io/basketikun/infinite-canvas:latest
-```
-
-单页应用的路由切换会自动向所有已启用的统计上报 pageview。
-
-<Callout type="warn">
-请只在你自己的站点上配置统计 ID，不要把 ID 提交进仓库；fork 或自托管本项目的用户默认不会产生任何统计。
-</Callout>
+文档站仍为 `docs/` 下独立的 Next.js 应用，不包含在本应用容器和发布流水线中。容器构建、真实供应商、Codex 登录和生产部署仍需验收。

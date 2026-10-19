@@ -903,7 +903,7 @@ export default defineConfig({
     base: process.env.VITE_BASE || "/",
     plugins: [react(), localPluginsManifest(), sessionContext(), authAccess(), serverApiAccessControl(), workspaceAccess(), workspaceDataAccess(), serverWebdavProxy(), serverConfigStorage(), aiProviderProxy(), imageProxy()],
     server: { proxy: { [canvasAgentProxyPath]: canvasAgentProxy } },
-    preview: { allowedHosts: ["ubuntu-server"], proxy: { [canvasAgentProxyPath]: canvasAgentProxy } },
+    preview: { allowedHosts: (process.env.INFINITE_CANVAS_ALLOWED_HOSTS || "ubuntu-server").split(",").map((host) => host.trim()).filter(Boolean), proxy: { [canvasAgentProxyPath]: canvasAgentProxy } },
     resolve: {
         alias: {
             "@": resolve(webDir, "src"),

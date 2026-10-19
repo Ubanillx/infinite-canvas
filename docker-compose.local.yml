@@ -1,16 +1,14 @@
 services:
   app:
-    image: infinite-canvas:local
+    extends:
+      file: docker-compose.yml
+      service: app
     build:
       context: .
       dockerfile: Dockerfile
-    ports:
-      - "3000:3000"
-    volumes:
-      - infinite-canvas-data:/data
-      - infinite-canvas-agent:/root/.infinite-canvas
-    restart: unless-stopped
+      target: runtime
 
 volumes:
   infinite-canvas-data:
   infinite-canvas-agent:
+  infinite-canvas-codex:

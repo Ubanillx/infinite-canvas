@@ -1,0 +1,14 @@
+---
+title: Jenkins Deployment
+description: GitHub push hooks, SSH and Docker Compose releases from deploy
+---
+
+# Jenkins Deployment
+
+The repository Jenkinsfile accepts only the `deploy` branch, rejects PRs and stale checkouts, and uses `githubPush()` for GitHub hook-triggered SCM polling. Configure a Pipeline from SCM with branch `*/deploy`, script path `Jenkinsfile`, and GitHub hook trigger for GITScm polling. Send GitHub push events to the HTTPS endpoint `/github-webhook/`. Changes to dev or main do not publish directly.
+
+Stages run tests, build an image, smoke-test an isolated container, transfer it over pinned SSH, update Docker Compose, and verify health. Both deployment and rollback wait at most 120 seconds. The last healthy image and runtime configuration are restored on update failure; application data is not rolled back. Initial failure preserves evidence when no previous version exists.
+
+Use Jenkins credentials `infinite-canvas-deploy-ssh` (SSH Username with private key) and `infinite-canvas-known-hosts` (independently verified known_hosts Secret file). Persist deployment host, SSH port, deployment directory and stable Compose project as Job parameter defaults. The empty host default deliberately prevents accidental deployment.
+
+See [deploy/README.md](https://github.com/Ubanillx/infinite-canvas/blob/dev/deploy/README.md) for host initialization, Webhook setup, data volumes, Codex authentication, root-volume migration considerations and rollback. Real Jenkins, SSH, image and production acceptance remain required.
