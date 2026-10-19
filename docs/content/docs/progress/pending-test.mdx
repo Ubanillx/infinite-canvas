@@ -13,6 +13,7 @@ description: Implemented changes that still need manual verification
 
 ## deploy Branch CI/CD
 
+- On Jenkins without Timestamper, build the latest deploy revision and confirm pipeline compilation no longer fails on the timestamps option. Do not replay the old Jenkinsfile; runtime stages still require separate acceptance.
 - Configure single-branch SCM */deploy, persist deployment parameter defaults after initial registration, and verify GitHub push hooks. dev/main, PRs and stale checkouts must not build or deploy.
 - Verify the first Linux image build and isolated smoke check: built JS assets, SQLite/authentication and Agent proxy health must work without credentials in runtime config.js.
 - Reject wrong SSH host keys, archive/image/revision mismatch, concurrent releases, project changes and unmanaged existing containers before updating services.
