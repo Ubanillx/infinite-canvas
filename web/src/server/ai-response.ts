@@ -7,7 +7,8 @@ export async function forwardAiResponse(upstream: Response, res: ServerResponse)
     res.removeHeader("content-length");
     res.removeHeader("content-encoding");
     if (!upstream.body) { res.end(); return; }
-    await pipeline(Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0]), res);
+    // Bun 1.3.13's fromWeb bridge leaks errors from interrupted response bodies.
+    await pipeline(Readable.from(upstream.body as unknown as AsyncIterable<Uint8Array>, { objectMode: false }), res);
 }
 
 export function failAiResponse(res: ServerResponse) {
