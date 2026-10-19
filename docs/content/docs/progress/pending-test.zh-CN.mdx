@@ -7,6 +7,7 @@ description: 当前版本已实现但仍需人工验证的变更项
 
 ## deploy 分支 CI/CD
 
+- 首次发布前确认目标主机已初始化可读的 `shared/production.env`；缺少文件或 shared 目录时，SSH 预检应输出具体路径及原因并在上传前失败；连接、上传、远程激活失败应显示对应环节和退出码，不输出配置内容或私钥。
 - 使用 Dockerfile 固定的 Bun 1.3.13 验证响应流回归：gzip 解压、上游断流、后续健康请求、响应头发送前的可读 502 和下游失败时取消上游读取均应通过，且无未处理错误；不能用宿主机较新 Bun 代替此检查。
 - 确认 Docker test 阶段从 source 继承 `/app/docker-compose.yml` 和 `/app/docker-entrypoint.sh`，整组部署测试不再因缺少文件失败；只挂载完整宿主机仓库测试不能证明镜像内文件齐全。
 - 在未安装 Timestamper 的 Jenkins 上构建最新 deploy 提交，确认不再因 timestamps 选项编译失败；不要直接回放旧 Jenkinsfile，后续运行阶段仍需单独验收。

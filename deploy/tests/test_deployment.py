@@ -182,11 +182,13 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("Invalid SSH host", result.stderr)
 
-    def ssh_transport(self, fail=False):
+    def ssh_transport(self, fail=False, preflight=False):
         fake = '''#!/usr/bin/env python3
-import json, os, sys
+import json, os, subprocess, sys
 with open(os.environ["CALL_LOG"], "a") as f: f.write(json.dumps(sys.argv) + "\\n")
 if os.getenv("SSH_FAIL") == "1": sys.exit(255)
+if os.getenv("SSH_PREFLIGHT") == "1" and sys.argv[-1].startswith("set -eu"):
+    sys.exit(subprocess.run(["bash", "-c", sys.argv[-1]]).returncode)
 if os.path.basename(sys.argv[0]) == "ssh": sys.stdin.buffer.read()
 '''
         for name in ["ssh", "scp"]:
@@ -195,7 +197,8 @@ if os.path.basename(sys.argv[0]) == "ssh": sys.stdin.buffer.read()
             path.chmod(0o755)
         env = dict(self.env, DEPLOY_HOST="deploy.example.com", DEPLOY_USER="deploy",
                    DEPLOY_KEY="/secret/key", KNOWN_HOSTS="/secret/hosts", DEPLOY_DIR=str(self.root),
-                   COMPOSE_PROJECT="test", RELEASE_SHA=SHA, BUILD_NUMBER="7", SSH_FAIL="1" if fail else "0")
+                   COMPOSE_PROJECT="test", RELEASE_SHA=SHA, BUILD_NUMBER="7", SSH_FAIL="1" if fail else "0",
+                   SSH_PREFLIGHT="1" if preflight else "0")
         return subprocess.run(["bash", str(REPO / "deploy/ssh-deploy.sh")], cwd=REPO,
                               env=env, stdin=subprocess.DEVNULL, text=True, capture_output=True)
 
@@ -214,6 +217,31 @@ if os.path.basename(sys.argv[0]) == "ssh": sys.stdin.buffer.read()
         result = self.ssh_transport(fail=True)
         self.assertEqual(result.returncode, 255)
         self.assertEqual(len(self.calls()), 1)
+        self.assertIn("remote preflight (exit 255)", result.stderr)
+
+    def test_missing_runtime_config_is_explicit_before_upload(self):
+        (self.root / "shared/production.env").unlink()
+        result = self.ssh_transport(preflight=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("production.env first", result.stderr)
+        self.assertIn("remote preflight (exit 1)", result.stderr)
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_missing_shared_directory_is_explicit_before_upload(self):
+        shutil.rmtree(self.root / "shared")
+        result = self.ssh_transport(preflight=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Missing deployment directory", result.stderr)
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_real_preflight_accepts_initialized_config_without_logging_it(self):
+        (self.root / "shared/production.env").write_text("PRIVATE_SENTINEL=must-not-be-logged\n")
+        shutil.rmtree(self.root / "incoming")
+        result = self.ssh_transport(preflight=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.calls()), 3)
+        self.assertTrue((self.root / "incoming" / RELEASE).is_dir())
+        self.assertNotIn("must-not-be-logged", result.stdout + result.stderr)
 
     def supervisor(self, exit_role):
         app = self.root / "app"

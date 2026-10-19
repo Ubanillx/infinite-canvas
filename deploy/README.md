@@ -67,6 +67,8 @@ sudo install -m 600 -o canvas-deploy -g canvas-deploy deploy/production.env.exam
 
 把模板从仓库安全复制到主机后再执行最后一条，编辑其中站点域名、监听地址、端口和允许网段。部署用户须能无交互执行 Docker（加入 docker 组需重新登录，等效 root 权限），并可写部署目录。无需 sudo，也无需目标主机持有 GitHub 或镜像仓库凭据。
 
+创建目录和 SSH 密钥并不等于完成运行配置初始化。若流水线在 SSH deploy 阶段提示 `Initialize readable .../shared/production.env first`，应先在部署主机创建该文件（权限 600、归部署用户所有），而不是重新生成密钥或关闭主机公钥校验。脚本分别报告预检、上传或激活的失败环节，不会输出配置内容。
+
 默认绑定 `127.0.0.1:3000`，由宿主机 Nginx/Caddy 提供 TLS 入口。`INFINITE_CANVAS_ALLOWED_HOSTS` 为精确域名列表，不要设为允许所有主机。若需要局域网直连，可明确修改绑定地址并配合防火墙。默认不开放公网 API；不要为解决连接问题直接改成 `0.0.0.0/0`。
 
 持久化 `production.env` 只放部署运行参数，不放 AI API Key、Agent Token 或 Codex 登录凭据；服务端业务密钥由应用自身写入数据卷。Jenkins artifacts 不包含该文件。
