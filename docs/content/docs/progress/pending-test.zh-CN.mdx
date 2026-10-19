@@ -13,6 +13,7 @@ description: 当前版本已实现但仍需人工验证的变更项
 
 ## deploy 分支 CI/CD
 
+- 确认 Docker test 阶段从 source 继承 `/app/docker-compose.yml` 和 `/app/docker-entrypoint.sh`，整组部署测试不再因缺少文件失败；只挂载完整宿主机仓库测试不能证明镜像内文件齐全。
 - 在未安装 Timestamper 的 Jenkins 上构建最新 deploy 提交，确认不再因 timestamps 选项编译失败；不要直接回放旧 Jenkinsfile，后续运行阶段仍需单独验收。
 - Jenkins 单分支 SCM 使用 */deploy，GitHub Push Webhook 触发；dev/main、PR 和旧提交不能进入构建或部署。首次注册参数后持久化部署主机默认值，再验证自动推送发布。
 - 首次 Linux 镜像构建运行部署/Web/Agent 测试并通过容器冒烟检查；首页 JS 静态资源、SQLite/认证、Agent 同源健康请求正常，运行时 config.js 不包含密钥。

@@ -16,7 +16,7 @@ WORKDIR /app/canvas-agent
 COPY canvas-agent/package.json canvas-agent/package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
 WORKDIR /app
-COPY VERSION CHANGELOG.md ./
+COPY VERSION CHANGELOG.md docker-compose.yml docker-entrypoint.sh ./
 COPY web ./web
 COPY canvas-agent ./canvas-agent
 COPY deploy ./deploy
