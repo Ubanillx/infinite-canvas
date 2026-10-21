@@ -185,7 +185,7 @@ function webdavRootConfig(config: WebdavSyncConfig) {
 async function throwWebdavError(response: Response, fallback: string): Promise<never> {
     const detail = await response.text().catch(() => "");
     if (response.status === 401) {
-        if (detail.includes("Workspace authentication required")) throw new Error(webdavText("workspaceAuthenticationFailed"));
+        if (detail.includes("Workspace selection required")) throw new Error(webdavText("workspaceSelectionRequired"));
         throw new Error(webdavText("authenticationFailed"));
     }
     if (response.status === 403) {

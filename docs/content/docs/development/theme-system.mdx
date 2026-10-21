@@ -1,0 +1,27 @@
+---
+title: Theme System
+description: Shared color and surface rules for the application
+---
+
+# Theme System
+
+The application uses neutral semantic tokens for shared UI and a separate canvas theme for the editor surface. Light mode follows a white jade direction: near-white backgrounds, white surfaces, faint warm-gray boundaries, charcoal text, and restrained shadows. It does not use green as a brand accent.
+
+## Light mode tokens
+
+- `background`: `#fafaf8`, the page and application background.
+- `surface`: `#ffffff`, cards, popovers, and elevated panels.
+- `soft`: `#f4f4f0`, selected and secondary surfaces.
+- `hover`: `#efefeb`, hover feedback.
+- `border`: `#e9e9e4`, quiet boundaries.
+- `text`: `#292b28`, primary text.
+- `mutedText`: `#676963`, secondary text.
+- `primary`: `#30332f`, primary controls and active marks.
+
+Use semantic classes such as `bg-background`, `bg-card`, `bg-muted`, `text-foreground`, `text-muted-foreground`, and `border-border` in shared UI. Reuse `--shadow-surface` and `--shadow-surface-hover` for small, low-contrast elevation. Do not introduce page-local green, stone, or black-and-white replacements for these tokens.
+
+## Canvas mode
+
+`web/src/lib/canvas-theme.ts` maps the same neutral palette to the canvas grid, nodes, panels, and toolbar. Canvas-specific controls may use the theme object when they need inline drawing colors; ordinary page controls should use the shared semantic tokens.
+
+Dark mode keeps its existing warm charcoal direction and remains independent from the light palette.

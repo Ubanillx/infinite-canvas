@@ -2,6 +2,7 @@ import { type ReactNode } from "react";
 import { Slider, Switch } from "antd";
 import { useTranslation } from "react-i18next";
 
+import { SettingGroup } from "@/components/settings/setting-group";
 import i18n from "@/i18n";
 import { ImageSettingsTheme } from "@/components/image-settings-panel";
 import { type CanvasTheme } from "@/lib/canvas-theme";
@@ -211,17 +212,6 @@ function OptionPill({ selected, disabled = false, theme, onClick, children }: { 
         <button type="button" disabled={disabled} className="h-9 cursor-pointer rounded-full border px-2 text-sm transition hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-35" style={{ background: "transparent", borderColor: selected ? theme.node.text : theme.node.stroke, color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()} onClick={onClick}>
             {children}
         </button>
-    );
-}
-
-function SettingGroup({ title, color, children }: { title: string; color: string; children: ReactNode }) {
-    return (
-        <div className="space-y-2.5">
-            <div className="text-xs font-medium" style={{ color }}>
-                {title}
-            </div>
-            {children}
-        </div>
     );
 }
 

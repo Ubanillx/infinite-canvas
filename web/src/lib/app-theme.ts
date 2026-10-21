@@ -1,18 +1,19 @@
 import type { ThemeConfig } from "antd";
 import { theme as antdTheme } from "antd";
+import { lightPalette } from "@/lib/light-palette";
 
 const neutral = {
     light: {
-        primary: "#171717",
-        primaryHover: "#000000",
-        primaryText: "#ffffff",
-        elevatedBg: "#ffffff",
-        itemHoverBg: "rgba(23, 23, 23, 0.06)",
-        itemSelectedBg: "rgba(23, 23, 23, 0.1)",
-        itemSelectedHoverBg: "rgba(23, 23, 23, 0.14)",
-        itemText: "#171717",
-        tableSelectedBg: "rgba(17, 17, 17, 0.05)",
-        tableSelectedHoverBg: "rgba(17, 17, 17, 0.08)",
+        primary: lightPalette.primary,
+        primaryHover: lightPalette.primaryHover,
+        primaryText: lightPalette.primaryText,
+        elevatedBg: lightPalette.surface,
+        itemHoverBg: "rgba(48, 51, 47, 0.05)",
+        itemSelectedBg: "rgba(48, 51, 47, 0.09)",
+        itemSelectedHoverBg: "rgba(48, 51, 47, 0.13)",
+        itemText: lightPalette.text,
+        tableSelectedBg: "rgba(48, 51, 47, 0.04)",
+        tableSelectedHoverBg: "rgba(48, 51, 47, 0.07)",
     },
     dark: {
         primary: "#fafafa",
@@ -42,6 +43,17 @@ export function getAntThemeConfig(dark: boolean): ThemeConfig {
             colorLinkActive: color.primary,
             colorTextLightSolid: color.primaryText,
             colorBgElevated: color.elevatedBg,
+            ...(!dark && {
+                colorBgBase: lightPalette.background,
+                colorBgContainer: lightPalette.surface,
+                colorBgLayout: lightPalette.background,
+                colorBorder: lightPalette.border,
+                colorBorderSecondary: lightPalette.border,
+                colorText: lightPalette.text,
+                colorTextSecondary: lightPalette.mutedText,
+                boxShadow: lightPalette.shadow,
+                boxShadowSecondary: lightPalette.shadowHover,
+            }),
             controlItemBgHover: color.itemHoverBg,
             controlItemBgActive: color.itemSelectedBg,
             controlItemBgActiveHover: color.itemSelectedHoverBg,

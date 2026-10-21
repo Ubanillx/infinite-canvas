@@ -1,5 +1,6 @@
 import { saveAs } from "file-saver";
 
+import { safeFileName } from "@/lib/utils";
 import i18n from "@/i18n";
 import { createZip } from "@/lib/zip";
 import { getMediaBlob } from "@/services/file-storage";
@@ -69,10 +70,6 @@ function collectStorageKeys(value: unknown, keys = new Set<string>()) {
     if ("storageKey" in value && typeof value.storageKey === "string" && value.storageKey.includes(":")) keys.add(value.storageKey);
     Object.values(value).forEach((item) => (Array.isArray(item) ? item.forEach((child) => collectStorageKeys(child, keys)) : collectStorageKeys(item, keys)));
     return [...keys];
-}
-
-function safeFileName(value: string) {
-    return value.replace(/[\\/:*?"<>|]/g, "_");
 }
 
 function fileExtension(mimeType: string, storageKey: string) {

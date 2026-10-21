@@ -1,7 +1,7 @@
 import localforage from "localforage";
 
 export type WorkspaceRole = "owner" | "editor" | "viewer";
-export type WorkspaceAccess = { id: string; name: string; role: WorkspaceRole; createdAt: string; accessKey?: string };
+export type WorkspaceAccess = { id: string; name: string; role: WorkspaceRole; createdAt: string };
 
 const ACTIVE_WORKSPACE_KEY = "infinite-canvas:active-workspace";
 const KNOWN_WORKSPACES_KEY = "infinite-canvas:known-workspaces";
@@ -22,8 +22,7 @@ export function getKnownWorkspaces() {
 }
 
 export function setKnownWorkspaces(workspaces: WorkspaceAccess[]) {
-    const previous = new Map(getKnownWorkspaces().map((item) => [item.id, item]));
-    window.localStorage.setItem(KNOWN_WORKSPACES_KEY, JSON.stringify(workspaces.map((item) => ({ ...item, accessKey: item.accessKey || previous.get(item.id)?.accessKey }))));
+    window.localStorage.setItem(KNOWN_WORKSPACES_KEY, JSON.stringify(workspaces));
 }
 
 export function setActiveWorkspace(workspace: WorkspaceAccess) {
@@ -38,7 +37,7 @@ export function clearActiveWorkspace() {
 
 export function workspaceHeaders(): Record<string, string> {
     const workspace = getActiveWorkspace();
-    return workspace ? { "x-infinite-canvas-workspace": workspace.id, ...(workspace.accessKey ? { "x-infinite-canvas-workspace-token": workspace.accessKey } : {}) } : {};
+    return workspace ? { "x-infinite-canvas-workspace": workspace.id } : {};
 }
 
 export function workspaceStorageKey(key: string) {
@@ -86,7 +85,7 @@ function readWorkspace(value: unknown): WorkspaceAccess | null {
         const workspace = item as Partial<WorkspaceAccess>;
         if (!workspace.id || !workspace.name) return null;
         const role = ["owner", "editor", "viewer"].includes(String(workspace.role)) ? workspace.role as WorkspaceRole : "owner";
-        return { id: workspace.id, name: workspace.name, role, createdAt: workspace.createdAt || new Date(0).toISOString(), accessKey: typeof workspace.accessKey === "string" ? workspace.accessKey : undefined };
+        return { id: workspace.id, name: workspace.name, role, createdAt: workspace.createdAt || new Date(0).toISOString() };
     } catch {
         return null;
     }

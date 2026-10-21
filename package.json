@@ -1,0 +1,14 @@
+{
+  "name": "infinite-canvas-dev",
+  "private": true,
+  "scripts": {
+    "dev": "bun scripts/local.mjs dev",
+    "dev:agent": "npm --prefix canvas-agent run debug",
+    "test": "bun scripts/local.mjs test",
+    "test:e2e": "bun scripts/local.mjs e2e",
+    "test:e2e:ui": "bun scripts/local.mjs e2e --ui",
+    "test:report": "node scripts/local.mjs report",
+    "logs:check": "bun scripts/local.mjs logs",
+    "doctor": "bun scripts/local.mjs doctor"
+  }
+}

@@ -12,6 +12,7 @@ import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, Viewport
 export type CanvasProject = {
     id: string;
     title: string;
+    description?: string;
     folderId: string | null;
     createdAt: string;
     updatedAt: string;
@@ -42,7 +43,7 @@ type CanvasStore = {
     projects: CanvasProject[];
     folders: CanvasFolder[];
     deletedProjects: CanvasDeletedProject[];
-    createProject: (title?: string, folderId?: string | null) => string;
+    createProject: (title?: string, folderId?: string | null, description?: string) => string;
     importProject: (project: Partial<CanvasProject>, folderId?: string | null) => string;
     createFolder: (title?: string, parentId?: string | null) => string;
     renameFolder: (id: string, title: string) => void;
@@ -152,12 +153,13 @@ export const useCanvasStore = create<CanvasStore>()(
             projects: [],
             folders: [],
             deletedProjects: [],
-            createProject: (title = i18n.t("canvas.project.untitled"), folderId = null) => {
+            createProject: (title = i18n.t("canvas.project.untitled"), folderId = null, description = "") => {
                 const now = new Date().toISOString();
                 const id = nanoid();
                 const project: CanvasProject = {
                     id,
                     title,
+                    description,
                     folderId,
                     createdAt: now,
                     updatedAt: now,
@@ -178,6 +180,7 @@ export const useCanvasStore = create<CanvasStore>()(
                 const project: CanvasProject = {
                     id: nanoid(),
                     title: source.title || i18n.t("canvas.project.imported"),
+                    description: source.description || "",
                     folderId: targetFolderId,
                     createdAt: source.createdAt || now,
                     updatedAt: now,

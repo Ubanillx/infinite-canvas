@@ -5,17 +5,32 @@ description: Frontend-first local development
 
 # Local Development
 
-The main application lives in `web/`. The browser sends AI requests directly to the user's OpenAI-compatible endpoint.
+The main application lives in `web/`; its development server also runs the local SQLite workspace APIs. The browser sends AI requests to the configured OpenAI-compatible endpoint. Local state and logs are isolated from normal user data under the repository's ignored `.local/` directory.
 
-## Start the frontend
+## Set up the development environment
 
 ```bash
-cd web
-bun install
-bun run dev
+npm install --global bun@1.3.13
+cd web && npm ci --legacy-peer-deps
+cd ../canvas-agent && npm ci
+npx --prefix web playwright install chromium
 ```
 
-Open `http://localhost:3000`, then enter your `Base URL`, `API Key`, and model names in Settings. Prompt sources and WebDAV are also accessed directly by the browser.
+Node.js 22 and Python 3 are also needed for the full test suite. `--legacy-peer-deps` is needed because the current ProComponents beta declares an Ant Design 5 peer while this app uses Ant Design 6.
+
+## Run locally
+
+From the repository root, run `npm run dev` and open `http://127.0.0.1:3000`. Development data is saved under `.local/dev-data/`; server output is appended as JSONL to `.local/dev-server.jsonl`. To run the local Canvas Agent with debug logging in another terminal, run `npm run dev:agent`.
+
+## Tests and diagnostics
+
+- `npm test` runs the web, Canvas Agent, and deployment unit suites.
+- `npm run test:e2e` starts an isolated server on port 3100 with its own temporary SQLite data, then runs Chromium desktop and mobile workspace/canvas flows. Install the browser once with `npx --prefix web playwright install chromium`.
+- `npm run test:e2e:ui` opens the Playwright UI runner; `npm run test:report` opens the latest HTML report. Failure traces, screenshots, browser diagnostics, server logs and test data stay under ignored `.local/e2e-*/` and `web/test-results/`.
+- `npm run logs:check` scans the development server JSONL log and exits non-zero for likely errors; pass a log path to scan another run. Browser E2E also fails on console errors, uncaught exceptions, HTTP errors and non-cancelled failed requests.
+- `npm run doctor` checks the pinned Bun version, installed dependencies, Playwright CLI and local tooling.
+
+These scripts do not make requests to AI providers; provider-backed generation still requires configuring an API endpoint and credentials in the app.
 
 ## Start the documentation site
 

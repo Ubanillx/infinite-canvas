@@ -45,7 +45,7 @@ export function CanvasFolderCard({
     const { t } = useTranslation();
     return (
         <article
-            className={`group flex min-h-44 cursor-grab flex-col justify-between rounded-2xl border p-5 transition active:cursor-grabbing ${dropTarget ? "border-sky-500 bg-sky-500/10 ring-2 ring-sky-500/20" : selected ? "border-sky-500/70 bg-sky-500/5" : "border-transparent bg-[#f1eee8] hover:bg-[#ebe6dc] dark:bg-white/5 dark:hover:bg-white/10"}`}
+            className={`group flex min-h-44 cursor-grab flex-col justify-between rounded-2xl border p-5 shadow-[var(--shadow-surface)] transition-[background-color,box-shadow] active:cursor-grabbing ${dropTarget ? "border-primary bg-accent ring-2 ring-primary/20" : selected ? "border-primary/60 bg-accent/60" : "border-border bg-card hover:bg-accent/40 hover:shadow-[var(--shadow-surface-hover)] dark:border-white/10 dark:bg-white/5 dark:hover:bg-white/10"}`}
             draggable={!editing}
             onClick={onSelect}
             onDoubleClick={(event) => {
@@ -67,13 +67,13 @@ export function CanvasFolderCard({
             }}
         >
             <div className="flex items-start gap-3">
-                <Folder className="mt-0.5 size-5 shrink-0 text-sky-600 dark:text-sky-400" />
+                <Folder className="mt-0.5 size-5 shrink-0 text-primary dark:text-sky-400" />
                 {editing ? (
                     <Input className="min-w-0" value={editingTitle} onClick={(event) => event.stopPropagation()} onChange={(event) => onEditingTitleChange(event.target.value)} onKeyDown={(event) => event.key === "Enter" && onSave()} autoFocus />
                 ) : (
                     <button type="button" className="min-w-0 cursor-pointer text-left" onClick={(event) => { event.stopPropagation(); onSelect(); }} onDoubleClick={(event) => { event.stopPropagation(); onOpen(); }}>
                         <h2 className="truncate text-xl font-semibold">{folder.title}</h2>
-                        <p className="mt-3 text-sm leading-6 text-stone-600 dark:text-stone-400">{t("canvas.folder.itemCount", { count: itemCount })}</p>
+                        <p className="mt-3 text-sm leading-6 text-muted-foreground">{t("canvas.folder.itemCount", { count: itemCount })}</p>
                     </button>
                 )}
             </div>

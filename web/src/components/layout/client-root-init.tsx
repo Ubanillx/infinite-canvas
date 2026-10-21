@@ -1,31 +1,35 @@
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
-import { App, Button, Modal, Result, Spin } from "antd";
+import { App, Button, Modal, Result } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { applyServerConfig } from "@/services/config-file";
 import { loadServerConfig } from "@/services/server-config";
 import { useConfigStore } from "@/stores/use-config-store";
 import { usePromptSourceScheduler } from "@/hooks/use-prompt-source-scheduler";
+import { useAppLoadingStore } from "@/stores/use-app-loading-store";
+import { useAssetStore } from "@/stores/use-asset-store";
+import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 
 export function ClientRootInit({ children }: { children: ReactNode }) {
     const { t } = useTranslation();
     const [attempt, setAttempt] = useState(0);
     const { ready, error } = useServerConfigSync(attempt);
+    const finishAppLoading = useAppLoadingStore((state) => state.finish);
+    const startAppLoading = useAppLoadingStore((state) => state.start);
+    const canvasHydrated = useCanvasStore((state) => state.hydrated);
+    const assetsHydrated = useAssetStore((state) => state.hydrated);
+    const pathname = window.location.pathname;
+    const routeHydrated = (!pathname.startsWith("/canvas") || canvasHydrated) && (pathname !== "/assets" || assetsHydrated);
+
+    useEffect(() => {
+        if (error || (ready && routeHydrated)) finishAppLoading();
+    }, [error, finishAppLoading, ready, routeHydrated]);
 
     if (error) {
-        return <Result status="error" title={t("config.serverStorage.loadFailed")} subTitle={error} extra={<Button type="primary" onClick={() => setAttempt((value) => value + 1)}>{t("common.retry")}</Button>} />;
+        return <Result status="error" title={t("config.serverStorage.loadFailed")} subTitle={error} extra={<Button type="primary" onClick={() => { startAppLoading(); setAttempt((value) => value + 1); }}>{t("common.retry")}</Button>} />;
     }
-    if (!ready) {
-        return (
-            <div className="flex min-h-screen items-center justify-center">
-                <div className="flex flex-col items-center gap-3 text-sm text-stone-500">
-                    <Spin size="large" />
-                    <span>{t("config.serverStorage.loading")}</span>
-                </div>
-            </div>
-        );
-    }
+    if (!ready) return null;
     return <ReadyClientRoot>{children}</ReadyClientRoot>;
 }
 

@@ -184,11 +184,9 @@ function workspaceIdFromRequest(req: IncomingMessage, requestUrl = new URL(req.u
 
 async function workspaceContext(req: IncomingMessage, requestUrl = new URL(req.url || "/", "http://localhost")): Promise<WorkspaceContext | null> {
     const id = workspaceIdFromRequest(req, requestUrl);
-    const tokenHeader = req.headers["x-infinite-canvas-workspace-token"];
-    const token = typeof tokenHeader === "string" && tokenHeader ? tokenHeader : requestUrl.searchParams.get("workspaceToken") || "";
-    if (!id || !token) return null;
+    if (!id) return null;
     const db = await getDatabase();
-    const row = queryOne<{ id: string; name: string; created_at: string }>(db, "SELECT id, name, created_at FROM workspaces WHERE id = ? AND legacy_key_hash = ?", id, hashToken(token));
+    const row = queryOne<{ id: string; name: string; created_at: string }>(db, "SELECT id, name, created_at FROM workspaces WHERE id = ?", id);
     return row ? { id: row.id, name: row.name, role: "owner", createdAt: row.created_at } : null;
 }
 
@@ -289,6 +287,11 @@ function workspaceAccess(): Plugin {
         res.setHeader("Cache-Control", "no-store");
         try {
             const db = await getDatabase();
+            if (requestUrl.pathname === "/api/workspaces/summaries" && req.method === "GET") {
+                const rows = queryMany<{ workspace_id: string; payload: string | null }>(db, "SELECT w.id AS workspace_id, d.payload FROM workspaces w LEFT JOIN workspace_data d ON d.workspace_id = w.id AND d.domain = 'canvas'");
+                const summaries = Object.fromEntries(rows.map((row) => [row.workspace_id, summarizeWorkspaceCanvas(row.payload)]));
+                return sendJson(res, 200, { summaries });
+            }
             if (requestUrl.pathname === "/api/workspaces" && req.method === "GET") {
                 const rows = queryMany<{ id: string; name: string; created_at: string }>(db, "SELECT id, name, created_at FROM workspaces ORDER BY updated_at DESC, created_at DESC");
                 return sendJson(res, 200, { workspaces: rows.map((row) => ({ id: row.id, name: row.name, role: "owner", createdAt: row.created_at })) });
@@ -299,23 +302,10 @@ function workspaceAccess(): Plugin {
                 if (!name || name.length > 80) return sendJson(res, 400, { error: "工作区名称无效" });
                 const now = isoNow();
                 const id = newId();
-                const accessKey = newSessionToken();
                 transaction(db, () => {
-                    execute(db, "INSERT INTO workspaces (id, name, owner_user_id, legacy_key_hash, created_at, updated_at) VALUES (?, ?, NULL, ?, ?, ?)", id, name, hashToken(accessKey), now, now);
+                    execute(db, "INSERT INTO workspaces (id, name, owner_user_id, created_at, updated_at) VALUES (?, ?, NULL, ?, ?)", id, name, now, now);
                 });
-                return sendJson(res, 201, { workspace: { id, name, role: "owner", createdAt: now }, accessKey });
-            }
-            if (requestUrl.pathname === "/api/workspaces/unlock" && req.method === "POST") {
-                const body = await readJsonBody(req);
-                const id = typeof body.id === "string" ? body.id.trim() : "";
-                const accessKey = typeof body.accessKey === "string" ? body.accessKey.trim() : "";
-                const workspace = queryOne<{ id: string; name: string; created_at: string; legacy_key_hash: string | null }>(db, "SELECT id, name, created_at, legacy_key_hash FROM workspaces WHERE id = ?", id);
-                if (!workspace || !workspace.legacy_key_hash || !accessKey || workspace.legacy_key_hash !== hashToken(accessKey)) return sendJson(res, 401, { error: "工作区不存在或访问密钥不正确" });
-                return sendJson(res, 200, { workspace: { id: workspace.id, name: workspace.name, role: "owner", createdAt: workspace.created_at } });
-            }
-            if (requestUrl.pathname === "/api/workspaces/current" && req.method === "GET") {
-                const context = await workspaceContext(req, requestUrl);
-                return context ? sendJson(res, 200, { workspace: context }) : sendJson(res, 404, { error: "工作区不存在或访问密钥不正确" });
+                return sendJson(res, 201, { workspace: { id, name, role: "owner", createdAt: now } });
             }
             return sendJson(res, 405, { error: "Method not allowed" });
         } catch (error) {
@@ -327,13 +317,28 @@ function workspaceAccess(): Plugin {
     return { name: "workspace-access", configureServer: (server) => { server.middlewares.use(middleware); }, configurePreviewServer: (server) => { server.middlewares.use(middleware); } };
 }
 
+function summarizeWorkspaceCanvas(payload: string | null) {
+    if (!payload) return { canvasCount: 0, folderCount: 0, recentCanvasTitle: null };
+    try {
+        const state = (JSON.parse(payload) as { state?: { projects?: unknown; folders?: unknown } }).state;
+        const projects = state?.projects;
+        const folders = state?.folders;
+        if (!Array.isArray(projects) || (folders !== undefined && !Array.isArray(folders))) return null;
+        const latest = projects.reduce<(typeof projects)[number] | null>((recent, project) =>
+            typeof project.updatedAt === "string" && (!recent || project.updatedAt > String(recent.updatedAt)) ? project : recent, null);
+        return { canvasCount: projects.length, folderCount: Array.isArray(folders) ? folders.length : 0, recentCanvasTitle: typeof latest?.title === "string" ? latest.title : null };
+    } catch {
+        return null;
+    }
+}
+
 function serverWebdavProxy(): Plugin {
     const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
         const requestUrl = new URL(req.url || "/", "http://localhost");
         if (requestUrl.pathname !== "/api/webdav" && !requestUrl.pathname.startsWith("/api/webdav/")) return next();
 
         const workspace = await workspaceContext(req, requestUrl);
-        if (!workspace) return sendJson(res, 401, { error: "Workspace authentication required" });
+        if (!workspace) return sendJson(res, 401, { error: "Workspace selection required" });
 
         let target: URL;
         let authorization: string;
@@ -352,10 +357,8 @@ function serverWebdavProxy(): Plugin {
             return sendJson(res, 409, { error: "Automatic WebDAV writes are disabled; refresh the page and use manual sync" });
         }
         const headers: Record<string, string | string[] | undefined> = { ...req.headers, authorization };
-        delete headers["x-infinite-canvas-workspace"];
-        delete headers["x-infinite-canvas-workspace-token"];
+        for (const name of Object.keys(headers)) if (name.startsWith("x-infinite-canvas-")) delete headers[name];
         delete headers["x-canvas-agent-token"];
-        delete headers["x-infinite-canvas-sync-mode"];
         delete headers.host;
         delete headers.connection;
         if (isPropfind) delete headers["accept-encoding"];

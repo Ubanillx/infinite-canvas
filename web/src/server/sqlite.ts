@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 type SqliteStatement = {
@@ -60,7 +60,6 @@ async function openDatabase(): Promise<SqliteDatabase> {
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
-            legacy_key_hash TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -103,7 +102,6 @@ async function openDatabase(): Promise<SqliteDatabase> {
         CREATE INDEX IF NOT EXISTS idx_workspace_members_user ON workspace_members(user_id);
         CREATE INDEX IF NOT EXISTS idx_workspace_invites_workspace ON workspace_invites(workspace_id);
     `);
-    migrateLegacyWorkspaces(db);
     return db;
 }
 
@@ -160,26 +158,6 @@ async function openNodeDatabase(file: string): Promise<SqliteDatabase> {
             }) as T;
         },
     };
-}
-
-function migrateLegacyWorkspaces(db: SqliteDatabase) {
-    const count = db.query("SELECT COUNT(*) AS count FROM workspaces").get() as { count?: number } | null;
-    if (Number(count?.count || 0) > 0) return;
-    const file = resolve(dataDirectory(), "workspaces.json");
-    let records: unknown;
-    try {
-        records = JSON.parse(readFileSync(file, "utf8"));
-    } catch {
-        return;
-    }
-    if (!Array.isArray(records)) return;
-    const insert = db.query("INSERT OR IGNORE INTO workspaces (id, name, owner_user_id, legacy_key_hash, created_at, updated_at) VALUES (?, ?, NULL, ?, ?, ?)");
-    for (const item of records) {
-        if (!item || typeof item !== "object") continue;
-        const value = item as Record<string, unknown>;
-        if (typeof value.id !== "string" || typeof value.name !== "string" || typeof value.keyHash !== "string" || typeof value.createdAt !== "string") continue;
-        insert.run(value.id, value.name, value.keyHash, value.createdAt, value.createdAt);
-    }
 }
 
 export function queryOne<T>(db: SqliteDatabase, sql: string, ...params: unknown[]) {

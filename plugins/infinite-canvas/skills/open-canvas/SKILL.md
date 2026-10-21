@@ -54,5 +54,7 @@ npx -y @basketikun/canvas-agent@latest
 
 用户没有明确指定打开方式时，始终使用 `mode=new` 新建画布。只有用户明确要求时才替换为：
 
+`mode=new` 打开后由用户填写画布名称和选填描述，确认后才创建并进入画布。
+
 - 最近画布：`mode=recent`
 - 自己选择：`mode=choose`

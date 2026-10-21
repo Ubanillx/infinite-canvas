@@ -4,6 +4,7 @@ import { Cloud, Download, Pencil, Plus, RefreshCw, Trash2, Upload, Wifi } from "
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { formatCompactBytes as formatBytes } from "@/lib/format";
 import { ModelPicker } from "@/components/model-picker";
 import { videoResolutionOptions } from "@/components/video-settings-panel";
 import { ChannelEditorDrawer } from "@/components/layout/channel-editor-drawer";
@@ -544,8 +545,3 @@ function getWebdavProgressStatus(item: WebdavDomainProgress): "normal" | "active
     return item.status === "active" ? "active" : "normal";
 }
 
-function formatBytes(bytes: number) {
-    if (bytes < 1024) return `${bytes}B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-    return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
-}

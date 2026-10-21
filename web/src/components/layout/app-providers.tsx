@@ -10,9 +10,11 @@ import "dayjs/locale/zh-cn";
 import { useTranslation } from "react-i18next";
 
 import { ClientRootInit } from "@/components/layout/client-root-init";
+import { AppLoadingOverlay } from "@/components/layout/app-loading-overlay";
 import { WorkspaceGate } from "@/components/layout/workspace-gate";
 import type { AppLocale } from "@/i18n";
 import { getAntThemeConfig } from "@/lib/app-theme";
+import { useAppLoadingStore } from "@/stores/use-app-loading-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 
 const queryClient = new QueryClient({
@@ -28,6 +30,7 @@ const queryClient = new QueryClient({
 export function AppProviders({ children }: { children: ReactNode }) {
     const { i18n, t } = useTranslation();
     const theme = useThemeStore((state) => state.theme);
+    const loading = useAppLoadingStore((state) => state.loading);
     const dark = theme === "dark";
     const locale = i18n.resolvedLanguage as AppLocale;
 
@@ -48,7 +51,10 @@ export function AppProviders({ children }: { children: ReactNode }) {
             <ProConfigProvider dark={dark}>
                 <App>
                     <QueryClientProvider client={queryClient}>
-                        <WorkspaceGate><ClientRootInit>{children}</ClientRootInit></WorkspaceGate>
+                        <div inert={loading} aria-hidden={loading}>
+                            <WorkspaceGate><ClientRootInit>{children}</ClientRootInit></WorkspaceGate>
+                        </div>
+                        <AppLoadingOverlay />
                     </QueryClientProvider>
                 </App>
             </ProConfigProvider>

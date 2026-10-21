@@ -10,6 +10,9 @@ data-test/
 .DS_Store
 .idea
 .ci/
+.local/
+web/playwright-report/
+web/test-results/
 web/dist
 
 **/dist

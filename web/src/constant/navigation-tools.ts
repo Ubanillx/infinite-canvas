@@ -1,9 +1,9 @@
-import { FileText, ImagePlus, Images, Maximize2, Settings2, Video } from "lucide-react";
+import { FileText, ImagePlus, Images, Settings2, Shapes, Video } from "lucide-react";
 
 export const navigationTools = [
     {
         slug: "canvas",
-        icon: Maximize2,
+        icon: Shapes,
     },
     {
         slug: "image",
@@ -28,3 +28,9 @@ export const navigationTools = [
 ] as const;
 
 export type NavigationToolSlug = (typeof navigationTools)[number]["slug"];
+
+export const navigationGroups = [
+    { key: "create", tools: navigationTools.slice(0, 3) },
+    { key: "resources", tools: navigationTools.slice(3, 5) },
+    { key: "settings", tools: navigationTools.slice(5) },
+] as const;

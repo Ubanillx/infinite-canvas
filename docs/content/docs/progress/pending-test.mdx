@@ -5,11 +5,50 @@ description: Implemented changes that still need manual verification
 
 # Pending Tests
 
+## Internal Code Cleanup
+
+- Canvas image, video, audio, and text setting popovers should still open above or below their button, stay inside the viewport, follow scrolling and resizing, and close on an outside click. Text popover height and the image popover's blur-on-close behavior should remain unchanged.
+- Image, audio, and text settings should keep their existing option styles and selection behavior; video and audio setting groups should keep their layout. Image and video reference ordering must retain the same boundary buttons and results.
+- Canvas prompt chips and the configuration composer should keep caret placement and `@` insertion behavior. Reference thumbnails, token serialization, and line breaks must remain unchanged.
+- Image, video, and audio API errors should keep their existing messages, including JSON/HTML error parsing, request cancellation, and each API's HTTP, network, and timeout handling. Video and model-script polling should retain their cancellation behavior.
+- Repeated video/model-script polling with one cancellation signal should release each completed wait's abort listener. Pre-cancelled and active waits must still reject with `AbortError`; polling intervals and timeouts remain unchanged.
+
+## White Jade Light Theme
+
+- In light mode, the home page, header, sidebar, canvas library, workspace popover, image studio, and video studio should use near-white neutral surfaces with faint gray boundaries. No jade-green brand accent or large beige blocks should remain.
+- Cards and popovers should use restrained shadows with clear but quiet boundaries. Text, buttons, selected states, and Ant Design popovers must remain readable on light surfaces. Dark mode should keep its existing warm charcoal direction.
+
+## Global Loading Experience
+
+- Reload the home page, canvas library, canvas editor, and assets page with a selected workspace. The full-screen orbital animation should cover workspace and configuration loading, then fade out only when the destination page and its stored data are ready. No chooser, local spinner, or unfinished canvas should flash. Check both themes and reduced motion.
+- With no selected workspace, reveal the chooser after loading. If the selected workspace no longer exists on the server, reveal the chooser after validation. Workspace switching, creation, and configuration retry should use the same animation; failures must reveal actionable errors.
+
+## Header Workspace Switcher
+
+- The header clearly shows the current workspace. Long names and narrow screens should not crowd adjacent controls. Clicking opens a text-only, neutral popover beneath the header. The current row uses a subtle background, slim marker, and “Current” label. Counts and recent canvas names come only from the server; a refresh failure explains that cached entries are shown.
+- Selecting another workspace reloads the page with its data. “View all workspaces” opens the full-screen selector, while “New workspace” opens creation directly. Both footer actions should use equal-height neutral styling with readable 14px text, subtle hover and visible focus in either theme, without a bright blank block in dark mode. Check keyboard opening, tab order and Escape, and positioning with the Agent panel open.
+
+## Canvas Creation
+
+- From the canvas library, its empty state, and the editor menu, create a canvas only after entering a nonblank name; the description may be empty. Canceling must leave the canvas count unchanged. The saved description should appear on the library card; an empty description should show "No description yet" ("暂无描述" in Chinese). The description should remain after reload, export/import, and workspace switching.
+- Open `/canvas?mode=new` and confirm it asks for a name and optional description before creating a canvas; canceling should return to canvas selection. If `/canvas?mode=recent` has no canvases, it should ask for the same details.
+
+## Functional Navigation Sidebar
+
+- On desktop, check the Create, Resources, and Settings groups and all six destinations. The current route stays highlighted, while the full canvas editor remains immersive. Collapsing leaves centered icons, tooltips, and a visible active marker; icon hover motion and width transitions remain subtle, keyboard navigation works, reduced-motion mode removes extra animation, and the choice persists after reload.
+- On phones and tablets, open the grouped drawer from the top bar and confirm it closes after navigation. Workspace switching, Agent, language, and theme actions stay reachable. With the Agent panel open in a narrower window, navigation moves into the drawer and restores its prior collapsed state when the panel closes. Check light/dark themes, English labels, and the right Agent panel for clipping or horizontal overflow; the canvas-library heading, actions, and empty state should match the approved design.
+
 ## deploy Merge Regression
 
 - Create nested canvas folders, move canvases/folders by drag and drop, rename them, reload and switch workspaces; hierarchy and data must persist without cross-workspace leakage. A folder must not move into itself or a descendant.
 - Delete a folder containing canvases, upload a manual WebDAV snapshot and import an older snapshot: deleted canvases must not reappear. Snapshot import preserves folder hierarchy and local folder edits; snapshots without folders must retain existing local folders.
 - WebDAV remains manual with automatic writes disabled. First upload must probe shared boundary directories without listing sibling workspaces; unauthorized workspace paths remain rejected.
+
+## Local Development and E2E
+
+- Run `run-all-background.sh status`, `run-all-foreground.sh`, and `run-background.sh` to confirm the shared runtime helper still finds Bun/Node, creates the runtime directory with restrictive permissions, and starts both services as before.
+- Run `npm run doctor`, `npm test`, and `npm run test:e2e` from the repository root. Confirm desktop and mobile Chromium can create a local workspace and canvas, reload into the same workspace, and that separate workspaces cannot read one another's data. E2E must use its isolated `.local/e2e-*/data/` directory and must not modify ordinary development data.
+- Confirm a deliberate browser console error / failed API request makes E2E fail and attaches browser diagnostics, a trace, screenshot, and local server log; verify `npm run logs:check` reports a server error and exits non-zero. Open the generated HTML report with `npm run test:report`.
 
 ## deploy Branch CI/CD
 
@@ -32,7 +71,8 @@ description: Implemented changes that still need manual verification
 
 ## Workspace And WebDAV Isolation
 
-- Create two workspaces with separate names and access keys. Confirm the browser lists only the workspaces previously unlocked on that device, rejects an incorrect key, and starts the second workspace empty. The first newly created workspace should migrate legacy local browser data exactly once.
+- On desktop and mobile, the workspace chooser should fill the screen, show the Infinite Canvas logo and every available workspace as a tile, and open one directly when clicked. Each tile should show the latest updated canvas title and accurate canvas/folder counts for its own workspace; empty workspaces should show zero counts. The new-workspace tile should still create and enter a workspace. Move the pointer to check the particle and line background, then check both themes and reduced-motion mode.
+- Create two workspaces with separate names. Confirm both appear in a new browser and can be entered and switched without a password; creating a workspace should enter it directly. Requests without a selected workspace or with an unknown ID must fail, and the second workspace should start empty. The first newly created workspace should migrate legacy local browser data exactly once.
 - Create canvases, assets, image/video workbench records, and local media in each workspace. Switch between them and reload: no item, media blob, or Zustand state from one workspace may appear in the other.
 - Keep AI channels and API keys configured globally, then switch workspaces and verify the same configured providers remain usable without being included in either workspace snapshot.
 - WebDAV must remain manual: uploading creates only a snapshot under `workspaces/<workspaceId>/snapshots/`, without downloading or merging remote records or uploading API keys. Keep only the latest 30 complete snapshots.

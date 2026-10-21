@@ -19,6 +19,7 @@
 - [Local Development](/docs/development/local-development)
 - [Canvas Data Structure](/docs/development/canvas-data-structure)
 - [How the Local Codex Connection Works](/docs/development/local-codex-canvas)
+- [Theme System](/docs/development/theme-system)
 
 ## Business
 

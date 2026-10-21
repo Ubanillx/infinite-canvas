@@ -1,5 +1,6 @@
 import { saveAs } from "file-saver";
 
+import { safeFileName } from "@/lib/utils";
 import { createZip, readZip } from "@/lib/zip";
 import { getMediaBlob, setMediaBlob } from "@/services/file-storage";
 import { getImageBlob, setImageBlob } from "@/services/image-storage";
@@ -56,10 +57,6 @@ export async function readAssetPackage(file: File) {
         }),
     );
     return data.assets;
-}
-
-function safeFileName(value: string) {
-    return value.replace(/[\\/:*?"<>|]/g, "_");
 }
 
 function fileExtension(mimeType: string, kind: Asset["kind"]) {
