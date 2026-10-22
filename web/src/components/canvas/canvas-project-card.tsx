@@ -26,7 +26,9 @@ export function CanvasProjectCard({ project, onDragStart, onDragEnd }: { project
     const selected = selectedIds.includes(project.id);
     const open = () => {
         const agentHash = hasAgentUrlBootstrap(window.location.hash) ? window.location.hash : "";
-        navigate(`/canvas/${project.id}${searchParams.toString() ? `?${searchParams.toString()}` : ""}${agentHash}`, { replace: Boolean(agentHash) });
+        const projectParams = new URLSearchParams(searchParams);
+        projectParams.delete("folder");
+        navigate(`/canvas/${project.id}${projectParams.toString() ? `?${projectParams.toString()}` : ""}${agentHash}`, { replace: Boolean(agentHash) });
     };
     const saveTitle = () => {
         renameProject(project.id, editingTitle);

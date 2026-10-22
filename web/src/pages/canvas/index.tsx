@@ -42,7 +42,7 @@ export default function CanvasPage() {
     const selectedIds = useCanvasUiStore((state) => state.selectedProjectIds);
     const setDeleteIds = useCanvasUiStore((state) => state.setDeleteProjectIds);
     const removeSelectedIds = useCanvasUiStore((state) => state.removeSelectedProjectIds);
-    const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
+    const currentFolderId = searchParams.get("folder") || null;
     const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
     const [draggedItem, setDraggedItem] = useState<CanvasDragItem | null>(null);
     const [dropTargetId, setDropTargetId] = useState<string | null>(null);
@@ -52,7 +52,16 @@ export default function CanvasPage() {
 
     const mode = searchParams.get("mode");
     const agentMode = mode === "new" || mode === "recent" || mode === "choose";
-    const agentQuery = agentMode ? `?${searchParams.toString()}` : "";
+    const projectParams = new URLSearchParams(searchParams);
+    projectParams.delete("folder");
+    const agentQuery = agentMode ? `?${projectParams.toString()}` : "";
+    const setCurrentFolderId = (folderId: string | null, replace = false) => {
+        const nextParams = new URLSearchParams(searchParams);
+        if (folderId) nextParams.set("folder", folderId);
+        else nextParams.delete("folder");
+        const search = nextParams.toString();
+        navigate({ pathname: "/canvas", search: search ? `?${search}` : "", hash: window.location.hash }, { replace });
+    };
     const enterProject = (id: string) => {
         const agentHash = hasAgentUrlBootstrap(window.location.hash) ? window.location.hash : "";
         navigate(`/canvas/${id}${agentQuery}${agentHash}`, { replace: Boolean(agentHash) });
@@ -154,8 +163,8 @@ export default function CanvasPage() {
     }, [hydrated, mode, projects]);
 
     useEffect(() => {
-        if (currentFolderId && !currentFolder) setCurrentFolderId(null);
-    }, [currentFolder, currentFolderId]);
+        if (hydrated && currentFolderId && !currentFolder) setCurrentFolderId(null, true);
+    }, [hydrated, currentFolder, currentFolderId]);
 
     if (hydrated && mode === "recent" && projects.length) return <main className="flex h-full items-center justify-center bg-background text-sm text-stone-500">{t("canvas.opening")}</main>;
 

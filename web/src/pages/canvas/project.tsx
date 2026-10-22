@@ -1541,6 +1541,10 @@ function InfiniteCanvasPage() {
         setSelectedConnectionId(null);
     }, []);
 
+    const reportMediaUploadError = useCallback((error: unknown) => {
+        message.error(error instanceof Error ? error.message : "媒体保存失败");
+    }, [message]);
+
     const createTextNodeFromClipboard = useCallback(
         (text: string) => {
             const trimmed = text.trim();
@@ -1571,14 +1575,15 @@ function InfiniteCanvasPage() {
             if (!imageType) return;
             const blob = await imageItem.getType(imageType);
             const file = new File([blob], "clipboard-image.png", { type: imageType });
-            void createImageFileNode(file, getCanvasCenter());
-            message.success(t("canvas.projectPage.clipboardImageAdded"));
+            void createImageFileNode(file, getCanvasCenter())
+                .then(() => message.success(t("canvas.projectPage.clipboardImageAdded")))
+                .catch(reportMediaUploadError);
             return;
         }
 
         const text = await navigator.clipboard.readText();
         if (createTextNodeFromClipboard(text)) message.success(t("canvas.projectPage.clipboardTextAdded"));
-    }, [createImageFileNode, createTextNodeFromClipboard, getCanvasCenter, message, t]);
+    }, [createImageFileNode, createTextNodeFromClipboard, getCanvasCenter, message, reportMediaUploadError, t]);
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
@@ -2254,11 +2259,11 @@ function InfiniteCanvasPage() {
                     const offsetPos = { x: basePosition.x + (i + 1) * STAGGER, y: basePosition.y + (i + 1) * STAGGER };
                     const f = rest[i];
                     if (isAudioFile(f)) {
-                        void createAudioFileNode(f, offsetPos);
+                        void createAudioFileNode(f, offsetPos).catch(reportMediaUploadError);
                     } else if (f.type.startsWith("video/")) {
-                        void createVideoFileNode(f, offsetPos);
+                        void createVideoFileNode(f, offsetPos).catch(reportMediaUploadError);
                     } else {
-                        void createImageFileNode(f, offsetPos);
+                        void createImageFileNode(f, offsetPos).catch(reportMediaUploadError);
                     }
                 }
             } else {
@@ -2267,11 +2272,11 @@ function InfiniteCanvasPage() {
                     const offsetPos = { x: basePosition.x + i * STAGGER, y: basePosition.y + i * STAGGER };
                     const f = files[i];
                     if (isAudioFile(f)) {
-                        void createAudioFileNode(f, offsetPos);
+                        void createAudioFileNode(f, offsetPos).catch(reportMediaUploadError);
                     } else if (f.type.startsWith("video/")) {
-                        void createVideoFileNode(f, offsetPos);
+                        void createVideoFileNode(f, offsetPos).catch(reportMediaUploadError);
                     } else {
-                        void createImageFileNode(f, offsetPos);
+                        void createImageFileNode(f, offsetPos).catch(reportMediaUploadError);
                     }
                 }
             }
@@ -2279,7 +2284,7 @@ function InfiniteCanvasPage() {
             uploadTargetRef.current = null;
             event.target.value = "";
         },
-        [createAudioFileNode, createImageFileNode, createVideoFileNode, screenToCanvas, size.height, size.width],
+        [createAudioFileNode, createImageFileNode, createVideoFileNode, reportMediaUploadError, screenToCanvas, size.height, size.width],
     );
 
     const handleDrop = useCallback(
@@ -2296,15 +2301,15 @@ function InfiniteCanvasPage() {
                 const pos = { x: basePos.x + i * STAGGER, y: basePos.y + i * STAGGER };
                 const f = files[i];
                 if (isAudioFile(f)) {
-                    void createAudioFileNode(f, pos);
+                    void createAudioFileNode(f, pos).catch(reportMediaUploadError);
                 } else if (f.type.startsWith("video/")) {
-                    void createVideoFileNode(f, pos);
+                    void createVideoFileNode(f, pos).catch(reportMediaUploadError);
                 } else {
-                    void createImageFileNode(f, pos);
+                    void createImageFileNode(f, pos).catch(reportMediaUploadError);
                 }
             }
         },
-        [createAudioFileNode, createImageFileNode, createVideoFileNode, screenToCanvas],
+        [createAudioFileNode, createImageFileNode, createVideoFileNode, reportMediaUploadError, screenToCanvas],
     );
 
     const startTitleEditing = useCallback(() => {
@@ -3169,7 +3174,7 @@ function InfiniteCanvasPage() {
                     canUndo={historyState.canUndo}
                     canRedo={historyState.canRedo}
                     onHome={() => navigate("/")}
-                    onProjects={() => navigate("/canvas")}
+                    onProjects={() => navigate(currentProject?.folderId ? `/canvas?folder=${encodeURIComponent(currentProject.folderId)}` : "/canvas")}
                     onCreateProject={createAndOpenProject}
                     onDeleteProject={deleteCurrentProject}
                     onExportProject={exportCurrentProject}
