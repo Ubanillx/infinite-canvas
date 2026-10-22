@@ -1,6 +1,6 @@
 export const lightPalette = {
-    background: "#fafaf8",
-    surface: "#ffffff",
+    background: "#fafafa",
+    surface: "#fefefe",
     soft: "#f4f4f0",
     hover: "#efefeb",
     border: "#e9e9e4",

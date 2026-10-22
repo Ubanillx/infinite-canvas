@@ -4,7 +4,7 @@ import { ChevronsLeft } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 
-import { navigationGroups } from "@/constant/navigation-tools";
+import { configSections, navigationGroups } from "@/constant/navigation-tools";
 import { cn } from "@/lib/utils";
 import { useAgentStore } from "@/stores/use-agent-store";
 
@@ -36,18 +36,33 @@ export function AppSidebar() {
                                 const Icon = tool.icon;
                                 const label = t(`navigation.${tool.slug}`);
                                 const active = pathname.split("/").filter(Boolean)[0] === tool.slug;
-                                return <Tooltip key={tool.slug} title={collapsed ? label : null} placement="right" mouseEnterDelay={0.15}>
-                                    <Link
-                                        to={`/${tool.slug}`}
-                                        aria-label={label}
-                                        aria-current={active ? "page" : undefined}
-                                        className={cn("group relative flex h-11 items-center gap-3 rounded-lg text-sm transition-[padding,background-color,color] duration-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground motion-reduce:transition-none", collapsed ? "pl-[19px] pr-0" : "px-3", active ? "bg-foreground/5 font-medium text-foreground dark:bg-foreground/10" : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground")}
-                                    >
-                                        {active ? <span className="absolute inset-y-2 left-0 w-0.5 rounded-full bg-foreground" aria-hidden="true" /> : null}
-                                        <Icon className="size-[18px] shrink-0 transition-transform duration-300 ease-out group-hover:-translate-y-0.5 group-hover:rotate-[-8deg] group-hover:scale-110 motion-reduce:transform-none motion-reduce:transition-none" strokeWidth={1.8} />
-                                        <span aria-hidden={collapsed} className={cn("overflow-hidden whitespace-nowrap transition-[max-width,opacity,transform] duration-200 motion-reduce:transition-none", collapsed ? "max-w-0 -translate-x-2 opacity-0" : "max-w-40 translate-x-0 opacity-100")}>{label}</span>
-                                    </Link>
-                                </Tooltip>;
+                                return <div key={tool.slug}>
+                                    <Tooltip title={collapsed ? label : null} placement="right" mouseEnterDelay={0.15}>
+                                        <Link
+                                            to={`/${tool.slug}`}
+                                            aria-label={label}
+                                            aria-current={active && pathname === `/${tool.slug}` ? "page" : undefined}
+                                            className={cn("group relative flex h-11 items-center gap-3 rounded-lg text-sm transition-[padding,background-color,color] duration-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground motion-reduce:transition-none", collapsed ? "pl-[19px] pr-0" : "px-3", active ? "bg-foreground/5 font-medium text-foreground dark:bg-foreground/10" : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground")}
+                                        >
+                                            {active ? <span className="absolute inset-y-2 left-0 w-0.5 rounded-full bg-foreground" aria-hidden="true" /> : null}
+                                            <Icon className="size-[18px] shrink-0 transition-transform duration-300 ease-out group-hover:-translate-y-0.5 group-hover:rotate-[-8deg] group-hover:scale-110 motion-reduce:transform-none motion-reduce:transition-none" strokeWidth={1.8} />
+                                            <span aria-hidden={collapsed} className={cn("overflow-hidden whitespace-nowrap transition-[max-width,opacity,transform] duration-200 motion-reduce:transition-none", collapsed ? "max-w-0 -translate-x-2 opacity-0" : "max-w-40 translate-x-0 opacity-100")}>{label}</span>
+                                        </Link>
+                                    </Tooltip>
+                                    {tool.slug === "config" && active ? <div className={cn("mt-1 space-y-0.5", !collapsed && "ml-5 border-l border-border pl-2")}>
+                                        {configSections.map((section) => {
+                                            const SectionIcon = section.icon;
+                                            const sectionLabel = t(section.label);
+                                            const selected = (pathname.split("/")[2] || "channels") === section.slug;
+                                            return <Tooltip key={section.slug} title={collapsed ? sectionLabel : null} placement="right" mouseEnterDelay={0.15}>
+                                                <Link to={`/config/${section.slug}`} aria-label={sectionLabel} aria-current={pathname === `/config/${section.slug}` ? "page" : undefined} className={cn("flex h-9 items-center gap-2 rounded-md text-xs transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground", collapsed ? "justify-center" : "px-2", selected ? "bg-foreground/5 font-medium text-foreground dark:bg-foreground/10" : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground")}>
+                                                    <SectionIcon className="size-4 shrink-0" strokeWidth={1.8} />
+                                                    {!collapsed && <span className="truncate">{sectionLabel}</span>}
+                                                </Link>
+                                            </Tooltip>;
+                                        })}
+                                    </div> : null}
+                                </div>;
                             })}
                         </div>
                     </section>

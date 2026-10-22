@@ -1,120 +1,65 @@
-import { ArrowRight } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
-import { App, Button, Image, Tag } from "antd";
+import { ArrowRight, Image as ImageIcon, Sparkles, Type } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Trans, useTranslation } from "react-i18next";
 
-import { fetchPrompts, type Prompt } from "@/services/api/prompts";
 import { navigationTools } from "@/constant/navigation-tools";
-import i18n from "@/i18n";
-import { cn } from "@/lib/utils";
+import { VersionReleaseModal } from "@/components/layout/version-release-modal";
+import { HomeAmbientBackground } from "./home-ambient-background";
+import orbitalArtwork from "./orbital-artwork.svg";
 
-function Highlighter({ action, color, children }: { action: "highlight" | "underline"; color: string; children?: ReactNode }) {
-    return (
-        <span className="relative inline-block px-1">
-            {action === "highlight" ? (
-                <span className="absolute inset-x-0 bottom-0 top-1 rounded-sm opacity-45" style={{ backgroundColor: color }} />
-            ) : (
-                <span className="absolute inset-x-0 bottom-0 h-1 rounded-full opacity-80" style={{ backgroundColor: color }} />
-            )}
-            <span className="relative font-medium text-foreground">{children}</span>
-        </span>
-    );
-}
+import "./home.css";
 
 export default function IndexPage() {
-    const { message } = App.useApp();
     const { t } = useTranslation();
     const navigate = useNavigate();
     const [primaryTool] = navigationTools;
-    const [promptShowcase, setPromptShowcase] = useState<Prompt[]>([]);
-    const [previewIndex, setPreviewIndex] = useState(0);
-    const [previewOpen, setPreviewOpen] = useState(false);
-
-    useEffect(() => {
-        void fetchPrompts({ pageSize: 12 })
-            .then((data) => setPromptShowcase(data.items))
-            .catch((error) => message.error(error instanceof Error ? error.message : i18n.t("home.promptError")));
-    }, [message]);
 
     return (
-        <main className="relative h-full overflow-y-auto bg-background text-foreground" style={{ backgroundImage: "radial-gradient(var(--home-dot) 1px, transparent 1px)", backgroundSize: "16px 16px" }}>
-            <section className="relative mx-auto min-h-[calc(100vh-4rem)] max-w-7xl overflow-hidden px-6">
-                <div className="pointer-events-none absolute left-[15%] top-24 size-20 rounded-full border border-dashed border-border" />
-                <div className="pointer-events-none absolute right-[23%] top-[48%] size-20 rounded-full border border-dashed border-border" />
-
-                <div className="relative flex min-h-[620px] flex-col items-center justify-center pt-10 text-center">
-                    <h1 className="ai-title-aurora max-w-5xl text-balance text-5xl font-semibold tracking-normal sm:text-7xl lg:text-8xl">{t("meta.title")}</h1>
-                    <p className="mt-8 max-w-3xl text-balance text-lg leading-8 text-muted-foreground">
-                        <Trans i18nKey="home.description" components={{ canvas: <Highlighter action="underline" color="#d4d5cc" />, content: <Highlighter action="highlight" color="#e8e8e1" /> }} />
+        <main className="home-page">
+            <HomeAmbientBackground />
+            <section className="home-hero">
+                <div className="home-copy">
+                    <h1 className={`home-title${t("meta.title").length > 6 ? " home-title-long" : ""}`}>{t("meta.title")}<span className="home-title-period">.</span></h1>
+                    <p className="home-tagline">{t("home.tagline")}</p>
+                    <p className="home-description">
+                        <Trans i18nKey="home.description" components={{ content: <strong /> }} />
                     </p>
-                    <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
-                        <Button type="primary" size="large" onClick={() => navigate(`/${primaryTool.slug}`)} icon={<ArrowRight className="size-4" />} iconPlacement="end">
-                            {t("home.start")}
-                        </Button>
-                        <Button size="large" onClick={() => navigate("/canvas")}>
-                            {t("home.openCanvas")}
-                        </Button>
+                    <div className="home-actions">
+                        <button className="home-action-primary" type="button" onClick={() => navigate(`/${primaryTool.slug}`)}>
+                            {t("home.start")} <ArrowRight size={18} strokeWidth={1.8} />
+                        </button>
+                        <button className="home-action-secondary" type="button" onClick={() => navigate("/canvas")}>
+                            {t("home.openCanvas")} <span aria-hidden="true">↗</span>
+                        </button>
                     </div>
                 </div>
 
-                <section className="relative mx-auto mb-20 max-w-6xl border-t border-border pt-12">
-                    <div className="mb-8 grid gap-4 md:grid-cols-[1fr_auto_1fr] md:items-start">
-                        <div />
-                        <div className="max-w-2xl text-center">
-                            <h2 className="text-3xl font-semibold text-foreground">{t("home.showcaseTitle")}</h2>
-                            <p className="mt-3 text-base leading-7 text-muted-foreground">{t("home.showcaseDescription")}</p>
-                        </div>
-                        <Button type="link" onClick={() => navigate("/prompts")} className="justify-self-center md:justify-self-end" icon={<ArrowRight className="size-4" />} iconPlacement="end">
-                            {t("home.viewPrompts")}
-                        </Button>
+                <div className="home-art" aria-hidden="true">
+                    <div className="home-art-grid" />
+                    <div className="home-art-halo" />
+                    <svg className="home-connections" viewBox="0 0 680 600" fill="none" preserveAspectRatio="none">
+                        <path d="M177 291 C254 291 220 161 327 161 H404" />
+                        <path d="M177 291 C254 291 235 426 327 426 H431" />
+                        <path d="M474 190 C505 190 491 278 540 278" />
+                        <circle cx="177" cy="291" r="5" /><circle cx="404" cy="161" r="5" /><circle cx="431" cy="426" r="5" />
+                    </svg>
+                    <div className="home-node home-node-source">
+                        <div className="home-node-grip"><i /><i /><i /></div>
+                        <div className="home-node-source-body"><Sparkles size={27} strokeWidth={1.4} /><span className="home-node-scribble"><i /><i /></span></div>
                     </div>
-                    <div className="grid auto-rows-[210px] gap-4 md:grid-cols-4">
-                        {promptShowcase.map((item, index) => (
-                            <button
-                                key={item.id}
-                                type="button"
-                                onClick={() => {
-                                    setPreviewIndex(index);
-                                    setPreviewOpen(true);
-                                }}
-                                className={cn(
-                                    "group relative cursor-pointer overflow-hidden border border-border bg-card text-left shadow-[var(--shadow-surface)] transition-shadow hover:shadow-[var(--shadow-surface-hover)]",
-                                    index === 0 && "md:col-span-2 md:row-span-2",
-                                    index === 3 && "md:col-span-2",
-                                )}
-                            >
-                                <img src={item.coverUrl} alt={item.title} className="h-full w-full object-cover transition duration-500 group-hover:scale-[1.03]" />
-                                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 via-black/35 to-transparent p-4 text-white">
-                                    <div className="mb-2 flex flex-wrap gap-1.5">
-                                        {item.tags.slice(0, 2).map((tag) => (
-                                            <Tag key={tag} variant="filled" className="m-0 bg-white/15 text-[11px] text-white backdrop-blur">
-                                                {tag}
-                                            </Tag>
-                                        ))}
-                                    </div>
-                                    <h3 className="text-sm font-medium">{item.title}</h3>
-                                    <p className="mt-1 line-clamp-2 text-xs leading-5 text-white/75">{item.prompt}</p>
-                                </div>
-                            </button>
-                        ))}
+                    <div className="home-node home-node-image">
+                        <div className="home-node-bar"><ImageIcon size={14} strokeWidth={1.7} /><span className="home-node-dots"><i /><i /><i /></span></div>
+                        <div className="home-orb"><img src={orbitalArtwork} alt="" draggable={false} /></div>
+                        <div className="home-node-footer"><span /><span /><span /></div>
                     </div>
-                </section>
-            </section>
-            <Image.PreviewGroup
-                preview={{
-                    open: previewOpen,
-                    current: previewIndex,
-                    onOpenChange: setPreviewOpen,
-                    onChange: setPreviewIndex,
-                }}
-            >
-                <div className="hidden">
-                    {promptShowcase.map((item) => (
-                        <Image key={item.id} src={item.coverUrl} alt={item.title} />
-                    ))}
+                    <div className="home-node home-node-text">
+                        <div className="home-node-bar"><Type size={14} strokeWidth={1.7} /><span className="home-node-dots"><i /><i /><i /></span></div>
+                        <div className="home-type-lines"><i /><i /><i /><i /></div>
+                    </div>
+                    <div className="home-crosshair home-crosshair-one" /><div className="home-crosshair home-crosshair-two" />
                 </div>
-            </Image.PreviewGroup>
+            </section>
+            <footer className="home-footer"><VersionReleaseModal className="home-version" /></footer>
         </main>
     );
 }
