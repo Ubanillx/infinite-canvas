@@ -7,7 +7,8 @@ import { clampVideoSeconds, computeVideoSize, inferVideoRatio } from "@/lib/medi
 import { getMediaBlob, resolveMediaUrl, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { imageToDataUrl } from "@/services/image-storage";
 import { boolConfig, buildSeedancePromptText, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceVideoReferenceError, SEEDANCE_REFERENCE_LIMITS } from "@/lib/seedance-video";
-import { buildAiRequestUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig } from "@/stores/use-config-store";
+import { buildAiRequestUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, type AiConfig } from "@/stores/use-config-store";
+import { remoteMediaUrl } from "./remote-media";
 import { runModelPlugin } from "./model-plugin";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
@@ -361,12 +362,12 @@ async function resolveSeedanceAudioUrl(audio: ReferenceAudio) {
 
 async function videoResultFromUrl(url: string, options?: RequestOptions): Promise<VideoGenerationResult> {
     try {
-        const response = await axios.get<Blob>(withLocalProxy(url), { responseType: "blob", signal: options?.signal });
+        const response = await axios.get<Blob>(remoteMediaUrl(url), { responseType: "blob", signal: options?.signal });
         await assertVideoBlob(response.data);
         return { blob: response.data };
     } catch (error) {
         if (axios.isCancel(error) || options?.signal?.aborted) throw error;
-        return { url, mimeType: "video/mp4" };
+        throw new Error(readAxiosError(error, apiText("videoGenerationFailed")));
     }
 }
 
@@ -411,11 +412,9 @@ async function pollGeminiVideoTask(config: AiConfig, task: VideoGenerationTask, 
         if (!uri) return { status: "failed", error: apiText("noPlayableVideo") };
         const download = new URL(uri, `${geminiVideoBaseUrl(config)}/`);
         // The channel proxy injects the server-owned key; never put it in a browser URL.
-        const url = config.channelId
-            ? buildAiRequestUrl(config, `${download.pathname.replace(/^\/(?:v1beta|v1)(?=\/)/, "")}${download.search}`)
-            : withLocalProxy(download.href);
-        const headers = config.channelId ? undefined : { "x-goog-api-key": config.apiKey };
-        const response = await axios.get<Blob>(url, { headers, responseType: "blob", signal: options?.signal });
+        if (!config.channelId) throw new Error(apiText("apiKeyRequired"));
+        const url = buildAiRequestUrl(config, `${download.pathname.replace(/^\/(?:v1beta|v1)(?=\/)/, "")}${download.search}`);
+        const response = await axios.get<Blob>(url, { responseType: "blob", signal: options?.signal });
         await assertVideoBlob(response.data);
         return { status: "completed", result: { blob: response.data } };
     } catch (error) {
@@ -467,7 +466,9 @@ async function referenceMediaToFile(item: { name: string; type?: string; url?: s
         const url = item.storageKey ? await resolveMediaUrl(item.storageKey, item.url || "") : item.url || "";
         if (!url) throw new Error(apiText(errorKey));
         try {
-            blob = await (await fetch(url, { signal: options?.signal })).blob();
+            const response = await fetch(remoteMediaUrl(url), { signal: options?.signal });
+            if (!response.ok) throw new Error(apiText(errorKey));
+            blob = await response.blob();
         } catch (error) {
             if (error instanceof DOMException && error.name === "AbortError") throw error;
             throw new Error(apiText(errorKey));

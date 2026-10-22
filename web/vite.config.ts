@@ -1,17 +1,21 @@
-import { randomUUID } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
-import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { lookup } from "node:dns/promises";
+import { createReadStream, createWriteStream, readdirSync, readFileSync } from "node:fs";
+import { chmod, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { dirname, resolve } from "node:path";
+import { Transform } from "node:stream";
 import { fileURLToPath } from "node:url";
+import { pipeline } from "node:stream/promises";
+import ipaddr from "ipaddr.js";
 import { forwardAiResponse, failAiResponse } from "./src/server/ai-response";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 
 import { parseChangelog } from "./src/lib/release";
-import { execute, findSessionUser, getDatabase, hashPassword, hashToken, isoNow, newId, newSessionToken, queryMany, queryOne, transaction, verifyPassword, type SessionUser, type SqliteUser } from "./src/server/sqlite";
+import { dataDirectory, execute, findSessionUser, getDatabase, hashPassword, hashToken, isoNow, newId, newSessionToken, queryMany, queryOne, transaction, verifyPassword, type SessionUser, type SqliteUser } from "./src/server/sqlite";
 
 const webDir = dirname(fileURLToPath(import.meta.url));
 const localVersion = readFileSync(resolve(webDir, "../VERSION"), "utf8").trim() || "dev";
@@ -41,7 +45,8 @@ const serverConfigPath = resolve(process.env.INFINITE_CANVAS_DATA_DIR || resolve
 const maxServerConfigBytes = 1024 * 1024;
 const aiProxyPath = "/api/ai";
 const maxAiRequestBytes = 64 * 1024 * 1024;
-const protectedApiPaths = ["/api/auth", "/api/config", "/api/workspaces", "/api/data", "/api/media", aiProxyPath, "/api/webdav", "/api/image-proxy", canvasAgentProxyPath];
+const maxMediaBytes = 100 * 1024 * 1024;
+const protectedApiPaths = ["/api/auth", "/api/config", "/api/workspaces", "/api/data", "/api/media", "/api/prompt-source", "/api/remote-media", aiProxyPath, "/api/webdav", "/api/image-proxy", canvasAgentProxyPath];
 const allowedNetworks = (process.env.INFINITE_CANVAS_ALLOWED_NETWORKS || "127.0.0.1,::1,192.168.0.0/22,172.16.0.0/12")
     .split(",")
     .map((value) => value.trim())
@@ -218,6 +223,12 @@ function workspaceDataAccess(): Plugin {
             if (!context) return sendJson(res, 403, { error: "工作区不存在或无权访问" });
             const db = await getDatabase();
             const actorId = workspaceActorId(db);
+            if (requestUrl.pathname === "/api/data/summary") {
+                if (req.method !== "GET") return sendJson(res, 405, { error: "Method not allowed" });
+                const domains = queryMany<{ domain: string; bytes: number; revision: number; updated_at: string }>(db, "SELECT domain, LENGTH(CAST(payload AS BLOB)) AS bytes, revision, updated_at FROM workspace_data WHERE workspace_id = ? ORDER BY domain", context.id);
+                const media = queryOne<{ files: number; bytes: number; updatedAt: string | null }>(db, "SELECT COUNT(*) AS files, COALESCE(SUM(bytes), 0) AS bytes, MAX(updated_at) AS updatedAt FROM media_files WHERE workspace_id = ? AND remote_path = ''", context.id);
+                return sendJson(res, 200, { workspaceId: context.id, domains: domains.map((row) => ({ domain: row.domain, bytes: row.bytes, revision: row.revision, updatedAt: row.updated_at })), media: media || { files: 0, bytes: 0, updatedAt: null } });
+            }
             if (dataMatch) {
                 const domain = decodeURIComponent(dataMatch[1]);
                 if (!workspaceDataDomains.has(domain)) return sendJson(res, 404, { error: "未知数据域" });
@@ -267,7 +278,7 @@ function workspaceDataAccess(): Plugin {
                     const mimeType = typeof file?.mimeType === "string" ? file.mimeType : "application/octet-stream";
                     const bytes = typeof file?.bytes === "number" ? file.bytes : -1;
                     if (!storageKey || !remotePath || bytes < 0 || !Number.isSafeInteger(bytes)) continue;
-                    execute(db, "INSERT INTO media_files (workspace_id, storage_key, remote_path, mime_type, bytes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(workspace_id, storage_key) DO UPDATE SET remote_path = excluded.remote_path, mime_type = excluded.mime_type, bytes = excluded.bytes, updated_at = excluded.updated_at", context.id, storageKey, remotePath, mimeType, bytes, now, now);
+                    execute(db, "INSERT INTO media_files (workspace_id, storage_key, remote_path, mime_type, bytes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(workspace_id, storage_key) DO UPDATE SET remote_path = CASE WHEN media_files.remote_path = '' THEN '' ELSE excluded.remote_path END, mime_type = excluded.mime_type, bytes = excluded.bytes, updated_at = excluded.updated_at", context.id, storageKey, remotePath, mimeType, bytes, now, now);
                 }
             });
             return sendJson(res, 200, { saved: true });
@@ -278,6 +289,71 @@ function workspaceDataAccess(): Plugin {
         }
     };
     return { name: "sqlite-workspace-data", configureServer: (server) => { server.middlewares.use(middleware); }, configurePreviewServer: (server) => { server.middlewares.use(middleware); } };
+}
+
+function workspaceMediaStorage(): Plugin {
+    const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+        const requestUrl = new URL(req.url || "/", "http://localhost");
+        const match = /^\/api\/media\/blob\/([^/]+)$/.exec(requestUrl.pathname);
+        if (!match) return next();
+        let key: string;
+        try { key = decodeURIComponent(match[1]); } catch { return sendJson(res, 400, { error: "媒体标识无效" }); }
+        if (!/^[a-z][a-z0-9-]*:[A-Za-z0-9_-]+$/.test(key)) return sendJson(res, 400, { error: "媒体标识无效" });
+        try {
+            const context = await workspaceContext(req, requestUrl);
+            if (!context) return sendJson(res, 403, { error: "工作区不存在或无权访问" });
+            const db = await getDatabase();
+            const directory = resolve(dataDirectory(), "media", context.id);
+            const path = resolve(directory, createHash("sha256").update(key).digest("hex"));
+            res.setHeader("Cache-Control", "no-store");
+            res.setHeader("X-Content-Type-Options", "nosniff");
+            if (req.method === "GET" || req.method === "HEAD") {
+                const file = queryOne<{ mime_type: string }>(db, "SELECT mime_type FROM media_files WHERE workspace_id = ? AND storage_key = ?", context.id, key);
+                if (!file) return sendJson(res, 404, { error: "媒体不存在" });
+                const details = await stat(path);
+                res.setHeader("Content-Type", file.mime_type);
+                res.setHeader("Content-Length", details.size);
+                if (req.method === "HEAD") return res.end();
+                createReadStream(path).on("error", (error) => res.destroy(error)).pipe(res);
+                return;
+            }
+            if (req.method !== "PUT") return sendJson(res, 405, { error: "Method not allowed" });
+            if (!canWriteWorkspace(context)) return sendJson(res, 403, { error: "当前工作区为只读权限" });
+            await mkdir(directory, { recursive: true, mode: 0o700 });
+            const temporaryPath = `${path}.${randomUUID()}.tmp`;
+            try {
+                let receivedBytes = 0;
+                let tooLarge = false;
+                const limit = new Transform({
+                    transform(chunk: Buffer, _encoding, callback) {
+                        if (tooLarge) return callback();
+                        receivedBytes += chunk.length;
+                        if (receivedBytes > maxMediaBytes) {
+                            tooLarge = true;
+                            return callback();
+                        }
+                        callback(null, chunk);
+                    },
+                });
+                await pipeline(req, limit, createWriteStream(temporaryPath, { mode: 0o600, flags: "wx" }));
+                if (tooLarge) throw new RequestBodyError(413, "媒体超过 100 MB，未保存到服务器");
+                const details = await stat(temporaryPath);
+                await rename(temporaryPath, path);
+                const now = isoNow();
+                const mimeType = typeof req.headers["content-type"] === "string" ? req.headers["content-type"] : "application/octet-stream";
+                execute(db, "INSERT INTO media_files (workspace_id, storage_key, remote_path, mime_type, bytes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(workspace_id, storage_key) DO UPDATE SET remote_path = excluded.remote_path, mime_type = excluded.mime_type, bytes = excluded.bytes, updated_at = excluded.updated_at", context.id, key, "", mimeType, details.size, now, now);
+                return sendJson(res, 200, { saved: true });
+            } finally {
+                await unlink(temporaryPath).catch(() => undefined);
+            }
+        } catch (error) {
+            if (error instanceof RequestBodyError) return sendJson(res, error.status, { error: error.message });
+            if (isFileSystemError(error, "ENOENT")) return sendJson(res, 404, { error: "媒体不存在" });
+            console.error("Workspace media request failed", error);
+            return sendJson(res, 500, { error: "媒体存储失败" });
+        }
+    };
+    return { name: "workspace-media-storage", configureServer: (server) => { server.middlewares.use(middleware); }, configurePreviewServer: (server) => { server.middlewares.use(middleware); } };
 }
 
 function workspaceAccess(): Plugin {
@@ -541,6 +617,95 @@ function aiProviderProxy(): Plugin {
     };
 }
 
+function promptSourceProxy(): Plugin {
+    const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+        const match = /^\/api\/prompt-source\/([^/]+)$/.exec(new URL(req.url || "/", "http://localhost").pathname);
+        if (!match) return next();
+        if (req.method !== "GET") return sendJson(res, 405, { error: "Method not allowed" });
+        try {
+            const stored = asRecord(await readStoredServerConfig());
+            const sources = asRecord(stored?.promptSources)?.sources;
+            const source = Array.isArray(sources) ? sources.map(asRecord).find((item) => item?.id === decodeURIComponent(match[1])) : null;
+            if (typeof source?.url !== "string") return sendJson(res, 404, { error: "提示词来源不存在" });
+            const target = new URL(source.url);
+            const address = await publicHttpsAddress(target);
+            res.setHeader("Cache-Control", "no-store");
+            const upstream = httpsRequest(target, {
+                headers: { Accept: "application/json" },
+                autoSelectFamily: false,
+                lookup: (_hostname, _options, callback) => callback(null, address.address, address.family),
+            }, (response) => {
+                if ((response.statusCode || 0) >= 300 && (response.statusCode || 0) < 400) {
+                    response.resume();
+                    return sendJson(res, 502, { error: "提示词来源不允许重定向" });
+                }
+                res.statusCode = response.statusCode || 502;
+                res.setHeader("Content-Type", "application/json; charset=utf-8");
+                response.on("error", (error) => res.destroy(error));
+                response.pipe(res);
+            });
+            upstream.on("error", (error) => {
+                console.error("Prompt source request failed", error);
+                if (!res.headersSent) return sendJson(res, 502, { error: "提示词来源请求失败" });
+                res.destroy(error);
+            });
+            res.on("close", () => upstream.destroy());
+            upstream.end();
+        } catch (error) {
+            console.error("Prompt source proxy failed", error);
+            return sendJson(res, 502, { error: error instanceof Error ? error.message : "提示词来源请求失败" });
+        }
+    };
+    return { name: "prompt-source-proxy", configureServer: (server) => { server.middlewares.use(middleware); }, configurePreviewServer: (server) => { server.middlewares.use(middleware); } };
+}
+
+async function publicHttpsAddress(target: URL) {
+    if (target.protocol !== "https:" || target.username || target.password || (target.port && target.port !== "443")) throw new Error("仅支持公网 HTTPS 地址");
+    const addresses = await lookup(target.hostname, { all: true });
+    if (!addresses.length || addresses.some(({ address }) => ipaddr.process(address).range() !== "unicast")) throw new Error("目标地址不是公网地址");
+    return addresses[0];
+}
+
+function remoteMediaProxy(): Plugin {
+    const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+        const requestUrl = new URL(req.url || "/", "http://localhost");
+        if (requestUrl.pathname !== "/api/remote-media") return next();
+        if (req.method !== "GET") return sendJson(res, 405, { error: "Method not allowed" });
+        try {
+            const target = new URL(requestUrl.searchParams.get("url") || "");
+            const address = await publicHttpsAddress(target);
+            res.setHeader("Cache-Control", "no-store");
+            res.setHeader("X-Content-Type-Options", "nosniff");
+            const upstream = httpsRequest(target, {
+                autoSelectFamily: false,
+                lookup: (_hostname, _options, callback) => callback(null, address.address, address.family),
+            }, (response) => {
+                if ((response.statusCode || 0) >= 300 && (response.statusCode || 0) < 400) {
+                    response.resume();
+                    return sendJson(res, 502, { error: "远程媒体不允许重定向" });
+                }
+                res.statusCode = response.statusCode || 502;
+                for (const name of ["content-type", "content-length"]) {
+                    const value = response.headers[name];
+                    if (value) res.setHeader(name, value);
+                }
+                response.on("error", (error) => res.destroy(error));
+                response.pipe(res);
+            });
+            upstream.on("error", (error) => {
+                console.error("Remote media request failed", error);
+                if (!res.headersSent) return sendJson(res, 502, { error: "远程媒体请求失败" });
+                res.destroy(error);
+            });
+            res.on("close", () => upstream.destroy());
+            upstream.end();
+        } catch (error) {
+            return sendJson(res, 403, { error: error instanceof Error ? error.message : "远程媒体地址无效" });
+        }
+    };
+    return { name: "remote-media-proxy", configureServer: (server) => { server.middlewares.use(middleware); }, configurePreviewServer: (server) => { server.middlewares.use(middleware); } };
+}
+
 function findStoredChannel(stored: unknown, channelId: string) {
     const config = asRecord(asRecord(stored)?.config);
     const channels = Array.isArray(config?.channels) ? config.channels : [];
@@ -656,7 +821,7 @@ function redactServerSecrets(value: unknown) {
             });
         }
     }
-    if (webdav) Object.assign(webdav, { url: "/api/webdav", username: "", password: "", directory: "", autoSyncEnabled: false });
+    if (webdav) Object.assign(webdav, { url: webdav.url === "/api/webdav" ? "" : webdav.url, hasPassword: Boolean(webdav.password), password: "", autoSyncEnabled: false });
     return result;
 }
 
@@ -684,16 +849,8 @@ function mergeServerSecrets(incoming: unknown, stored: unknown) {
                 }
                 return nextChannel;
             });
-            const incomingIds = new Set(incomingChannels.map((channel) => asRecord(channel)?.id).filter(Boolean));
-            const mergedChannels = [
-                ...incomingChannels,
-                ...previousChannels.filter((channel) => {
-                    const id = asRecord(channel)?.id;
-                    return typeof id === "string" && !incomingIds.has(id);
-                }),
-            ];
-            nextConfig.channels = mergedChannels;
-            nextConfig.models = mergedChannels.flatMap((channel) => {
+            nextConfig.channels = incomingChannels;
+            nextConfig.models = incomingChannels.flatMap((channel) => {
                 const record = asRecord(channel);
                 const models = Array.isArray(record?.models) ? record.models : [];
                 return models
@@ -720,13 +877,12 @@ function mergeServerSecrets(incoming: unknown, stored: unknown) {
         }
     }
     if (nextWebdav) {
-        // WebDAV is server-managed and synchronization is manual. Enforce this
-        // server-side so an old client cannot re-enable background uploads.
+        // Connection fields are edited in Settings; requests still use the
+        // authenticated server proxy and background uploads stay disabled.
         nextWebdav.autoSyncEnabled = false;
-        nextWebdav.url = typeof previousWebdav?.url === "string" ? previousWebdav.url : nextWebdav.url;
-        nextWebdav.username = typeof previousWebdav?.username === "string" ? previousWebdav.username : nextWebdav.username;
-        nextWebdav.directory = typeof previousWebdav?.directory === "string" ? previousWebdav.directory : nextWebdav.directory;
+        if (nextWebdav.url === "/api/webdav") nextWebdav.url = typeof previousWebdav?.url === "string" && previousWebdav.url !== "/api/webdav" ? previousWebdav.url : "";
         nextWebdav.password = keepSecret(nextWebdav.password, previousWebdav?.password);
+        delete nextWebdav.hasPassword;
     }
     return result;
 }
@@ -904,7 +1060,7 @@ function localPluginsManifest(): Plugin {
 
 export default defineConfig({
     base: process.env.VITE_BASE || "/",
-    plugins: [react(), localPluginsManifest(), sessionContext(), authAccess(), serverApiAccessControl(), workspaceAccess(), workspaceDataAccess(), serverWebdavProxy(), serverConfigStorage(), aiProviderProxy(), imageProxy()],
+    plugins: [react(), localPluginsManifest(), sessionContext(), authAccess(), serverApiAccessControl(), workspaceAccess(), workspaceMediaStorage(), workspaceDataAccess(), serverWebdavProxy(), serverConfigStorage(), aiProviderProxy(), promptSourceProxy(), remoteMediaProxy(), imageProxy()],
     server: { proxy: { [canvasAgentProxyPath]: canvasAgentProxy } },
     preview: { allowedHosts: (process.env.INFINITE_CANVAS_ALLOWED_HOSTS || "ubuntu-server").split(",").map((host) => host.trim()).filter(Boolean), proxy: { [canvasAgentProxyPath]: canvasAgentProxy } },
     resolve: {

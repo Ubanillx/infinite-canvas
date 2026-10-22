@@ -3,8 +3,9 @@ import axios from "axios";
 import { aiHeaders, apiMessage as apiText, readApiErrorMessage, readStatusError as statusMessage } from "./shared";
 import { audioMimeType, normalizeAudioFormatValue, normalizeAudioSpeedValue, normalizeAudioVoiceValue } from "@/lib/audio-generation";
 import { uploadMediaFile, type UploadedFile } from "@/services/file-storage";
-import { buildAiRequestUrl, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig } from "@/stores/use-config-store";
+import { buildAiRequestUrl, resolveModelRequestConfig, resolveModelScript, type AiConfig } from "@/stores/use-config-store";
 import { runModelPlugin } from "./model-plugin";
+import { remoteMediaUrl } from "./remote-media";
 
 type RequestOptions = { signal?: AbortSignal };
 
@@ -64,7 +65,9 @@ async function audioPluginBlob(result: unknown, format: string): Promise<Blob> {
     }
     if (!source) throw new Error(apiText("scriptNoAudio"));
     const url = source.startsWith("data:") || /^https?:/i.test(source) ? source : `data:${audioMimeType(format)};base64,${source}`;
-    const blob = await (await fetch(withLocalProxy(url))).blob();
+    const response = await fetch(remoteMediaUrl(url));
+    if (!response.ok) throw new Error(apiText("audioGenerationFailed"));
+    const blob = await response.blob();
     return blob.type.startsWith("audio/") ? blob : new Blob([blob], { type: audioMimeType(format) });
 }
 
