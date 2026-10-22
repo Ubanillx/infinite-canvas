@@ -48,15 +48,14 @@ const ASSET_STORE_KEY = "infinite-canvas:asset_store";
 
 const assetStorage: PersistStorage<AssetStore> = {
     getItem: async (name) => {
-        let remote: StorageValue<AssetStore> | null = null;
-        try {
-            remote = await loadWorkspaceData<StorageValue<AssetStore>>("assets");
-        } catch {
-            // Local data stays available when the server cannot be reached.
-        }
+        const remote = await loadWorkspaceData<StorageValue<AssetStore>>("assets");
         const value = remote ? null : await localForageStorage.getItem(name);
         if (!remote && !value) return null;
         const parsed = remote || JSON.parse(value!) as StorageValue<AssetStore>;
+        if (!remote) {
+            await saveWorkspaceData("assets", parsed);
+            await Promise.resolve(localForageStorage.removeItem(name)).catch(() => undefined);
+        }
         parsed.state.assets = await Promise.all(
             parsed.state.assets.map(async (asset) => {
                 if (asset.kind === "video" && asset.data.storageKey) return { ...asset, data: { ...asset.data, url: await resolveMediaUrl(asset.data.storageKey, asset.data.url) } };
@@ -77,8 +76,7 @@ const assetStorage: PersistStorage<AssetStore> = {
         return parsed;
     },
     setItem: (name, value) => {
-        void localForageStorage.setItem(name, JSON.stringify(value));
-        void saveWorkspaceData("assets", value).catch(() => undefined);
+        void saveWorkspaceData("assets", value).then(() => localForageStorage.removeItem(name)).catch(() => undefined);
     },
     removeItem: (name) => localForageStorage.removeItem(name),
 };

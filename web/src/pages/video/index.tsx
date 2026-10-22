@@ -27,7 +27,8 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 import i18n from "@/i18n";
-import { loadWorkspaceData, saveWorkspaceData } from "@/services/workspace-data";
+import { saveWorkspaceData } from "@/services/workspace-data";
+import { readWorkspaceLogs } from "@/services/workspace-logs";
 
 type GeneratedVideo = {
     id: string;
@@ -135,31 +136,35 @@ export default function VideoPage() {
         if (selectedFiles.some((file) => file.type.startsWith("image/") && file.size > SEEDANCE_REFERENCE_LIMITS.imageMaxBytes)) message.warning(t("videoWorkbench.imageTooLarge"));
         if (selectedFiles.some((file) => SEEDANCE_VIDEO_MIME_TYPES.includes(file.type) && file.size > SEEDANCE_REFERENCE_LIMITS.videoMaxBytes)) message.warning(t("videoWorkbench.videoTooLarge"));
         if (selectedFiles.some((file) => isSupportedAudioFile(file) && file.size > SEEDANCE_REFERENCE_LIMITS.audioMaxBytes)) message.warning(t("videoWorkbench.audioTooLarge"));
-        const nextReferences = await Promise.all(
-            imageFiles.map(async (file) => {
-                const image = await uploadImage(file);
-                return { id: nanoid(), name: file.name, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
-            }),
-        );
-        const nextVideoReferences = await Promise.all(
-            videoFiles.map(async (file) => {
-                const video = await uploadMediaFile(file, "video-reference");
-                return { id: nanoid(), name: file.name, type: video.mimeType, url: video.url, storageKey: video.storageKey, bytes: video.bytes, width: video.width, height: video.height, durationMs: video.durationMs };
-            }),
-        );
-        const nextAudioReferences = filterAudioReferencesByDuration(
-            audioReferences,
-            await Promise.all(
-                audioFiles.map(async (file) => {
-                    const audio = await uploadMediaFile(file, "audio-reference");
-                    return { id: nanoid(), name: file.name, type: audio.mimeType, url: audio.url, storageKey: audio.storageKey, durationMs: audio.durationMs };
+        try {
+            const nextReferences = await Promise.all(
+                imageFiles.map(async (file) => {
+                    const image = await uploadImage(file);
+                    return { id: nanoid(), name: file.name, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
                 }),
-            ),
-            message.warning,
-        );
-        setReferences((value) => [...value, ...nextReferences].slice(0, SEEDANCE_REFERENCE_LIMITS.images));
-        setVideoReferences((value) => [...value, ...nextVideoReferences].slice(0, SEEDANCE_REFERENCE_LIMITS.videos));
-        setAudioReferences((value) => [...value, ...nextAudioReferences].slice(0, SEEDANCE_REFERENCE_LIMITS.audios));
+            );
+            const nextVideoReferences = await Promise.all(
+                videoFiles.map(async (file) => {
+                    const video = await uploadMediaFile(file, "video-reference");
+                    return { id: nanoid(), name: file.name, type: video.mimeType, url: video.url, storageKey: video.storageKey, bytes: video.bytes, width: video.width, height: video.height, durationMs: video.durationMs };
+                }),
+            );
+            const nextAudioReferences = filterAudioReferencesByDuration(
+                audioReferences,
+                await Promise.all(
+                    audioFiles.map(async (file) => {
+                        const audio = await uploadMediaFile(file, "audio-reference");
+                        return { id: nanoid(), name: file.name, type: audio.mimeType, url: audio.url, storageKey: audio.storageKey, durationMs: audio.durationMs };
+                    }),
+                ),
+                message.warning,
+            );
+            setReferences((value) => [...value, ...nextReferences].slice(0, SEEDANCE_REFERENCE_LIMITS.images));
+            setVideoReferences((value) => [...value, ...nextVideoReferences].slice(0, SEEDANCE_REFERENCE_LIMITS.videos));
+            setAudioReferences((value) => [...value, ...nextAudioReferences].slice(0, SEEDANCE_REFERENCE_LIMITS.audios));
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "媒体保存失败");
+        }
     };
 
     const handleReferenceDragEnter = (event: DragEvent<HTMLDivElement>, target: "image" | "video" | "audio") => {
@@ -197,8 +202,8 @@ export default function VideoPage() {
             );
             setReferences((value) => [...value, ...nextReferences].slice(0, SEEDANCE_REFERENCE_LIMITS.images));
             message.success(t("videoWorkbench.clipboardAdded", { count: nextReferences.length }));
-        } catch {
-            message.error(t("videoWorkbench.clipboardEmpty"));
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : t("videoWorkbench.clipboardEmpty"));
         }
     };
     const generate = async () => {
@@ -771,19 +776,14 @@ function LogCard({ log, selected, active, onSelectedChange, onClick }: { log: Ge
 
 async function readStoredLogs(preferRemote = true) {
     if (typeof window === "undefined") return [];
-    try {
-        if (preferRemote) {
-            const remote = await loadWorkspaceData<{ logs?: GenerationLog[] }>("video-workbench");
-            if (remote?.logs) return (await Promise.all(remote.logs.map(normalizeLog))).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-        }
-        const logs: GenerationLog[] = [];
-        await logStore.iterate<GenerationLog, void>((value) => {
-            logs.push(value);
-        });
-        return (await Promise.all(logs.map(normalizeLog))).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-    } catch {
-        return [];
-    }
+    const logs = preferRemote ? await readWorkspaceLogs<GenerationLog>("video-workbench", logStore) : await readLocalLogs();
+    return (await Promise.all(logs.map(normalizeLog))).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+}
+
+async function readLocalLogs() {
+    const logs: GenerationLog[] = [];
+    await logStore.iterate<GenerationLog, void>((log) => { logs.push(log); });
+    return logs;
 }
 
 async function normalizeLog(log: Partial<GenerationLog>): Promise<GenerationLog> {

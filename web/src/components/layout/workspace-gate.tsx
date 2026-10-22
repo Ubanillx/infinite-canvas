@@ -1,12 +1,13 @@
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Button, Form, Input, Popover } from "antd";
-import { ArrowLeft, ArrowUpRight, FolderClosed, LayoutGrid, Plus } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Check, ChevronDown, FolderClosed, LayoutGrid, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { WorkspaceAmbientBackground } from "@/components/layout/workspace-ambient-background";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { clearActiveWorkspace, getActiveWorkspace, getKnownWorkspaces, migrateLegacyDataToWorkspace, setActiveWorkspace, setKnownWorkspaces, type WorkspaceAccess } from "@/lib/workspace";
+import { migrateWorkspaceMedia } from "@/services/workspace-media";
 import { listWorkspaceCanvasSummaries, type WorkspaceCanvasSummary } from "@/services/api/workspace-summaries";
 import { createWorkspace, listWorkspaces } from "@/services/workspace";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -50,6 +51,7 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
                 if (listed) {
                     setActiveWorkspace(listed);
                     await migrateLegacyDataToWorkspace(listed);
+                    await migrateWorkspaceMedia();
                     if (current) setReady(true);
                     return;
                 }
@@ -77,6 +79,7 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
         try {
             setActiveWorkspace(workspace);
             await migrateLegacyDataToWorkspace(workspace);
+            await migrateWorkspaceMedia();
             window.location.reload();
         } catch (reason) {
             setError(reason instanceof Error ? reason.message : "工作区操作失败");
@@ -180,36 +183,32 @@ export function WorkspaceSwitcher() {
         arrow={false}
         open={open}
         onOpenChange={(next) => { setOpen(next); if (next) setLoadError(false); }}
-        styles={{ container: { padding: 0, width: 360, maxWidth: "calc(100vw - 24px)" } }}
+        styles={{ container: { padding: 0, width: 300, maxWidth: "calc(100vw - 24px)" } }}
         content={<div ref={panelRef} role="dialog" aria-label={t("topNav.switchWorkspace")} className="text-foreground" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setOpen(false); triggerRef.current?.focus(); } }}>
-            <div className="px-5 pb-3 pt-5">
-                <div className="text-base font-semibold">{t("topNav.switchWorkspace")}</div>
-                <div className="mt-1 text-xs text-muted-foreground">{t("topNav.workspaceSelectHint")}</div>
-            </div>
-            {loadError ? <p role="alert" className="mx-3 mb-2 rounded-md bg-foreground/5 px-3 py-2 text-xs text-muted-foreground">{t("topNav.workspaceListError")}</p> : null}
-            <div className="max-h-72 space-y-1 overflow-y-auto px-3 pb-3">
+            <div className="px-4 pb-2 pt-4 text-sm font-medium">{t("topNav.switchWorkspace")}</div>
+            {loadError ? <p role="alert" className="mx-2 mb-2 rounded-md bg-foreground/5 px-3 py-2 text-xs text-muted-foreground">{t("topNav.workspaceListError")}</p> : null}
+            <div className="max-h-64 space-y-0.5 overflow-y-auto px-2">
                 {orderedWorkspaces.map((item) => {
                     const active = item.id === workspace.id;
                     const summary = summaries[item.id];
                     const detail = summary?.recentCanvasTitle
                         ? t("topNav.workspaceRecentCanvas", { name: summary.recentCanvasTitle })
                         : summary ? t("topNav.workspaceCounts", { canvases: summary.canvasCount, folders: summary.folderCount }) : t("topNav.workspaceInfo");
-                    return <button key={item.id} type="button" className={`relative flex min-h-16 w-full items-center justify-between gap-3 rounded-lg px-4 py-3 text-left transition-colors hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-foreground ${active ? "bg-foreground/5 dark:bg-foreground/10" : ""}`} onClick={() => { if (active) { setOpen(false); return; } startAppLoading(); setActiveWorkspace(item); window.location.reload(); }}>
-                        {active ? <span className="absolute inset-y-2 left-0 w-0.5 rounded-full bg-foreground" aria-hidden="true" /> : null}
+                    return <button key={item.id} type="button" aria-current={active ? "true" : undefined} className={`flex min-h-14 w-full items-center justify-between gap-3 rounded-md px-3 py-2.5 text-left transition-colors hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-foreground ${active ? "bg-foreground/5 dark:bg-foreground/10" : ""}`} onClick={() => { if (active) { setOpen(false); return; } startAppLoading(); setActiveWorkspace(item); window.location.reload(); }}>
                         <span className="min-w-0"><span className="block truncate text-sm font-medium">{item.name}</span><span className="mt-1 block truncate text-xs text-muted-foreground">{detail}</span></span>
-                        {active ? <span className="shrink-0 text-xs font-medium">{t("topNav.workspaceCurrent")}</span> : null}
+                        {active ? <><Check className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" /><span className="sr-only">{t("topNav.workspaceCurrent")}</span></> : null}
                     </button>;
                 })}
             </div>
-            <div className="flex items-center gap-2 border-t border-border px-3 py-3">
-                <button type="button" className="min-h-9 min-w-0 flex-1 rounded-md px-3 text-left text-sm font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring" onClick={() => showWorkspaceGate(false)}>{t("topNav.allWorkspaces")}</button>
-                <button type="button" className="min-h-9 shrink-0 rounded-md border border-border bg-muted px-3 text-sm font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring dark:hover:bg-foreground/10" onClick={() => showWorkspaceGate(true)}>{t("topNav.newWorkspace")}</button>
+            <div className="flex items-center gap-1 px-2 pb-2 pt-2">
+                <button type="button" className="min-h-9 min-w-0 flex-1 rounded-md px-3 text-left text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-foreground" onClick={() => showWorkspaceGate(false)}>{t("topNav.allWorkspaces")}</button>
+                <button type="button" className="inline-flex min-h-9 shrink-0 items-center gap-1 rounded-md bg-foreground/5 px-3 text-xs font-medium text-foreground transition-colors hover:bg-foreground/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground" onClick={() => showWorkspaceGate(true)}><Plus className="size-3.5" />{t("topNav.newWorkspace")}</button>
             </div>
         </div>}
     >
-        <button ref={triggerRef} type="button" title={workspace.name} aria-label={t("topNav.workspaceTrigger", { name: workspace.name })} aria-haspopup="dialog" aria-expanded={open} className="flex h-9 max-w-24 items-center gap-2 rounded-md border border-border bg-background px-2 text-left transition-colors hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground sm:max-w-44 sm:px-3">
-            <span className="min-w-0"><span className="block whitespace-nowrap text-[10px] leading-3 text-muted-foreground">{t("topNav.currentWorkspace")}</span><span className="block truncate text-[13px] font-medium leading-4 text-foreground">{workspace.name}</span></span>
-            <span className="hidden shrink-0 pl-2 text-xs text-muted-foreground sm:block">{t("topNav.switch")}</span>
+        <button ref={triggerRef} type="button" title={workspace.name} aria-label={t("topNav.workspaceTrigger", { name: workspace.name })} aria-haspopup="dialog" aria-expanded={open} className="inline-flex h-8 max-w-28 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm font-medium text-foreground transition-colors hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground sm:max-w-40">
+            <span className="truncate">{workspace.name}</span>
+            <ChevronDown className={`size-3.5 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} aria-hidden="true" />
         </button>
     </Popover>;
 }

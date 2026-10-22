@@ -8,6 +8,7 @@ import { useCopyText } from "@/hooks/use-copy-text";
 import { formatBytes, readFileAsDataUrl } from "@/lib/image-utils";
 import { getMediaBlob } from "@/services/file-storage";
 import { getImageBlob, getImagePreviewRevision, subscribeImagePreviews, uploadImage } from "@/services/image-storage";
+import { remoteMediaUrl } from "@/services/api/remote-media";
 import { cn } from "@/lib/utils";
 import { assetCoverUrl, useAssetStore, type Asset, type AssetKind, type ImageAsset } from "@/stores/use-asset-store";
 import { exportAssets, readAssetPackage } from "./asset-transfer";
@@ -132,11 +133,15 @@ export default function AssetsPage() {
 
     const readImageFile = async (file?: File) => {
         if (!file || !file.type.startsWith("image/")) return;
-        const image = await uploadImage(file);
-        const draft = { dataUrl: image.url, storageKey: image.storageKey, width: image.width, height: image.height, bytes: image.bytes, mimeType: image.mimeType };
-        setImageDraft(draft);
-        if (!form.getFieldValue("coverUrl")) form.setFieldValue("coverUrl", draft.dataUrl);
-        if (!form.getFieldValue("title")) form.setFieldValue("title", file.name);
+        try {
+            const image = await uploadImage(file);
+            const draft = { dataUrl: image.url, storageKey: image.storageKey, width: image.width, height: image.height, bytes: image.bytes, mimeType: image.mimeType };
+            setImageDraft(draft);
+            if (!form.getFieldValue("coverUrl")) form.setFieldValue("coverUrl", draft.dataUrl);
+            if (!form.getFieldValue("title")) form.setFieldValue("title", file.name);
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "媒体保存失败");
+        }
     };
 
     const copyAssetText = async (asset: Asset) => {
@@ -551,7 +556,7 @@ async function readAssetMediaBlob(asset: Extract<Asset, { kind: "image" | "video
     }
     const url = asset.kind === "video" ? asset.data.url : asset.data.dataUrl || asset.coverUrl;
     if (!url) return null;
-    const response = await fetch(url);
+    const response = await fetch(remoteMediaUrl(url));
     return response.ok ? response.blob() : null;
 }
 

@@ -66,12 +66,7 @@ let queuedPersistState: PersistedCanvasState | null = null;
 
 const canvasStorage: PersistStorage<CanvasStore> = {
     getItem: async (name) => {
-        let remote: StorageValue<CanvasStore> | null = null;
-        try {
-            remote = await loadWorkspaceData<StorageValue<CanvasStore>>("canvas");
-        } catch {
-            // Use the local cache while the account/session is being established.
-        }
+        const remote = await loadWorkspaceData<StorageValue<CanvasStore>>("canvas");
         if (remote) {
             const normalized = normalizeCanvasStorageValue(remote);
             if (!normalized) throw new Error("画布工作区数据格式未知或损坏，未覆盖原数据");
@@ -88,6 +83,8 @@ const canvasStorage: PersistStorage<CanvasStore> = {
         }
         const normalized = normalizeCanvasStorageValue(parsed);
         if (!normalized) throw new Error("画布本地数据格式未知或损坏，未覆盖原数据");
+        await saveWorkspaceData("canvas", normalized);
+        await Promise.resolve(localForageStorage.removeItem(name)).catch(() => undefined);
         queuedPersistState = normalized.state as PersistedCanvasState;
         return normalized;
     },
@@ -98,8 +95,7 @@ const canvasStorage: PersistStorage<CanvasStore> = {
         if (saveTimer) clearTimeout(saveTimer);
         saveTimer = setTimeout(() => {
             saveTimer = null;
-            void localForageStorage.setItem(name, JSON.stringify(value));
-            void saveWorkspaceData("canvas", value).catch(() => undefined);
+            void saveWorkspaceData("canvas", value).then(() => localForageStorage.removeItem(name)).catch(() => undefined);
         }, 400);
     },
     removeItem: (name) => localForageStorage.removeItem(name),

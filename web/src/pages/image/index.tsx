@@ -24,7 +24,8 @@ import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
 import type { ReferenceImage } from "@/types/image";
 import i18n from "@/i18n";
 import { workspaceStoreName } from "@/lib/workspace";
-import { loadWorkspaceData, saveWorkspaceData } from "@/services/workspace-data";
+import { saveWorkspaceData } from "@/services/workspace-data";
+import { readWorkspaceLogs } from "@/services/workspace-logs";
 
 type GeneratedImage = {
     id: string;
@@ -120,14 +121,18 @@ export default function ImagePage() {
     }, []);
 
     const addReferences = async (files?: FileList | null) => {
-        const imageFiles = Array.from(files || []).filter((file) => file.type.startsWith("image/"));
-        const nextReferences = await Promise.all(
-            imageFiles.map(async (file) => {
-                const image = await uploadImage(file);
-                return { id: nanoid(), name: file.name, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
-            }),
-        );
-        setReferences((value) => [...value, ...nextReferences]);
+        try {
+            const imageFiles = Array.from(files || []).filter((file) => file.type.startsWith("image/"));
+            const nextReferences = await Promise.all(
+                imageFiles.map(async (file) => {
+                    const image = await uploadImage(file);
+                    return { id: nanoid(), name: file.name, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
+                }),
+            );
+            setReferences((value) => [...value, ...nextReferences]);
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "媒体保存失败");
+        }
     };
 
     const addReferencesFromClipboard = async () => {
@@ -146,8 +151,8 @@ export default function ImagePage() {
             );
             setReferences((value) => [...value, ...nextReferences]);
             message.success(t("imageWorkbench.clipboardAdded", { count: nextReferences.length }));
-        } catch {
-            message.error(t("imageWorkbench.clipboardEmpty"));
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : t("imageWorkbench.clipboardEmpty"));
         }
     };
 
@@ -786,20 +791,14 @@ function LogCard({ log, selected, active, onSelectedChange, onClick }: { log: Ge
 
 async function readStoredLogs(preferRemote = true) {
     if (typeof window === "undefined") return [];
-    try {
-        if (preferRemote) {
-            const remote = await loadWorkspaceData<{ logs?: GenerationLog[] }>("image-workbench");
-            if (remote?.logs) return (await Promise.all(remote.logs.map(normalizeLog))).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-        }
-        const values: GenerationLog[] = [];
-        await logStore.iterate<GenerationLog, void>((value) => {
-            values.push(value);
-        });
-        const logs = await Promise.all(values.map(normalizeLog));
-        return logs.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-    } catch {
-        return [];
-    }
+    const values = preferRemote ? await readWorkspaceLogs<GenerationLog>("image-workbench", logStore) : await readLocalLogs();
+    return (await Promise.all(values.map(normalizeLog))).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+}
+
+async function readLocalLogs() {
+    const logs: GenerationLog[] = [];
+    await logStore.iterate<GenerationLog, void>((log) => { logs.push(log); });
+    return logs;
 }
 
 async function normalizeLog(log: Partial<GenerationLog>): Promise<GenerationLog> {

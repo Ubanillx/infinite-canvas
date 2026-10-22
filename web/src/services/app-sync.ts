@@ -7,6 +7,8 @@ import { randomId, safeFileName } from "@/lib/utils";
 import { mergeCanvasSnapshot, type CanvasSnapshotData } from "@/lib/canvas/canvas-snapshot-merge";
 import { getMediaBlob, resolveMediaUrl, setMediaBlob } from "@/services/file-storage";
 import { getImageBlob, resolveImageUrl, setImageBlob } from "@/services/image-storage";
+import { readWorkspaceLogs } from "@/services/workspace-logs";
+import { saveWorkspaceData } from "@/services/workspace-data";
 import { deleteWebdavPath, downloadWebdavFile, listWebdavDirectory, uploadWebdavFile, WEBDAV_MANIFEST_FILE_NAME } from "@/services/webdav-sync";
 import type { Asset } from "@/stores/use-asset-store";
 import { useAssetStore } from "@/stores/use-asset-store";
@@ -92,8 +94,8 @@ function domainOptions(): [SyncDomainOptions<CanvasDomainData>, SyncDomainOption
     return [
         { key: "canvas", label: "画布", emptyData: { projects: [], folders: [], deleted: [] }, localData: async () => ({ projects: useCanvasStore.getState().projects, folders: useCanvasStore.getState().folders, deleted: useCanvasStore.getState().deletedProjects }), mergeData: mergeCanvasSnapshot, applyData: async (data) => useCanvasStore.getState().replaceCanvasData(data.projects, data.folders || [], data.deleted) },
         { key: "assets", label: "我的素材", emptyData: { assets: [] }, localData: async () => ({ assets: useAssetStore.getState().assets }), mergeData: (local, remote) => ({ assets: mergeImportedById(local.assets, remote.assets) }), applyData: async (data) => useAssetStore.getState().replaceAssets(await Promise.all(data.assets.map(hydrateAsset))) },
-        { key: "image-workbench", label: "生图工作台", emptyData: { logs: [] }, localData: async () => ({ logs: await readStoredLogs(imageLogStore) }), mergeData: (local, remote) => ({ logs: mergeImportedById(local.logs, remote.logs) }), applyData: async (data) => replaceStoredLogs(imageLogStore, data.logs) },
-        { key: "video-workbench", label: "视频创作台", emptyData: { logs: [] }, localData: async () => ({ logs: await readStoredLogs(videoLogStore) }), mergeData: (local, remote) => ({ logs: mergeImportedById(local.logs, remote.logs) }), applyData: async (data) => replaceStoredLogs(videoLogStore, data.logs) },
+        { key: "image-workbench", label: "生图工作台", emptyData: { logs: [] }, localData: async () => ({ logs: await readWorkspaceLogs<StoredLog & { id: string }>("image-workbench", imageLogStore) }), mergeData: (local, remote) => ({ logs: mergeImportedById(local.logs, remote.logs) }), applyData: async (data) => { await replaceStoredLogs(imageLogStore, data.logs); await saveWorkspaceData("image-workbench", data); } },
+        { key: "video-workbench", label: "视频创作台", emptyData: { logs: [] }, localData: async () => ({ logs: await readWorkspaceLogs<StoredLog & { id: string }>("video-workbench", videoLogStore) }), mergeData: (local, remote) => ({ logs: mergeImportedById(local.logs, remote.logs) }), applyData: async (data) => { await replaceStoredLogs(videoLogStore, data.logs); await saveWorkspaceData("video-workbench", data); } },
     ];
 }
 
@@ -202,7 +204,6 @@ async function hydrateAsset(asset: Asset): Promise<Asset> {
 }
 
 type LogStore = ReturnType<typeof localforage.createInstance>;
-async function readStoredLogs(store: LogStore) { const logs: StoredLog[] = []; await store.iterate<StoredLog, void>((value) => { if (value && typeof value === "object") logs.push(value); }); return logs; }
 async function replaceStoredLogs(store: LogStore, logs: StoredLog[]) { await store.clear(); await runWithConcurrency(logs, FILE_CONCURRENCY, async (log) => { if (log.id) await store.setItem(log.id, log); }); }
 function mergeImportedById<T extends { id?: string }>(local: T[], remote: T[]) { const items = new Map(remote.filter((item) => item.id).map((item) => [item.id!, item])); local.forEach((item) => { if (item.id) items.set(item.id, item); }); return [...items.values()]; }
 function collectStorageKeys(value: unknown, keys = new Set<string>()): string[] { if (typeof value === "string") { if (storageKeyPattern.test(value)) keys.add(value); return [...keys]; } if (!value || typeof value !== "object") return [...keys]; if ("storageKey" in value && typeof value.storageKey === "string" && storageKeyPattern.test(value.storageKey)) keys.add(value.storageKey); Object.values(value).forEach((item) => (Array.isArray(item) ? item.forEach((child) => collectStorageKeys(child, keys)) : collectStorageKeys(item, keys))); return [...keys]; }
