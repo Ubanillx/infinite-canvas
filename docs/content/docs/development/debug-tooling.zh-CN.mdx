@@ -1,0 +1,118 @@
+---
+title: 开发调试与测试工具
+description: 可复用的日志、接口冒烟、浏览器探针和 E2E 工具
+---
+
+# 开发调试与测试工具
+
+`scripts/` 下的脚本都遵循同一个约定：每次运行在 `.local/` 下用时间戳目录保存数据、日志、截图和报告，不污染 `.local/dev-data`，也不影响已经在跑的开发服务。所有命令默认在仓库根目录执行。
+
+## 目录约定
+
+- `scripts/local.mjs`：原有统一入口（`dev`、`test`、`e2e`、`logs`、`doctor`），保持不动。
+- `scripts/dev-run.mjs`：受管开发服务器。可当命令用，也可以在脚本里 `startDevServer()` 启动后继续做验证。
+- `scripts/dev-smoke.mjs`：接口与页面外壳冒烟，不开浏览器，几秒内给出结论。
+- `scripts/dev-probe.mjs`：真实 Chromium 打开页面，收集控制台、未捕获异常和失败请求，并截图。
+- `scripts/dev-browse.mjs`：交互式浏览器调试，按步骤操作真实页面。
+- `scripts/dev-shot.mjs`：单条命令截图，适合快速看 UI 效果。
+- `scripts/dev-logs.mjs`：列出、扫描、跟踪 `.local` 下的 JSONL 运行日志。
+- `scripts/lib/dev-env.mjs`、`dev-http.mjs`、`dev-browser.mjs`：上面脚本共用的目录、请求和浏览器能力。
+
+## 常用命令
+
+| 命令 | 作用 |
+| --- | --- |
+| `npm run dev` | 开发服务器，数据在 `.local/dev-data`，日志 `.local/dev-server.jsonl` |
+| `npm run dev:server` | 同上，由 `scripts/dev-run.mjs` 受管启动，退出时自动扫描日志 |
+| `npm run dev:smoke` | 起隔离服务并验证工作区接口、数据隔离、版本冲突和页面外壳 |
+| `npm run dev:smoke -- --url http://127.0.0.1:3000` | 不新起服务，直接打已经在跑的开发服务器 |
+| `npm run dev:probe` | 起隔离服务并用 Chromium 打开 `/`、`/canvas`，输出截图与 `report.json` |
+| `npm run dev:probe -- --url http://127.0.0.1:3000 --routes /canvas,/image --mobile` | 复用现有服务、指定路由、模拟手机视口 |
+| `npm run dev:browse -- http://127.0.0.1:3000/canvas` | 打开页面，可继续加 `--step`、`--shot`、`--headed` |
+| `npm run dev:shot -- http://127.0.0.1:3000/image --out shot.png --theme dark` | 单页截图，支持视口、整页和主题；不写 `--out` 时输出到 `.local/screenshot.png` |
+| `npm run logs` | 扫描 `.local` 下全部 JSONL 日志的可疑行 |
+| `npm run logs -- --list`、`npm run logs -- --tail <file>` | 列出日志、跟踪某个日志的新增行 |
+| `npm test`、`npm run test:e2e` | 单元测试、Playwright 桌面与移动端流程 |
+
+冒烟和探针默认自起隔离服务（端口 3102、3103），可以和 `npm run dev` 同时运行；加上 `--url` 后不再启动新服务。目标端口已被其他进程占用时脚本会直接报错退出，不会误连到别的服务。
+
+## 在代码里复用
+
+### 接口
+
+`scripts/lib/dev-http.mjs` 提供不带浏览器的最小接口能力：
+
+```js
+import { createWorkspace, requestJson, waitForServer } from "./scripts/lib/dev-http.mjs";
+
+await waitForServer("http://127.0.0.1:3000");
+const workspace = await createWorkspace("http://127.0.0.1:3000");
+const headers = { "x-infinite-canvas-workspace": workspace.id };
+await requestJson("http://127.0.0.1:3000/api/data/canvas", { method: "PUT", headers, body: { revision: 0, payload: { marker: "debug" } } });
+```
+
+### 服务器
+
+`scripts/dev-run.mjs` 可以在自定义脚本里启动和关闭服务器：
+
+```js
+import { printLogSummary, startDevServer } from "./scripts/dev-run.mjs";
+import { timestampDir } from "./scripts/lib/dev-env.mjs";
+
+const runDir = timestampDir("my-check");
+const server = await startDevServer({ port: 3105, dataDir: `${runDir}/data`, logFile: `${runDir}/server.jsonl`, quiet: true });
+try {
+    // 在这里请求接口或打开浏览器
+} finally {
+    await server.stop();
+}
+printLogSummary(server.logFile);
+```
+
+### 浏览器
+
+`scripts/lib/dev-browser.mjs` 复用 `web/` 已安装的 Playwright：
+
+```js
+import { capture, launchBrowser, openPage } from "./scripts/lib/dev-browser.mjs";
+
+const browser = await launchBrowser();
+const { context, page, diagnostics } = await openPage(browser, { baseURL: "http://127.0.0.1:3000" });
+await page.goto("/canvas");
+await capture(page, ".local", "canvas");
+diagnostics.print();
+diagnostics.assertClean();
+await context.close();
+await browser.close();
+```
+
+`diagnostics` 会记录 `console.*`、`pageerror`、失败请求和状态码大于等于 400 的响应；`net::ERR_ABORTED` 以及通过 `ignoredUrls` 指定的外部依赖会被忽略，避免误报。
+
+## 交互式步骤
+
+`dev-browse.mjs` 的 `--step` 在 `page` 作用域执行，可以重复传入：
+
+```bash
+npm run dev:browse -- http://127.0.0.1:3000/canvas \
+  --step "page.getByRole('button', { name: '新建画布' }).click()" \
+  --step "page.getByLabel('名称').fill('debug')" \
+  --shot canvas-dialog.png
+```
+
+PowerShell 中续行用反引号。步骤失败时会自动截图到 `.local/browse-failure.png` 并列出浏览器诊断，退出码为 1。
+
+## 日志
+
+服务端输出、E2E 和冒烟脚本的运行日志都写成本行 JSON：`{"time":"...","message":"..."}`。`npm run logs` 会检测 `error`、`fatal`、`exception`、`unhandled`、`request failed` 和 `proxy failed` 这些关键字，命中时以非零码退出，适合放进 CI 或提交前自检。
+
+Canvas Agent 的调试日志由 `npm run dev:agent` 开启，落在用户目录 `~/.infinite-canvas/logs/`，其中的 token、API Key 和 Data URL 会被自动脱敏。
+
+## 首次准备
+
+```bash
+npm install --global bun@1.3.13
+cd web && npm ci --legacy-peer-deps
+npx --prefix web playwright install chromium
+```
+
+缺少 Chromium 时浏览器脚本会直接提示安装命令，而不是抛出底层的 Playwright 报错。`npm run doctor` 可以快速确认 Bun、依赖和 Playwright 是否就绪。

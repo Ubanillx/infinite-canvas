@@ -1,0 +1,118 @@
+---
+title: Debugging and Test Tooling
+description: Reusable logging, API smoke, browser probe and E2E tools
+---
+
+# Debugging and Test Tooling
+
+Every script under `scripts/` follows one rule: a run writes its data, logs, screenshots and reports into a timestamped directory under `.local/`. Runs never touch `.local/dev-data` and never disturb a development server that is already running. Run all commands from the repository root.
+
+## Layout
+
+- `scripts/local.mjs`: the existing unified entry (`dev`, `test`, `e2e`, `logs`, `doctor`), unchanged.
+- `scripts/dev-run.mjs`: supervised development server. Usable as a command, or import `startDevServer()` to keep working after startup.
+- `scripts/dev-smoke.mjs`: API and SPA-shell smoke check without a browser; answers in seconds.
+- `scripts/dev-probe.mjs`: real Chromium visits routes, collects console errors, uncaught exceptions and failed requests, and saves screenshots.
+- `scripts/dev-browse.mjs`: interactive browser debugging with repeatable steps.
+- `scripts/dev-shot.mjs`: one-command screenshot for quick UI checks.
+- `scripts/dev-logs.mjs`: list, scan and follow JSONL run logs under `.local`.
+- `scripts/lib/dev-env.mjs`, `dev-http.mjs`, `dev-browser.mjs`: shared directory, request and browser helpers used by the scripts above.
+
+## Common commands
+
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Development server with data in `.local/dev-data` and log in `.local/dev-server.jsonl` |
+| `npm run dev:server` | Same server, started by `scripts/dev-run.mjs`, with a log scan on exit |
+| `npm run dev:smoke` | Isolated server plus checks for workspaces, data isolation, revision conflicts and the SPA shell |
+| `npm run dev:smoke -- --url http://127.0.0.1:3000` | Reuse a running server instead of starting a new one |
+| `npm run dev:probe` | Isolated server plus Chromium visits to `/` and `/canvas`, with screenshots and `report.json` |
+| `npm run dev:probe -- --url http://127.0.0.1:3000 --routes /canvas,/image --mobile` | Reuse a server, pick routes, use a phone viewport |
+| `npm run dev:browse -- http://127.0.0.1:3000/canvas` | Open a page; add `--step`, `--shot` or `--headed` |
+| `npm run dev:shot -- http://127.0.0.1:3000/image --out shot.png --theme dark` | Screenshot one page with viewport, full page and theme options; without `--out` it writes `.local/screenshot.png` |
+| `npm run logs` | Scan every JSONL log under `.local` for suspect lines |
+| `npm run logs -- --list`, `npm run logs -- --tail <file>` | List logs, or follow one log |
+| `npm test`, `npm run test:e2e` | Unit suites, Playwright desktop and mobile flows |
+
+Smoke and probe start an isolated server on ports 3102 and 3103, so they can run alongside `npm run dev`. Passing `--url` skips that startup entirely. If the target port is already taken the script fails fast instead of connecting to the wrong server.
+
+## Reusing the helpers
+
+### HTTP
+
+`scripts/lib/dev-http.mjs` covers the browser-free minimum:
+
+```js
+import { createWorkspace, requestJson, waitForServer } from "./scripts/lib/dev-http.mjs";
+
+await waitForServer("http://127.0.0.1:3000");
+const workspace = await createWorkspace("http://127.0.0.1:3000");
+const headers = { "x-infinite-canvas-workspace": workspace.id };
+await requestJson("http://127.0.0.1:3000/api/data/canvas", { method: "PUT", headers, body: { revision: 0, payload: { marker: "debug" } } });
+```
+
+### Server
+
+`scripts/dev-run.mjs` starts and stops the server from your own script:
+
+```js
+import { printLogSummary, startDevServer } from "./scripts/dev-run.mjs";
+import { timestampDir } from "./scripts/lib/dev-env.mjs";
+
+const runDir = timestampDir("my-check");
+const server = await startDevServer({ port: 3105, dataDir: `${runDir}/data`, logFile: `${runDir}/server.jsonl`, quiet: true });
+try {
+    // request the API or open a browser here
+} finally {
+    await server.stop();
+}
+printLogSummary(server.logFile);
+```
+
+### Browser
+
+`scripts/lib/dev-browser.mjs` reuses the Playwright installed in `web/`:
+
+```js
+import { capture, launchBrowser, openPage } from "./scripts/lib/dev-browser.mjs";
+
+const browser = await launchBrowser();
+const { context, page, diagnostics } = await openPage(browser, { baseURL: "http://127.0.0.1:3000" });
+await page.goto("/canvas");
+await capture(page, ".local", "canvas");
+diagnostics.print();
+diagnostics.assertClean();
+await context.close();
+await browser.close();
+```
+
+`diagnostics` records `console.*`, `pageerror`, failed requests and responses with status 400 or above. `net::ERR_ABORTED` and anything matched by `ignoredUrls` are skipped so known external dependencies do not produce false alarms.
+
+## Interactive steps
+
+`--step` in `dev-browse.mjs` runs in the `page` scope and may be repeated:
+
+```bash
+npm run dev:browse -- http://127.0.0.1:3000/canvas \
+  --step "page.getByRole('button', { name: '新建画布' }).click()" \
+  --step "page.getByLabel('名称').fill('debug')" \
+  --shot canvas-dialog.png
+```
+
+Use a backtick for line continuation in PowerShell. A failing step saves `.local/browse-failure.png`, prints the browser diagnostics and exits with code 1.
+
+## Logs
+
+Server output plus E2E and smoke runs are written as line-delimited JSON: `{"time":"...","message":"..."}`. `npm run logs` looks for `error`, `fatal`, `exception`, `unhandled`, `request failed` and `proxy failed` and exits non-zero on a hit, so it works as a CI or pre-commit check.
+
+Canvas Agent debug logging is enabled by `npm run dev:agent` and written to `~/.infinite-canvas/logs/`, where tokens, API keys and data URLs are redacted automatically.
+
+## First-time setup
+
+```bash
+npm install --global bun@1.3.13
+cd web && npm ci --legacy-peer-deps
+npx --prefix web playwright install chromium
+```
+
+Without Chromium the browser scripts print that install command instead of the raw Playwright error. `npm run doctor` confirms Bun, dependencies and the Playwright CLI.

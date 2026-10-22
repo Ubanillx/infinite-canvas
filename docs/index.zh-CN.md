@@ -17,6 +17,7 @@
 ## 开发与数据
 
 - [本地开发](/zh-CN/docs/development/local-development)
+- [开发调试与测试工具](/zh-CN/docs/development/debug-tooling)
 - [画布数据结构](/zh-CN/docs/development/canvas-data-structure)
 
 ## 商务合作
