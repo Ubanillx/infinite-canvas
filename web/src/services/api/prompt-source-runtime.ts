@@ -1,5 +1,6 @@
 import i18n from "@/i18n";
 import type { PromptSource } from "./prompt-source-presets";
+import { waitForServerConfigSave } from "@/services/server-config";
 
 export type RawPrompt = {
     id: string;
@@ -23,8 +24,12 @@ export type RawPrompt = {
 type RunOptions = { signal?: AbortSignal };
 
 async function fetchSource(source: PromptSource, options?: RunOptions) {
-    const response = await fetch(source.url, { cache: "no-store", signal: options?.signal });
-    if (!response.ok) throw new Error(i18n.t("config.promptSources.runtime.requestFailed", { status: response.status }));
+    await waitForServerConfigSave();
+    const response = await fetch(`/api/prompt-source/${encodeURIComponent(source.id)}`, { cache: "no-store", signal: options?.signal });
+    if (!response.ok) {
+        const detail = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(detail.error || i18n.t("config.promptSources.runtime.requestFailed", { status: response.status }));
+    }
     return response.json();
 }
 

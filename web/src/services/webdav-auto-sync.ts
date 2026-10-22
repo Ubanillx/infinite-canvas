@@ -39,7 +39,12 @@ export function syncAllDataToWebdav(config = useConfigStore.getState().webdav, r
 }
 
 export function isWebdavConfigured(config: WebdavSyncConfig) {
-    return config.url.trim() === "/api/webdav";
+    try {
+        const target = new URL(config.url.trim());
+        return Boolean(["http:", "https:"].includes(target.protocol) && !target.username && !target.password && config.username.trim() && (config.hasPassword || config.password));
+    } catch {
+        return false;
+    }
 }
 
 function enqueue<T>(reason: WebdavAutoSyncStatus["reason"], task: () => Promise<T>) {

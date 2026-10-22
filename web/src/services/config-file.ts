@@ -19,6 +19,8 @@ export type AppConfigFile = {
 
 export function exportAppConfig() {
     const data = createAppConfigSnapshot();
+    data.config = redactAiConfigSecrets(data.config);
+    data.webdav = { ...data.webdav, url: "", username: "", password: "", hasPassword: false, directory: "" };
     saveAs(new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" }), "infinite-canvas-config.json");
 }
 
@@ -29,13 +31,13 @@ export function createAppConfigSnapshot(): AppConfigFile {
 }
 
 export function applyAppConfig(data: AppConfigFile) {
-    useConfigStore.setState({ config: { ...defaultConfig, ...data.config }, webdav: { ...defaultWebdavSyncConfig, ...data.webdav, autoSyncEnabled: false } });
-    usePromptSourceStore.setState(data.promptSources);
+    useConfigStore.setState({ config: { ...defaultConfig, ...data.config, proxyEnabled: false }, webdav: { ...defaultWebdavSyncConfig, ...data.webdav, autoSyncEnabled: false } });
+    usePromptSourceStore.setState({ ...data.promptSources, sources: data.promptSources.sources.filter((source) => !source.builtIn) });
 }
 
 export function applyServerConfig(data: AppConfigFile) {
-    useConfigStore.setState({ config: redactAiConfigSecrets({ ...defaultConfig, ...data.config }), webdav: { ...defaultWebdavSyncConfig, ...data.webdav, autoSyncEnabled: false, password: "" } });
-    usePromptSourceStore.setState(data.promptSources);
+    useConfigStore.setState({ config: redactAiConfigSecrets({ ...defaultConfig, ...data.config, proxyEnabled: false }), webdav: { ...defaultWebdavSyncConfig, ...data.webdav, autoSyncEnabled: false, password: "" } });
+    usePromptSourceStore.setState({ ...data.promptSources, sources: data.promptSources.sources.filter((source) => !source.builtIn) });
 }
 
 export function markServerConfigSaved(saved: AppConfigFile) {
@@ -50,7 +52,7 @@ export function markServerConfigSaved(saved: AppConfigFile) {
                 return channel.apiKey === savedKey ? { ...channel, apiKey: "", hasApiKey: channel.hasApiKey || Boolean(savedKey) } : channel;
             }),
         },
-        webdav: current.webdav.password === saved.webdav.password ? { ...current.webdav, password: "" } : current.webdav,
+        webdav: current.webdav.password === saved.webdav.password ? { ...current.webdav, password: "", hasPassword: current.webdav.hasPassword || Boolean(saved.webdav.password) } : current.webdav,
     });
 }
 

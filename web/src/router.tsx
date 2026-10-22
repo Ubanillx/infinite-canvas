@@ -29,6 +29,7 @@ export const router = createBrowserRouter([
             { path: "/canvas", element: <CanvasPage /> },
             { path: "/canvas/:id", element: <CanvasProjectPage /> },
             { path: "/config", element: <ConfigPage /> },
+            { path: "/config/:tab", element: <ConfigPage /> },
         ],
     },
     { path: "*", element: <NotFound /> },

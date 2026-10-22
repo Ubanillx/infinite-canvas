@@ -1,10 +1,11 @@
 import type { ReactNode } from "react";
-import { useEffect, useRef, useState } from "react";
-import { App, Button, Modal, Result } from "antd";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Alert, App, Button, Modal, Result } from "antd";
 import { useTranslation } from "react-i18next";
 
-import { applyServerConfig } from "@/services/config-file";
-import { loadServerConfig } from "@/services/server-config";
+import { applyServerConfig, createAppConfigSnapshot } from "@/services/config-file";
+import { getServerConfigSaveStatus, loadServerConfig, retryServerConfigSave, saveServerConfig, startServerConfigAutoSave, subscribeServerConfigSaveStatus } from "@/services/server-config";
+import { getWorkspaceDataError, retryWorkspaceData, subscribeWorkspaceDataError } from "@/services/workspace-data";
 import { useConfigStore } from "@/stores/use-config-store";
 import { usePromptSourceScheduler } from "@/hooks/use-prompt-source-scheduler";
 import { useAppLoadingStore } from "@/stores/use-app-loading-store";
@@ -39,6 +40,8 @@ function ReadyClientRoot({ children }: { children: ReactNode }) {
     const handledConfigParams = useRef(false);
     const importChannelCredentials = useConfigStore((state) => state.importChannelCredentials);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
+    const saveError = useSyncExternalStore(subscribeServerConfigSaveStatus, getServerConfigSaveStatus).error;
+    const workspaceError = useSyncExternalStore(subscribeWorkspaceDataError, getWorkspaceDataError);
     const [conflict, setConflict] = useState<string>("");
 
     usePromptSourceScheduler();
@@ -73,7 +76,16 @@ function ReadyClientRoot({ children }: { children: ReactNode }) {
         else message.error(t("config.importedChannelBaseUrlInvalid"));
     }, [importChannelCredentials, message, openConfigDialog, t]);
 
-    return <>{children}<Modal open={Boolean(conflict)} title="检测到多人编辑冲突" okText="刷新并读取服务器版本" cancelText="继续保留本机内容" onOk={() => window.location.reload()} onCancel={() => setConflict("")}>“{conflict}”已被另一位成员更新。系统没有覆盖对方的数据；请刷新读取服务器版本，再决定如何合并本机修改。</Modal></>;
+    if (workspaceError?.mode === "read") return <Result status="error" title="无法读取服务器工作区数据" subTitle={workspaceError.message} extra={<Button type="primary" onClick={retryWorkspaceData}>{t("common.retry")}</Button>} />;
+
+    return <>
+        {children}
+        {saveError || workspaceError ? <div className="fixed left-4 right-4 top-4 z-[1100] flex flex-col gap-2 sm:left-auto sm:max-w-md">
+            {saveError ? <Alert type="error" showIcon message={t("config.serverStorage.saveFailed")} description={saveError} action={<Button size="small" onClick={retryServerConfigSave}>{t("common.retry")}</Button>} /> : null}
+            {workspaceError ? <Alert type="error" showIcon message={workspaceError.mode === "conflict" ? "工作区数据发生冲突" : "工作区数据未保存"} description={workspaceError.message} action={<Button size="small" onClick={retryWorkspaceData}>{workspaceError.mode === "conflict" ? "刷新" : t("common.retry")}</Button>} /> : null}
+        </div> : null}
+        <Modal open={Boolean(conflict)} title="检测到多人编辑冲突" okText="刷新并读取服务器版本" cancelText="继续保留本机内容" onOk={() => window.location.reload()} onCancel={() => setConflict("")}>“{conflict}”已被另一位成员更新。系统没有覆盖对方的数据；请刷新读取服务器版本，再决定如何合并本机修改。</Modal>
+    </>;
 }
 
 function useServerConfigSync(attempt: number) {
@@ -84,6 +96,7 @@ function useServerConfigSync(attempt: number) {
 
     useEffect(() => {
         let active = true;
+        let stopAutoSave: (() => void) | undefined;
 
         setState({ ready: false, error: "" });
         clearLegacyClientConfig();
@@ -93,6 +106,9 @@ function useServerConfigSync(attempt: number) {
                 const serverConfig = await loadServerConfig({ force: attempt > 0 });
                 if (!active) return;
                 if (serverConfig) applyServerConfig(serverConfig);
+                if (!serverConfig || serverConfig.promptSources.sources.some((source) => source.builtIn)) await saveServerConfig(createAppConfigSnapshot());
+                if (!active) return;
+                stopAutoSave = startServerConfigAutoSave();
                 setState({ ready: true, error: "" });
             } catch (reason) {
                 if (!active) return;
@@ -102,6 +118,7 @@ function useServerConfigSync(attempt: number) {
 
         return () => {
             active = false;
+            stopAutoSave?.();
         };
     }, [attempt]);
 

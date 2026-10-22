@@ -1,21 +1,19 @@
-import { App, Alert, Button, Form, Input, Modal, Progress, Radio, Select, Switch, Tabs } from "antd";
+import { App, Button, Form, Input, Modal, Progress, Radio, Select, Switch, Tabs } from "antd";
 import type { TFunction } from "i18next";
-import { Cloud, Download, Pencil, Plus, RefreshCw, Trash2, Upload, Wifi } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Cloud, Download, Info, KeyRound, Pencil, Plus, RefreshCw, Save, Trash2, Upload, Wifi } from "lucide-react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 
 import { formatCompactBytes as formatBytes } from "@/lib/format";
 import { ModelPicker } from "@/components/model-picker";
 import { videoResolutionOptions } from "@/components/video-settings-panel";
 import { ChannelEditorDrawer } from "@/components/layout/channel-editor-drawer";
-import { ConfigLocalProxy } from "@/components/layout/config-local-proxy";
 import { ConfigPromptSources } from "@/components/layout/config-prompt-sources";
 import { ConfigLocalStorage } from "@/components/layout/config-local-storage";
 import type { AppLocale } from "@/i18n";
-import { createAppConfigSnapshot, exportAppConfig, importAppConfig } from "@/services/config-file";
-import { saveServerConfig } from "@/services/server-config";
+import { getServerConfigSaveStatus, saveServerConfigNow, subscribeServerConfigSaveStatus } from "@/services/server-config";
 import { importWorkspaceSnapshot, listWorkspaceSnapshots, type AppSyncDomainKey, type AppSyncProgressEvent, type WebdavSnapshot } from "@/services/app-sync";
-import { syncAllDataToWebdav } from "@/services/webdav-auto-sync";
+import { isWebdavConfigured, syncAllDataToWebdav } from "@/services/webdav-auto-sync";
 import { testWebdavConnection } from "@/services/webdav-sync";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
 import { computeMediaSize, inferMediaRatio, inferMediaScale, mediaScaleOptions, parseVideoResolution } from "@/lib/media-size";
@@ -52,68 +50,62 @@ function createWebdavDomainProgress(): Record<AppSyncDomainKey, WebdavDomainProg
     );
 }
 
-export function AppConfigPanel({ showDoneButton = false, initialTab = "channels" }: { showDoneButton?: boolean; initialTab?: ConfigTabKey }) {
+export function SaveConfigButton() {
+    const { message } = App.useApp();
+    const { t } = useTranslation();
+    const serverSave = useSyncExternalStore(subscribeServerConfigSaveStatus, getServerConfigSaveStatus);
+
+    const save = async () => {
+        try {
+            await saveServerConfigNow();
+            message.success(t("config.serverStorage.saved"));
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : t("config.serverStorage.saveFailed"));
+        }
+    };
+
+    return <Button icon={<Save className="size-4" />} loading={serverSave.saving} onClick={() => void save()}>{t("config.serverStorage.save")}</Button>;
+}
+
+export function AppConfigPanel({ showDoneButton = false, showTabs = true, showSaveButton = true, initialTab = "channels" }: { showDoneButton?: boolean; showTabs?: boolean; showSaveButton?: boolean; initialTab?: ConfigTabKey }) {
     const { message } = App.useApp();
     const { i18n, t } = useTranslation();
-    const configInputRef = useRef<HTMLInputElement>(null);
-    const [activeTab, setActiveTab] = useState<ConfigTabKey>(initialTab);
+    const [selectedTab, setSelectedTab] = useState<ConfigTabKey>(initialTab);
+    const activeTab = showTabs ? selectedTab : initialTab;
     const [editingChannelId, setEditingChannelId] = useState("");
     const [testingWebdav, setTestingWebdav] = useState(false);
-    const [uploadingServerConfig, setUploadingServerConfig] = useState(false);
     const [syncingWebdav, setSyncingWebdav] = useState(false);
     const [webdavSyncStatus, setWebdavSyncStatus] = useState("");
     const [webdavSnapshots, setWebdavSnapshots] = useState<WebdavSnapshot[]>([]);
     const [selectedSnapshot, setSelectedSnapshot] = useState("");
     const [loadingSnapshots, setLoadingSnapshots] = useState(false);
     const [importingSnapshot, setImportingSnapshot] = useState(false);
+    const [webdavPasswordDraft, setWebdavPasswordDraft] = useState("");
     const [webdavDomainProgress, setWebdavDomainProgress] = useState(createWebdavDomainProgress);
     const config = useConfigStore((state) => state.config);
     const webdav = useConfigStore((state) => state.webdav);
     const updateConfig = useConfigStore((state) => state.updateConfig);
+    const updateWebdavConfig = useConfigStore((state) => state.updateWebdavConfig);
     const shouldPromptContinue = useConfigStore((state) => state.shouldPromptContinue);
     const isConfigOpen = useConfigStore((state) => state.isConfigOpen);
     const setConfigDialogOpen = useConfigStore((state) => state.setConfigDialogOpen);
     const clearPromptContinue = useConfigStore((state) => state.clearPromptContinue);
-    const webdavReady = webdav.url.trim() === "/api/webdav";
+    const webdavReady = isWebdavConfigured({ ...webdav, password: webdavPasswordDraft || webdav.password });
     const editingChannel = config.channels.find((channel) => channel.id === editingChannelId) || null;
     const locale = i18n.resolvedLanguage as AppLocale;
     const imageResolutionOptions = mediaScaleOptions.map((value) => ({ value, label: value === "auto" ? t("settingsPanels.common.auto") : value.toUpperCase() }));
-    useEffect(() => setActiveTab(initialTab), [initialTab]);
+    useEffect(() => setSelectedTab(initialTab), [initialTab]);
 
     const saveConfig = (nextConfig: AiConfig) => {
         (Object.keys(nextConfig) as Array<keyof AiConfig>).forEach((key) => updateConfig(key, nextConfig[key]));
-    };
-
-    const uploadConfigToServer = async () => {
-        setUploadingServerConfig(true);
-        try {
-            await saveServerConfig(createAppConfigSnapshot());
-            message.success(t("config.serverStorage.uploaded"));
-        } catch (error) {
-            const detail = error instanceof Error ? error.message : t("config.serverStorage.saveFailed");
-            message.error(`${t("config.serverStorage.saveFailed")}：${detail}`);
-        } finally {
-            setUploadingServerConfig(false);
-        }
     };
 
     const finishConfig = () => {
         const ready = config.channels.some((channel) => channel.baseUrl.trim() && (channel.hasApiKey || channel.apiKey.trim()) && channel.models.length);
         setConfigDialogOpen(false);
         if (!ready) return;
-        message.success(t(shouldPromptContinue ? "config.savedContinue" : "config.saved"));
+        message.info(t(shouldPromptContinue ? "config.savedContinue" : "config.saved"));
         clearPromptContinue();
-    };
-
-    const loadConfigFile = async (file: File) => {
-        try {
-            await importAppConfig(file);
-            message.success(t("config.imported"));
-        } catch (error) {
-            message.error(error instanceof Error ? error.message : t("config.importFailed"));
-        } finally {
-            if (configInputRef.current) configInputRef.current.value = "";
-        }
     };
 
     const updateChannels = (channels: ModelChannel[]) => saveConfig(withChannels(config, channels));
@@ -143,6 +135,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
         }
         setTestingWebdav(true);
         try {
+            await saveServerConfigNow();
             await testWebdavConnection(webdav);
             message.success(t("config.webdav.available"));
         } catch (error) {
@@ -175,6 +168,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
         setWebdavDomainProgress(createWebdavDomainProgress());
         setWebdavSyncStatus(t("config.webdav.preparing"));
         try {
+            await saveServerConfigNow();
             const result = await syncAllDataToWebdav(webdav, "manual", updateWebdavProgress);
             message.success(t("config.webdav.completed", { projects: result.projects, assets: result.assets, records: result.imageLogs + result.videoLogs, files: result.uploadedFiles, bytes: formatBytes(result.uploadedBytes) }));
         } catch (error) {
@@ -192,6 +186,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
         }
         setLoadingSnapshots(true);
         try {
+            await saveServerConfigNow();
             setWebdavSnapshots(await listWorkspaceSnapshots(webdav));
         } catch (error) {
             message.error(error instanceof Error ? error.message : "读取工作区快照失败");
@@ -208,6 +203,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
         setImportingSnapshot(true);
         setWebdavSyncStatus("正在导入快照");
         try {
+            await saveServerConfigNow();
             const result = await importWorkspaceSnapshot(webdav, selectedSnapshot, updateWebdavProgress);
             message.success(`快照已导入：${result.projects} 个画布、${result.assets} 个素材`);
         } catch (error) {
@@ -218,79 +214,74 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     };
 
     return (
-        <>
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-200 pb-3 dark:border-stone-800">
-                <div className="text-xs text-stone-500">{t("config.fileSecurity")}</div>
-                <div className="flex gap-2">
-                    <Button type="primary" icon={<Cloud className="size-4" />} loading={uploadingServerConfig} onClick={() => void uploadConfigToServer()}>
-                        {t("config.serverStorage.upload")}
-                    </Button>
-                    <Button icon={<Upload className="size-4" />} onClick={() => configInputRef.current?.click()}>
-                        {t("config.import")}
-                    </Button>
-                    <Button icon={<Download className="size-4" />} onClick={exportAppConfig}>
-                        {t("config.export")}
-                    </Button>
-                    <input ref={configInputRef} type="file" accept="application/json,.json" className="hidden" onChange={(event) => event.target.files?.[0] && void loadConfigFile(event.target.files[0])} />
-                </div>
-            </div>
+        <div className={showDoneButton ? "flex h-full min-h-0 flex-col" : undefined}>
+            {showSaveButton && !showDoneButton && activeTab !== "local-storage" ? <div className="mb-4 flex justify-end"><SaveConfigButton /></div> : null}
             <Tabs
                 activeKey={activeTab}
-                onChange={(key) => setActiveTab(key as ConfigTabKey)}
+                onChange={(key) => setSelectedTab(key as ConfigTabKey)}
+                renderTabBar={showTabs ? undefined : () => <></>}
+                tabBarExtraContent={showDoneButton && showSaveButton && activeTab !== "local-storage" ? <SaveConfigButton /> : undefined}
+                styles={showDoneButton ? {
+                    root: { display: "flex", flex: 1, flexDirection: "column", minHeight: 0 },
+                    header: { marginBottom: 0 },
+                    body: { height: "100%", overflowY: "auto" },
+                    content: { paddingTop: 16, paddingRight: 4 },
+                } : undefined}
                 items={[
                     {
                         key: "channels",
                         label: t("config.tabs.channels"),
                         children: (
-                            <div>
-                                <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                                    <div className="text-xs text-stone-500">{t("config.channels.description")}</div>
-                                    <Button type="primary" icon={<Plus className="size-4" />} onClick={addChannel}>
-                                        {t("config.channels.add")}
-                                    </Button>
+                            <section className="overflow-hidden rounded-xl border border-stone-200 dark:border-stone-800">
+                                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-200 px-5 py-4 dark:border-stone-800">
+                                    <div>
+                                        <h2 className="text-sm font-semibold">{t("config.channels.listTitle")}</h2>
+                                        <p className="mt-1 text-xs text-stone-500">{t("config.channels.channelCount", { count: config.channels.length })}</p>
+                                    </div>
+                                    <Button type="primary" icon={<Plus className="size-4" />} onClick={addChannel}>{t("config.channels.add")}</Button>
                                 </div>
-                                <div className="space-y-2">
+                                <div className="divide-y divide-stone-200 dark:divide-stone-800">
                                     {config.channels.map((channel) => (
-                                        <div key={channel.id} className="flex items-center justify-between gap-3 rounded-lg border border-stone-200 px-4 py-3 dark:border-stone-800">
-                                            <div className="min-w-0">
-                                                <div className="truncate text-sm font-semibold">{channel.name || t("config.channels.unnamed")}</div>
-                                                <div className="mt-1 truncate text-xs text-stone-500">
-                                                    {apiFormatLabel(channel.apiFormat)} · {t("config.channels.modelCount", { count: channel.models.length })} · {channel.baseUrl || t("config.channels.missingUrl")}
+                                        <div key={channel.id} className="flex flex-wrap items-center gap-4 px-5 py-4">
+                                            <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-stone-100 text-stone-600 dark:bg-stone-800 dark:text-stone-300"><KeyRound className="size-4" /></div>
+                                            <div className="min-w-0 flex-1">
+                                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                                                    <span className="truncate text-sm font-semibold">{channel.name || t("config.channels.unnamed")}</span>
+                                                    <span className="text-xs text-stone-500">{apiFormatLabel(channel.apiFormat)} · {t("config.channels.modelCount", { count: channel.models.length })}</span>
                                                 </div>
+                                                <div className="mt-1 truncate text-xs text-stone-500">{channel.baseUrl || t("config.channels.missingUrl")}</div>
                                             </div>
-                                            <div className="flex shrink-0 gap-2">
-                                                <Button size="small" icon={<Pencil className="size-3.5" />} onClick={() => setEditingChannelId(channel.id)}>
+                                            <div className="flex shrink-0 gap-1">
+                                                <Button type="text" size="small" icon={<Pencil className="size-3.5" />} onClick={() => setEditingChannelId(channel.id)}>
                                                     {t("common.edit")}
                                                 </Button>
-                                                <Button size="small" danger icon={<Trash2 className="size-3.5" />} onClick={() => deleteChannel(channel.id)} />
+                                                <Button type="text" size="small" danger icon={<Trash2 className="size-3.5" />} aria-label={t("config.channels.delete", { name: channel.name || t("config.channels.unnamed") })} onClick={() => deleteChannel(channel.id)} />
                                             </div>
                                         </div>
                                     ))}
                                 </div>
-                            </div>
+                            </section>
                         ),
-                    },
-                    {
-                        key: "local-proxy",
-                        label: t("config.tabs.localProxy"),
-                        children: <ConfigLocalProxy />,
                     },
                     {
                         key: "preferences",
                         label: t("config.tabs.preferences"),
                         children: (
-                            <Form layout="vertical" requiredMark={false}>
-                                <div className="mb-2 text-sm font-semibold">{t("config.preferences.defaultModels")}</div>
-                                <div className="mb-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                            <Form layout="vertical" requiredMark={false} className="space-y-5">
+                                <section className="rounded-xl border border-stone-200 p-5 dark:border-stone-800">
+                                    <h2 className="mb-4 text-sm font-semibold">{t("config.preferences.defaultModels")}</h2>
+                                    <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2">
                                     {modelGroups.map((group) => (
                                         <Form.Item key={group.modelKey} label={t(group.labelKey)} className="mb-0">
                                             <ModelPicker config={config} value={config[group.modelKey]} onChange={(model) => updateConfig(group.modelKey, model)} capability={group.capability} fullWidth />
                                         </Form.Item>
                                     ))}
-                                </div>
-                                <div className="mb-2 text-sm font-semibold">{t("config.preferences.generation")}</div>
-                                <div className="grid gap-4 md:grid-cols-4">
-                                    <Form.Item label={t("config.preferences.canvasImageCount")} extra={t("config.preferences.canvasImageCountDescription")} className="mb-4">
+                                    </div>
+                                </section>
+                                <section className="rounded-xl border border-stone-200 p-5 dark:border-stone-800">
+                                    <h2 className="mb-4 text-sm font-semibold">{t("config.preferences.generation")}</h2>
+                                    <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
+                                    <Form.Item label={t("config.preferences.canvasImageCount")} extra={t("config.preferences.canvasImageCountDescription")} className="mb-0">
                                         <Input
                                             type="number"
                                             min={1}
@@ -300,19 +291,19 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                             onBlur={(event) => updateConfig("canvasImageCount", normalizeImageCount(event.target.value))}
                                         />
                                     </Form.Item>
-                                    <Form.Item label={t("config.preferences.imageResolution")} className="mb-4">
+                                    <Form.Item label={t("config.preferences.imageResolution")} className="mb-0">
                                         <Select value={inferMediaScale(config.size)} options={imageResolutionOptions} onChange={(scale) => updateConfig("size", computeMediaSize(scale, inferMediaRatio(config.size)))} />
                                     </Form.Item>
-                                    <Form.Item label={t("config.preferences.videoResolution")} className="mb-4">
+                                    <Form.Item label={t("config.preferences.videoResolution")} className="mb-0">
                                         <Select value={parseVideoResolution(config.vquality)} options={videoResolutionOptions} onChange={(value) => updateConfig("vquality", value)} />
                                     </Form.Item>
-                                    <Form.Item label={t("config.preferences.audioVoice")} className="mb-4">
+                                    <Form.Item label={t("config.preferences.audioVoice")} className="mb-0">
                                         <Select value={config.audioVoice} options={audioVoiceOptions} onChange={(value) => updateConfig("audioVoice", value)} />
                                     </Form.Item>
-                                    <Form.Item label={t("config.preferences.audioFormat")} className="mb-4">
+                                    <Form.Item label={t("config.preferences.audioFormat")} className="mb-0">
                                         <Select value={config.audioFormat} options={audioFormatOptions} onChange={(value) => updateConfig("audioFormat", value)} />
                                     </Form.Item>
-                                    <Form.Item label={t("config.preferences.audioSpeed")} className="mb-4">
+                                    <Form.Item label={t("config.preferences.audioSpeed")} className="mb-0">
                                         <Input
                                             type="number"
                                             min={0.25}
@@ -323,8 +314,11 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                             onBlur={(event) => updateConfig("audioSpeed", normalizeAudioSpeedValue(event.target.value))}
                                         />
                                     </Form.Item>
-                                </div>
-                                <Form.Item label={t("config.preferences.regenerateBehavior")} className="mb-4">
+                                    </div>
+                                </section>
+                                <section className="rounded-xl border border-stone-200 p-5 dark:border-stone-800">
+                                    <h2 className="mb-4 text-sm font-semibold">{t("config.preferences.canvasBehavior")}</h2>
+                                    <Form.Item label={t("config.preferences.regenerateBehavior")} className="mb-4">
                                     <Radio.Group value={config.nodeRegenerateBehavior} onChange={(event) => updateConfig("nodeRegenerateBehavior", event.target.value)} className="flex flex-col gap-2">
                                         <Radio value="overwrite">
                                             <span className="block text-sm font-medium">{t("config.preferences.regenerateBehaviorOverwrite")}</span>
@@ -335,19 +329,21 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                             <span className="mt-0.5 block text-xs opacity-60">{t("config.preferences.regenerateBehaviorNewNodeDescription")}</span>
                                         </Radio>
                                     </Radio.Group>
-                                </Form.Item>
-                                <Form.Item className="mb-4">
-                                    <div className="flex items-center justify-between gap-3">
+                                    </Form.Item>
+                                    <div className="flex items-center justify-between gap-3 border-t border-stone-100 pt-4 dark:border-stone-800">
                                         <span className="text-sm">{t("config.preferences.autoFocusOnSelect")}</span>
                                         <Switch checked={config.autoFocusOnSelect} onChange={(checked) => updateConfig("autoFocusOnSelect", checked)} />
                                     </div>
-                                </Form.Item>
-                                <Form.Item label={t("config.preferences.audioInstructions")} className="mb-4">
+                                </section>
+                                <section className="rounded-xl border border-stone-200 p-5 dark:border-stone-800">
+                                    <h2 className="mb-4 text-sm font-semibold">{t("config.preferences.instructions")}</h2>
+                                    <Form.Item label={t("config.preferences.audioInstructions")} className="mb-4">
                                     <Input.TextArea rows={2} value={config.audioInstructions} placeholder={t("config.preferences.audioInstructionsPlaceholder")} onChange={(event) => updateConfig("audioInstructions", event.target.value)} />
-                                </Form.Item>
-                                <Form.Item label={t("config.preferences.systemPrompt")} className="mb-0">
+                                    </Form.Item>
+                                    <Form.Item label={t("config.preferences.systemPrompt")} className="mb-0">
                                     <Input.TextArea rows={4} value={config.systemPrompt} placeholder={t("config.preferences.systemPromptPlaceholder")} onChange={(event) => updateConfig("systemPrompt", event.target.value)} />
-                                </Form.Item>
+                                    </Form.Item>
+                                </section>
                             </Form>
                         ),
                     },
@@ -358,39 +354,55 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                     },
                     {
                         key: "webdav",
-                        label: "WebDAV",
+                        label: t("config.tabs.webdav"),
                         children: (
-                            <Form layout="vertical" requiredMark={false}>
-                                <section className="rounded-lg border border-stone-200 p-3 dark:border-stone-800">
-                                    <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
-                                        <div>
-                                            <div className="flex items-center gap-2 text-sm font-semibold">
-                                                <Cloud className="size-4" />
-                                                {t("config.webdav.title")}
-                                            </div>
-                                            <div className="mt-1 text-xs text-stone-500">{t("config.webdav.description")}</div>
-                                        </div>
-                                        <div className="text-right text-xs text-stone-500">
-                                            <div>{webdav.lastSyncedAt ? t("config.webdav.lastSynced", { time: formatWebdavTime(webdav.lastSyncedAt, locale) }) : t("config.webdav.neverSynced")}</div>
-                                            {webdav.lastConfigSyncedAt ? <div>{t("config.webdav.configLastSynced", { time: formatWebdavTime(webdav.lastConfigSyncedAt, locale) })}</div> : null}
-                                        </div>
-                                    </div>
-                                    <Alert type="success" showIcon message={t("config.webdav.serverManagedTitle")} description={t("config.webdav.serverManagedDescription")} />
-                                    <div className="mt-4 flex flex-wrap items-center gap-2">
-                                        <Button icon={<Wifi className="size-4" />} disabled={!webdavReady || syncingWebdav} loading={testingWebdav} onClick={() => void testWebdav()}>
-                                            {t("config.webdav.test")}
-                                        </Button>
-                                        <Button type="primary" icon={<RefreshCw className="size-4" />} disabled={!webdavReady || testingWebdav} loading={syncingWebdav} onClick={() => void syncWebdav()}>
-                                            {t(syncingWebdav ? "config.webdav.syncing" : "config.webdav.syncNow")}
-                                        </Button>
-                                        <Button icon={<Download className="size-4" />} disabled={!webdavReady || loadingSnapshots || importingSnapshot} loading={loadingSnapshots} onClick={() => void loadSnapshots()}>读取快照</Button>
-                                        <Select className="min-w-52" disabled={!webdavSnapshots.length || importingSnapshot} value={selectedSnapshot || undefined} placeholder="选择要导入的快照" options={webdavSnapshots.map((snapshot) => ({ value: snapshot.id, label: formatWebdavTime(snapshot.createdAt, locale) }))} onChange={setSelectedSnapshot} />
-                                        <Button icon={<Upload className="size-4" />} disabled={!selectedSnapshot || !webdavReady || loadingSnapshots} loading={importingSnapshot} onClick={() => void importSnapshot()}>导入快照</Button>
-                                        {webdavSyncStatus ? <span className="text-xs text-stone-500">{syncStageLabel(webdavSyncStatus, t)}</span> : null}
-                                    </div>
-                                    {syncingWebdav || webdavSyncStatus ? <WebdavProgressGrid progress={webdavDomainProgress} t={t} /> : null}
+                            <div className="space-y-5">
+                                <section className="rounded-xl border border-stone-200 p-5 dark:border-stone-800">
+                                    <h2 className="text-sm font-semibold">{t("config.webdav.connectionTitle")}</h2>
+                                    <p className="mt-1 text-xs leading-5 text-stone-500">{t("config.webdav.connectionDescription")}</p>
+                                    <Form layout="vertical" requiredMark={false} className="mt-5 grid gap-x-5 gap-y-3 sm:grid-cols-2">
+                                        <Form.Item label={t("config.webdav.url")} className="mb-0 sm:col-span-2">
+                                            <Input value={webdav.url === "/api/webdav" ? "" : webdav.url} placeholder={t("config.webdav.urlPlaceholder")} onChange={(event) => updateWebdavConfig("url", event.target.value)} />
+                                        </Form.Item>
+                                        <Form.Item label={t("config.webdav.directory")} className="mb-0 sm:col-span-2">
+                                            <Input value={webdav.directory} placeholder={t("config.webdav.directoryPlaceholder")} onChange={(event) => updateWebdavConfig("directory", event.target.value)} />
+                                        </Form.Item>
+                                        <Form.Item label={t("config.webdav.username")} className="mb-0">
+                                            <Input value={webdav.username} autoComplete="username" onChange={(event) => updateWebdavConfig("username", event.target.value)} />
+                                        </Form.Item>
+                                        <Form.Item label={t("config.webdav.password")} className="mb-0">
+                                            <Input.Password value={webdavPasswordDraft} autoComplete="new-password" placeholder={webdav.hasPassword ? t("config.webdav.passwordConfigured") : t("config.webdav.passwordPlaceholder")} onChange={(event) => setWebdavPasswordDraft(event.target.value)} onBlur={() => { if (webdavPasswordDraft) updateWebdavConfig("password", webdavPasswordDraft); setWebdavPasswordDraft(""); }} />
+                                        </Form.Item>
+                                    </Form>
+                                    <p className="mt-4 flex items-start gap-2 text-xs leading-5 text-stone-500"><Info className="mt-0.5 size-3.5 shrink-0" />{t("config.webdav.passwordWriteOnly")}</p>
                                 </section>
-                            </Form>
+                                <div className="grid items-start gap-5 md:grid-cols-2">
+                                    <section className="rounded-xl border border-stone-200 p-5 dark:border-stone-800">
+                                        <div className="flex items-center gap-2 text-sm font-semibold"><Cloud className="size-4" />{t("config.webdav.syncSection")}</div>
+                                        <p className="mt-2 text-xs leading-5 text-stone-500">{t("config.webdav.description")}</p>
+                                        <p className="mt-5 text-xs text-stone-500">{webdav.lastSyncedAt ? t("config.webdav.lastSynced", { time: formatWebdavTime(webdav.lastSyncedAt, locale) }) : t("config.webdav.neverSynced")}</p>
+                                        {webdav.lastConfigSyncedAt ? <p className="mt-1 text-xs text-stone-500">{t("config.webdav.configLastSynced", { time: formatWebdavTime(webdav.lastConfigSyncedAt, locale) })}</p> : null}
+                                        <div className="mt-4 flex flex-wrap gap-2">
+                                            <Button type="primary" icon={<RefreshCw className="size-4" />} disabled={!webdavReady || testingWebdav} loading={syncingWebdav} onClick={() => void syncWebdav()}>{t(syncingWebdav ? "config.webdav.syncing" : "config.webdav.syncNow")}</Button>
+                                            <Button icon={<Wifi className="size-4" />} disabled={!webdavReady || syncingWebdav} loading={testingWebdav} onClick={() => void testWebdav()}>{t("config.webdav.test")}</Button>
+                                        </div>
+                                        {webdavSyncStatus ? <p className="mt-3 text-xs text-stone-500" role="status">{syncStageLabel(webdavSyncStatus, t)}</p> : null}
+                                        {syncingWebdav || webdavSyncStatus ? <WebdavProgressGrid progress={webdavDomainProgress} t={t} /> : null}
+                                    </section>
+                                    <section className="rounded-xl border border-stone-200 p-5 dark:border-stone-800">
+                                        <h2 className="text-sm font-semibold">{t("config.webdav.snapshotSection")}</h2>
+                                        <p className="mt-2 text-xs leading-5 text-stone-500">{t("config.webdav.snapshotDescription")}</p>
+                                        <div className="mt-5 flex flex-col items-start gap-4">
+                                            <Button icon={<Download className="size-4" />} disabled={!webdavReady || loadingSnapshots || importingSnapshot} loading={loadingSnapshots} onClick={() => void loadSnapshots()}>{t("config.webdav.loadSnapshots")}</Button>
+                                            <div className="w-full">
+                                                <label className="mb-2 block text-xs text-stone-500" htmlFor="webdav-snapshot-select">{t("config.webdav.selectSnapshot")}</label>
+                                                <Select id="webdav-snapshot-select" className="w-full" disabled={!webdavSnapshots.length || importingSnapshot} value={selectedSnapshot || undefined} placeholder={t("config.webdav.selectSnapshot")} options={webdavSnapshots.map((snapshot) => ({ value: snapshot.id, label: formatWebdavTime(snapshot.createdAt, locale) }))} onChange={setSelectedSnapshot} />
+                                            </div>
+                                            <Button icon={<Upload className="size-4" />} disabled={!selectedSnapshot || !webdavReady || loadingSnapshots} loading={importingSnapshot} onClick={() => void importSnapshot()}>{t("config.webdav.importSnapshot")}</Button>
+                                        </div>
+                                    </section>
+                                </div>
+                            </div>
                         ),
                     },
                     {
@@ -401,14 +413,14 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                 ]}
             />
             {showDoneButton ? (
-                <div className="mt-4 flex justify-end">
+                <div className="flex shrink-0 justify-end border-t border-stone-200 pt-3 dark:border-stone-800">
                     <Button type="primary" onClick={finishConfig}>
                         {t("common.done")}
                     </Button>
                 </div>
             ) : null}
             <ChannelEditorDrawer open={Boolean(editingChannel)} channel={editingChannel} onSave={saveChannel} onClose={() => setEditingChannelId("")} />
-        </>
+        </div>
     );
 }
 
@@ -429,7 +441,7 @@ export function AppConfigModal() {
             width={980}
             centered
             onCancel={() => setConfigDialogOpen(false)}
-            styles={{ body: { maxHeight: "72vh", overflowY: "auto", paddingRight: 12 } }}
+            styles={{ body: { height: "min(620px, calc(100dvh - 160px))", overflow: "hidden" } }}
             footer={null}
         >
             <AppConfigPanel showDoneButton initialTab={configTab} />

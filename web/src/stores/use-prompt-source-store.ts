@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-import { DEFAULT_PROMPT_SOURCES, createPromptSource, type PromptSource } from "@/services/api/prompt-source-presets";
+import { createPromptSource, type PromptSource } from "@/services/api/prompt-source-presets";
 
 export type PromptSourceSchedule = {
     intervalMinutes: number;
@@ -25,7 +25,7 @@ type PromptSourceStore = {
 };
 
 export const usePromptSourceStore = create<PromptSourceStore>()((set) => ({
-            sources: DEFAULT_PROMPT_SOURCES,
+            sources: [],
             schedule: defaultSchedule,
             addSource: () => createPromptSource(),
             saveSource: (source) =>
