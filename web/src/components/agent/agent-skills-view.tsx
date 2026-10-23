@@ -288,7 +288,7 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
                     </div>
                 </div>
                 <div className="mt-3 flex gap-2">
-                    <Input aria-label={t("agent.skills.search")} className="min-w-0 flex-1" allowClear disabled={!connected} value={query} onChange={(event) => setQuery(event.target.value)} prefix={<Search className="size-3.5" />} placeholder={t("agent.skills.search")} />
+                    <Input aria-label={t("agent.skills.search")} className="app-search-input min-w-0 flex-1" allowClear disabled={!connected} value={query} onChange={(event) => setQuery(event.target.value)} prefix={<Search className="size-3.5" />} placeholder={t("agent.skills.search")} />
                     <Select<ScopeFilter>
                         size="small"
                         variant="borderless"

@@ -135,6 +135,10 @@
     body {
         @apply bg-background text-foreground;
     }
+    button:not(:disabled):active {
+        filter: brightness(0.97);
+        box-shadow: none !important;
+    }
     textarea {
         resize: none;
     }
@@ -230,6 +234,41 @@
             0 6px 18px rgba(0, 0, 0, 0.22);
         color: #0c0a09 !important;
         font-weight: 700;
+    }
+
+    .image-workbench-overlay .prompt-filter-tag.ant-tag-checkable.is-active,
+    .image-workbench-overlay .prompt-filter-tag.ant-tag-checkable-checked,
+    .dark .image-workbench-overlay .prompt-filter-tag.ant-tag-checkable.is-active,
+    .dark .image-workbench-overlay .prompt-filter-tag.ant-tag-checkable-checked {
+        background: var(--muted) !important;
+        border-color: var(--border) !important;
+        box-shadow: none !important;
+        color: var(--foreground) !important;
+        font-weight: 500;
+    }
+
+    .image-workbench-overlay .ant-card-hoverable:hover {
+        box-shadow: none;
+    }
+
+    .app-search-input.ant-input-affix-wrapper {
+        border-color: transparent !important;
+        background: color-mix(in srgb, var(--card) 70%, var(--muted)) !important;
+        box-shadow: none !important;
+    }
+
+    .app-search-input.ant-input-affix-wrapper:hover {
+        border-color: transparent !important;
+        background: color-mix(in srgb, var(--card) 45%, var(--muted)) !important;
+        box-shadow: none !important;
+    }
+
+    .app-search-input.ant-input-affix-wrapper:focus-within,
+    .app-search-input.ant-input-affix-wrapper-focused {
+        border-color: transparent !important;
+        background: var(--muted) !important;
+        box-shadow: none !important;
+        outline: none;
     }
 
     .thin-scrollbar {

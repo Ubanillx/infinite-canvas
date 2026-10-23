@@ -241,7 +241,7 @@ function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, onPreviewNode, on
                 </button> : null}
             </div>
             {nodes.length ? <div className="space-y-2 px-3 pb-3">
-                <Input allowClear prefix={<Search className="size-4" style={{ color: theme.node.muted }} />} placeholder={t("canvas.sidePanel.searchNodes")} value={keyword} onChange={(e) => setKeyword(e.target.value)} />
+                <Input className="app-search-input" allowClear prefix={<Search className="size-4" style={{ color: theme.node.muted }} />} placeholder={t("canvas.sidePanel.searchNodes")} value={keyword} onChange={(e) => setKeyword(e.target.value)} />
                 <div className="flex items-center gap-2">
                     <Select className="min-w-0 flex-1" value={typeFilter} onChange={setTypeFilter} aria-label={t("canvas.sidePanel.filterNodes")} options={NODE_FILTER_VALUES.map((value) => ({ value, label: value === "all" ? t("common.all") : t(`canvas.sidePanel.filter.${value}`) }))} />
                     <button
@@ -469,7 +469,7 @@ const CanvasAssetsTab = memo(function CanvasAssetsTab({ onInsert, theme }: { onI
                 <input ref={fileInputRef} type="file" accept="image/*,video/*" multiple className="hidden" onChange={(e) => void handleFiles(e.target.files)} />
             </div>
             {assets.length ? <div className="px-3 pb-3">
-                <Input allowClear prefix={<Search className="size-4" style={{ color: theme.node.muted }} />} placeholder={t("canvas.sidePanel.searchAssets")} value={keyword} onChange={(e) => setKeyword(e.target.value)} />
+                <Input className="app-search-input" allowClear prefix={<Search className="size-4" style={{ color: theme.node.muted }} />} placeholder={t("canvas.sidePanel.searchAssets")} value={keyword} onChange={(e) => setKeyword(e.target.value)} />
             </div> : null}
             {allTags.length ? (
                 <div className="flex flex-wrap gap-1.5 px-3 pb-2">
@@ -600,7 +600,7 @@ const CanvasPromptsTab = memo(function CanvasPromptsTab({ onInsert, theme }: { o
     return (
         <div className="flex h-full flex-col">
             {enabledSources.length ? <div className="px-3 pb-3 pt-3">
-                <Input allowClear prefix={<Search className="size-4" style={{ color: theme.node.muted }} />} placeholder={t("canvas.sidePanel.searchPrompts")} value={keyword} onChange={(e) => setKeyword(e.target.value)} />
+                <Input className="app-search-input" allowClear prefix={<Search className="size-4" style={{ color: theme.node.muted }} />} placeholder={t("canvas.sidePanel.searchPrompts")} value={keyword} onChange={(e) => setKeyword(e.target.value)} />
             </div> : null}
             <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
                 {enabledSources.length ? <div className="space-y-1">

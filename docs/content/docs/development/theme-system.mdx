@@ -1,16 +1,16 @@
 ---
-title: Theme System
-description: Shared color and surface rules for the application
+title: Interface Design System
+description: Shared theme, layout, and interaction rules
 ---
 
-# Theme System
+# Interface Design System
 
-The application uses neutral semantic tokens for shared UI and a separate canvas theme for the editor surface. Light mode follows a white jade direction: near-white backgrounds, white surfaces, faint warm-gray boundaries, charcoal text, and restrained shadows. It does not use green as a brand accent.
+The application uses neutral semantic tokens for shared UI and a separate canvas theme for the editor surface. Light mode uses near-white surfaces, warm-gray boundaries, and charcoal text; dark mode is adapted independently. Do not copy colors or sample data from a mockup into the product.
 
 ## Light mode tokens
 
-- `background`: `#fafaf8`, the page and application background.
-- `surface`: `#ffffff`, cards, popovers, and elevated panels.
+- `background`: `#fafafa`, the page and application background; the sidebar uses `#fbfbfb`.
+- `surface`: `#fefefe`, cards, popovers, and panels.
 - `soft`: `#f4f4f0`, selected and secondary surfaces.
 - `hover`: `#efefeb`, hover feedback.
 - `border`: `#e9e9e4`, quiet boundaries.
@@ -18,7 +18,24 @@ The application uses neutral semantic tokens for shared UI and a separate canvas
 - `mutedText`: `#676963`, secondary text.
 - `primary`: `#30332f`, primary controls and active marks.
 
-Use semantic classes such as `bg-background`, `bg-card`, `bg-muted`, `text-foreground`, `text-muted-foreground`, and `border-border` in shared UI. Reuse `--shadow-surface` and `--shadow-surface-hover` for small, low-contrast elevation. Do not introduce page-local green, stone, or black-and-white replacements for these tokens.
+Use semantic classes such as `bg-background`, `bg-card`, `bg-muted`, `text-foreground`, `text-muted-foreground`, and `border-border` in shared UI. Treat `web/src/lib/light-palette.ts` and theme variables as the color source of truth rather than defining another palette per page.
+
+## Page layout
+
+- Canvas, prompt, and asset libraries share a directory rhythm: title and short description on the left, primary actions on the right, then search, filters, and content. Lists and studios use available width; reading forms and dialogs may have content-based width limits.
+- Group content by folder, project, or type. Empty states explain the next step instead of showing sample cards. Toolbars wrap on narrow screens without covering controls or overflowing horizontally.
+- Image and video studios give priority to references, results, and the prompt. Settings and history open in side panels as needed; the main area makes room for an open panel, and settings are directly visible without nested disclosure.
+
+## Components and feedback
+
+- Distinguish cards, fields, and selections with thin borders and slight surface changes. Avoid broad shadows, decorative dot grids, high-contrast outlines, and expanding click shadows; a small soft shadow is acceptable where a floating layer needs separation.
+- Search fields across the app use slight surface changes for default, hover, and focus states without prominent borders or shadows; focus must remain perceptible.
+- Make primary actions clear without oversizing them. Group related actions nearby instead of displaying every function at once; controls remain easy to click and icon-only actions have accessible names.
+- Button presses use only a slight brightness change, without expanding waves or press shadows. Destructive actions keep their semantic color, and keyboard focus remains perceptible.
+- Give inputs usable space. The prompt resizes by dragging its edge without a separate handle placeholder. Show the parameter summary as secondary text beside Generate; keep keyboard focus perceptible.
+- Preserve image proportions in thumbnails. In asset pickers and resource cards, clicking an image opens a preview; inserting or deleting uses a separate button. Related dialogs use consistent, viewport-aware sizes and scroll long lists inside.
+
+These rules apply to ordinary resource pages and creation studios. The canvas editor and branded home page may use layouts suited to their distinct tasks rather than the library layout.
 
 ## Canvas mode
 

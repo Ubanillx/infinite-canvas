@@ -60,7 +60,13 @@ export function getAntThemeConfig(dark: boolean): ThemeConfig {
         },
         components: {
             Button: {
+                defaultShadow: "none",
                 primaryShadow: "none",
+                dangerShadow: "none",
+                defaultHoverBorderColor: dark ? "rgba(255, 255, 255, 0.14)" : lightPalette.border,
+                defaultActiveBorderColor: dark ? "rgba(255, 255, 255, 0.14)" : lightPalette.border,
+                defaultActiveBg: dark ? "#303030" : lightPalette.soft,
+                defaultActiveColor: color.itemText,
             },
             Dropdown: {
                 colorBgElevated: color.elevatedBg,
