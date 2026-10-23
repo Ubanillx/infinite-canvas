@@ -75,9 +75,6 @@
 .home-actions button:focus-visible { outline: 2px solid var(--home-accent); outline-offset: 4px; }
 .home-action-primary { border: 1px solid var(--home-ink); background: var(--home-ink); color: var(--home-paper); }
 .home-action-primary:hover { background: color-mix(in srgb, var(--home-ink) 83%, var(--home-accent)); }
-.home-action-secondary { border: 1px solid var(--home-line); background: color-mix(in srgb, var(--home-panel) 70%, transparent); color: var(--home-ink); }
-.home-action-secondary:hover { border-color: var(--home-ink); }
-.home-action-secondary span { font-size: 19px; font-weight: 400; }
 
 .home-art { position: relative; width: 100%; aspect-ratio: 680 / 600; min-height: 420px; translate: var(--home-shift-x) var(--home-shift-y); animation: home-appear 1s 180ms both; }
 .home-art-grid { position: absolute; inset: 5% 0; border: 1px solid var(--home-line); background: linear-gradient(90deg, transparent 49.9%, var(--home-line) 50%, transparent 50.1%), linear-gradient(0deg, transparent 49.9%, var(--home-line) 50%, transparent 50.1%); mask-image: radial-gradient(ellipse at center, black 20%, transparent 72%); opacity: 0.45; }

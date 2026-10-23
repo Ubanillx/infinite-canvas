@@ -433,7 +433,6 @@ export default {
         tagline: "让灵感，自由生长。",
         description: "连接<content>图片、文字与图形</content>，让每一次创作延伸为更多可能。",
         start: "开始使用",
-        openCanvas: "打开画布",
         showcaseTitle: "沉淀每一次好结果",
         showcaseDescription: "收藏稳定出图的提示词、参考风格和结果图片，让下一次创作从已有经验开始。",
         viewPrompts: "查看提示词库",

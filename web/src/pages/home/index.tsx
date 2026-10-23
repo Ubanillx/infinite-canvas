@@ -28,9 +28,6 @@ export default function IndexPage() {
                         <button className="home-action-primary" type="button" onClick={() => navigate(`/${primaryTool.slug}`)}>
                             {t("home.start")} <ArrowRight size={18} strokeWidth={1.8} />
                         </button>
-                        <button className="home-action-secondary" type="button" onClick={() => navigate("/canvas")}>
-                            {t("home.openCanvas")} <span aria-hidden="true">↗</span>
-                        </button>
                     </div>
                 </div>
 

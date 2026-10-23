@@ -433,7 +433,6 @@ export default {
         tagline: "Give your ideas room to grow.",
         description: "Connect <content>images, text, and graphics</content> and take every idea further.",
         start: "Get started",
-        openCanvas: "Open canvas",
         showcaseTitle: "Keep every great result",
         showcaseDescription: "Save reliable prompts, visual references, and generated images so your next creation starts from proven ideas.",
         viewPrompts: "View prompt library",
