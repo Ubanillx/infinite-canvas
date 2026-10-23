@@ -88,6 +88,24 @@ async function openDatabase(): Promise<SqliteDatabase> {
             updated_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
             PRIMARY KEY (workspace_id, domain)
         );
+        CREATE TABLE IF NOT EXISTS workspace_prompts (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            tags TEXT NOT NULL DEFAULT '[]',
+            shared INTEGER NOT NULL DEFAULT 0 CHECK (shared IN (0, 1)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS workspace_prompt_images (
+            prompt_id TEXT PRIMARY KEY REFERENCES workspace_prompts(id) ON DELETE CASCADE,
+            mime_type TEXT NOT NULL,
+            image BLOB NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_workspace_prompts_scope ON workspace_prompts(workspace_id, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_workspace_prompts_shared ON workspace_prompts(shared, updated_at);
         CREATE TABLE IF NOT EXISTS media_files (
             workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
             storage_key TEXT NOT NULL,

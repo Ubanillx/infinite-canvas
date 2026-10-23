@@ -46,7 +46,7 @@ const maxServerConfigBytes = 1024 * 1024;
 const aiProxyPath = "/api/ai";
 const maxAiRequestBytes = 64 * 1024 * 1024;
 const maxMediaBytes = 100 * 1024 * 1024;
-const protectedApiPaths = ["/api/auth", "/api/config", "/api/workspaces", "/api/data", "/api/media", "/api/prompt-source", "/api/remote-media", aiProxyPath, "/api/webdav", "/api/image-proxy", canvasAgentProxyPath];
+const protectedApiPaths = ["/api/auth", "/api/config", "/api/workspaces", "/api/data", "/api/prompts", "/api/media", "/api/prompt-source", "/api/remote-media", aiProxyPath, "/api/webdav", "/api/image-proxy", canvasAgentProxyPath];
 const allowedNetworks = (process.env.INFINITE_CANVAS_ALLOWED_NETWORKS || "127.0.0.1,::1,192.168.0.0/22,172.16.0.0/12")
     .split(",")
     .map((value) => value.trim())
@@ -289,6 +289,157 @@ function workspaceDataAccess(): Plugin {
         }
     };
     return { name: "sqlite-workspace-data", configureServer: (server) => { server.middlewares.use(middleware); }, configurePreviewServer: (server) => { server.middlewares.use(middleware); } };
+}
+
+type WorkspacePromptRow = { id: string; workspace_id: string; workspace_name: string; title: string; prompt: string; description: string; tags: string; shared: number; created_at: string; updated_at: string; has_image: number };
+type PromptImageRow = { mime_type: string; image: Uint8Array };
+const promptRowSql = "SELECT p.*, w.name AS workspace_name, CASE WHEN i.prompt_id IS NULL THEN 0 ELSE 1 END AS has_image FROM workspace_prompts p JOIN workspaces w ON w.id = p.workspace_id LEFT JOIN workspace_prompt_images i ON i.prompt_id = p.id";
+
+function promptImageData(value: unknown) {
+    if (value === undefined || value === null || value === "") return null;
+    const match = typeof value === "string" ? /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(value) : null;
+    if (!match) throw new RequestBodyError(400, "示例图格式无效");
+    const image = Buffer.from(match[2], "base64");
+    if (!image.length || image.length > maxMediaBytes) throw new RequestBodyError(413, "示例图过大或无效");
+    return { mimeType: match[1], image };
+}
+
+function promptFields(value: unknown) {
+    const body = asRecord(value);
+    const title = typeof body?.title === "string" ? body.title.trim() : "";
+    const prompt = typeof body?.prompt === "string" ? body.prompt.trim() : "";
+    const description = typeof body?.description === "string" ? body.description.trim() : "";
+    const tags = body?.tags === undefined ? [] : Array.isArray(body.tags) && body.tags.every((tag) => typeof tag === "string") ? body.tags.map((tag: string) => tag.trim()).filter(Boolean) : null;
+    if (!title || !prompt || !tags) throw new RequestBodyError(400, "请填写标题和提示词，并检查标签格式");
+    return { title, prompt, description, tags, image: promptImageData(body?.coverDataUrl), removeImage: body?.coverDataUrl === null };
+}
+
+async function readPromptsBody(req: IncomingMessage) {
+    const raw = await readRequestBuffer(req, maxMediaBytes, "提示词文件过大");
+    try { return JSON.parse(raw.toString("utf8")) as unknown; }
+    catch { throw new RequestBodyError(400, "请求数据不是有效 JSON"); }
+}
+
+function savePromptImage(db: Awaited<ReturnType<typeof getDatabase>>, id: string, image: ReturnType<typeof promptImageData>) {
+    if (image) execute(db, "INSERT INTO workspace_prompt_images (prompt_id, mime_type, image) VALUES (?, ?, ?) ON CONFLICT(prompt_id) DO UPDATE SET mime_type = excluded.mime_type, image = excluded.image", id, image.mimeType, image.image);
+}
+
+function publicPrompt(row: WorkspacePromptRow) {
+    return {
+        id: row.id, workspaceId: row.workspace_id, workspaceName: row.workspace_name,
+        title: row.title, prompt: row.prompt, description: row.description,
+        tags: JSON.parse(row.tags) as string[], shared: Boolean(row.shared),
+        coverUrl: row.has_image ? `/api/prompts/image/${encodeURIComponent(row.id)}?workspaceId=${encodeURIComponent(row.workspace_id)}` : "",
+        createdAt: row.created_at, updatedAt: row.updated_at,
+    };
+}
+
+function workspacePromptsAccess(): Plugin {
+    const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+        const pathname = new URL(req.url || "/", "http://localhost").pathname;
+        const imageMatch = /^\/api\/prompts\/image\/([^/]+)$/.exec(pathname);
+        const match = /^\/api\/prompts(?:\/([^/]+))?$/.exec(pathname);
+        if (!match && !imageMatch) return next();
+        res.setHeader("Cache-Control", "no-store");
+        try {
+            const db = await getDatabase();
+            if (imageMatch && req.method === "GET") {
+                const row = queryOne<{ workspace_id: string; owner_user_id: string | null; shared: number; mime_type: string; image: Uint8Array }>(db, "SELECT p.workspace_id, w.owner_user_id, p.shared, i.mime_type, i.image FROM workspace_prompts p JOIN workspaces w ON w.id = p.workspace_id JOIN workspace_prompt_images i ON i.prompt_id = p.id WHERE p.id = ?", imageMatch[1]);
+                if (!row) return sendJson(res, 404, { error: "示例图不存在" });
+                if (!row.shared) {
+                    if (workspaceIdFromRequest(req) !== row.workspace_id) return sendJson(res, 403, { error: "无权查看示例图" });
+                    const user = (req as AuthenticatedRequest).infiniteCanvasUser;
+                    if (row.owner_user_id && (!user || !queryOne(db, "SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?", row.workspace_id, user.id))) return sendJson(res, 403, { error: "无权查看示例图" });
+                }
+                res.setHeader("Content-Type", row.mime_type);
+                res.setHeader("X-Content-Type-Options", "nosniff");
+                return res.end(Buffer.from(row.image));
+            }
+            if (imageMatch) return sendJson(res, 405, { error: "Method not allowed" });
+            if (!match) return next();
+            const workspaceId = workspaceIdFromRequest(req);
+            const workspace = queryOne<{ id: string; owner_user_id: string | null }>(db, "SELECT id, owner_user_id FROM workspaces WHERE id = ?", workspaceId);
+            if (!workspace) return sendJson(res, 403, { error: "请先选择工作区" });
+            // Owned workspaces require membership. Legacy ownerless workspaces retain the app's existing ID-based access.
+            let role: string = "owner";
+            if (workspace.owner_user_id) {
+                const user = (req as AuthenticatedRequest).infiniteCanvasUser;
+                const membership = user ? queryOne<{ role: string }>(db, "SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?", workspace.id, user.id) : null;
+                if (!membership) {
+                    return sendJson(res, 403, { error: "无权访问当前工作区" });
+                }
+                role = membership.role;
+            }
+            if (pathname === "/api/prompts/export" && req.method === "GET") {
+                const rows = queryMany<WorkspacePromptRow>(db, `${promptRowSql} WHERE p.workspace_id = ? ORDER BY p.created_at`, workspace.id);
+                const prompts = rows.map((row) => {
+                    const image = row.has_image ? queryOne<PromptImageRow>(db, "SELECT mime_type, image FROM workspace_prompt_images WHERE prompt_id = ?", row.id) : null;
+                    return { title: row.title, prompt: row.prompt, description: row.description, tags: JSON.parse(row.tags), ...(image ? { coverDataUrl: `data:${image.mime_type};base64,${Buffer.from(image.image).toString("base64")}` } : {}) };
+                });
+                return sendJson(res, 200, { format: "infinite-canvas-prompts", version: 1, prompts });
+            }
+            if (pathname === "/api/prompts/import" && req.method === "POST") {
+                if (role === "viewer") return sendJson(res, 403, { error: "当前工作区为只读权限" });
+                const body = await readPromptsBody(req);
+                const source = Array.isArray(body) ? body : asRecord(body);
+                const items = Array.isArray(source) ? source : source?.format === "infinite-canvas-prompts" && source.version === 1 && Array.isArray(source.prompts) ? source.prompts : null;
+                if (!items) return sendJson(res, 400, { error: "不支持的提示词文件格式" });
+                const prompts = items.map(promptFields);
+                transaction(db, () => {
+                    for (const item of prompts) {
+                        const id = newId();
+                        const now = isoNow();
+                        execute(db, "INSERT INTO workspace_prompts (id, workspace_id, title, prompt, description, tags, shared, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)", id, workspace.id, item.title, item.prompt, item.description, JSON.stringify(item.tags), now, now);
+                        savePromptImage(db, id, item.image);
+                    }
+                });
+                return sendJson(res, 200, { imported: prompts.length });
+            }
+            if (!match[1] && req.method === "GET") {
+                const rows = queryMany<WorkspacePromptRow>(db, `${promptRowSql} WHERE p.workspace_id = ? OR p.shared = 1 ORDER BY p.updated_at DESC`, workspace.id);
+                return sendJson(res, 200, { items: rows.map(publicPrompt) });
+            }
+            if (!match[1] && req.method === "POST") {
+                if (role === "viewer") return sendJson(res, 403, { error: "当前工作区为只读权限" });
+                const body = asRecord(await readPromptsBody(req));
+                const { title, prompt, description, tags, image } = promptFields(body);
+                if (typeof body?.shared !== "boolean") return sendJson(res, 400, { error: "共享状态无效" });
+                const id = newId();
+                const now = isoNow();
+                transaction(db, () => {
+                    execute(db, "INSERT INTO workspace_prompts (id, workspace_id, title, prompt, description, tags, shared, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", id, workspace.id, title, prompt, description, JSON.stringify(tags), body.shared ? 1 : 0, now, now);
+                    savePromptImage(db, id, image);
+                });
+                const row = queryOne<WorkspacePromptRow>(db, `${promptRowSql} WHERE p.id = ?`, id);
+                return sendJson(res, 201, { item: publicPrompt(row!) });
+            }
+            if (!match[1]) return sendJson(res, 405, { error: "Method not allowed" });
+            const id = match[1];
+            const existing = queryOne<WorkspacePromptRow>(db, `${promptRowSql} WHERE p.id = ? AND p.workspace_id = ?`, id, workspace.id);
+            if (!existing) return sendJson(res, 404, { error: "提示词不存在或无权修改" });
+            if (role === "viewer") return sendJson(res, 403, { error: "当前工作区为只读权限" });
+            if (req.method === "DELETE") {
+                execute(db, "DELETE FROM workspace_prompts WHERE id = ? AND workspace_id = ?", id, workspace.id);
+                return sendJson(res, 200, { ok: true });
+            }
+            if (req.method !== "PUT") return sendJson(res, 405, { error: "Method not allowed" });
+            const body = asRecord(await readPromptsBody(req));
+            const { title, prompt, description, tags, image, removeImage } = promptFields(body);
+            if (typeof body?.shared !== "boolean") return sendJson(res, 400, { error: "共享状态无效" });
+            transaction(db, () => {
+                execute(db, "UPDATE workspace_prompts SET title = ?, prompt = ?, description = ?, tags = ?, shared = ?, updated_at = ? WHERE id = ? AND workspace_id = ?", title, prompt, description, JSON.stringify(tags), body.shared ? 1 : 0, isoNow(), id, workspace.id);
+                if (removeImage) execute(db, "DELETE FROM workspace_prompt_images WHERE prompt_id = ?", id);
+                savePromptImage(db, id, image);
+            });
+            const updated = queryOne<WorkspacePromptRow>(db, `${promptRowSql} WHERE p.id = ?`, id);
+            return sendJson(res, 200, { item: publicPrompt(updated!) });
+        } catch (error) {
+            if (error instanceof RequestBodyError) return sendJson(res, error.status, { error: error.message });
+            console.error("Workspace prompts request failed", error);
+            return sendJson(res, 500, { error: "提示词服务暂时不可用" });
+        }
+    };
+    return { name: "sqlite-workspace-prompts", configureServer: (server) => { server.middlewares.use(middleware); }, configurePreviewServer: (server) => { server.middlewares.use(middleware); } };
 }
 
 function workspaceMediaStorage(): Plugin {
@@ -1060,7 +1211,7 @@ function localPluginsManifest(): Plugin {
 
 export default defineConfig({
     base: process.env.VITE_BASE || "/",
-    plugins: [react(), localPluginsManifest(), sessionContext(), authAccess(), serverApiAccessControl(), workspaceAccess(), workspaceMediaStorage(), workspaceDataAccess(), serverWebdavProxy(), serverConfigStorage(), aiProviderProxy(), promptSourceProxy(), remoteMediaProxy(), imageProxy()],
+    plugins: [react(), localPluginsManifest(), sessionContext(), authAccess(), serverApiAccessControl(), workspaceAccess(), workspaceMediaStorage(), workspaceDataAccess(), workspacePromptsAccess(), serverWebdavProxy(), serverConfigStorage(), aiProviderProxy(), promptSourceProxy(), remoteMediaProxy(), imageProxy()],
     server: { proxy: { [canvasAgentProxyPath]: canvasAgentProxy } },
     preview: { allowedHosts: (process.env.INFINITE_CANVAS_ALLOWED_HOSTS || "ubuntu-server").split(",").map((host) => host.trim()).filter(Boolean), proxy: { [canvasAgentProxyPath]: canvasAgentProxy } },
     resolve: {

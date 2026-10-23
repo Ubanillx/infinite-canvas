@@ -4,11 +4,14 @@ import { runPromptSource, type RawPrompt } from "./prompt-source-runtime";
 import { usePromptSourceStore } from "@/stores/use-prompt-source-store";
 import i18n from "@/i18n";
 import type { PromptSource } from "./prompt-source-presets";
+import { listWorkspacePrompts } from "./workspace-prompts";
 
 export type Prompt = RawPrompt & {
     sourceId: string;
     category: string;
     githubUrl: string;
+    workspaceId?: string;
+    shared?: boolean;
 };
 
 export const ALL_PROMPTS_OPTION = "all";
@@ -124,7 +127,7 @@ async function getSourcePrompts(source: PromptSource): Promise<Prompt[]> {
 }
 
 async function getAllPrompts(): Promise<Prompt[]> {
-    const settled = await Promise.all(
+    const [workspaceItems, settled] = await Promise.all([listWorkspacePrompts(), Promise.all(
         enabledSources().map(async (source) => {
             try {
                 return await getSourcePrompts(source);
@@ -132,8 +135,14 @@ async function getAllPrompts(): Promise<Prompt[]> {
                 return [];
             }
         }),
-    );
-    return settled.flat();
+    )]);
+    return [
+        ...workspaceItems.map((item): Prompt => ({
+            ...item, sourceId: `workspace:${item.workspaceId}`, category: "",
+            coverUrl: item.coverUrl, referenceImageUrls: item.coverUrl ? [item.coverUrl] : [], preview: "", githubUrl: "", author: item.workspaceName,
+        })),
+        ...settled.flat(),
+    ];
 }
 
 export async function fetchPrompts({ keyword = "", tag = [], category = ALL_PROMPTS_OPTION, page = 1, pageSize = 20 }: { keyword?: string; tag?: string[]; category?: string; page?: number; pageSize?: number } = {}) {
@@ -143,7 +152,7 @@ export async function fetchPrompts({ keyword = "", tag = [], category = ALL_PROM
     const normalizedPageSize = Math.max(1, Math.min(100, pageSize));
     const withoutTagFilter = filterPrompts(items, { keyword: normalizedKeyword, category, tags: [] });
     const filtered = filterPrompts(items, { keyword: normalizedKeyword, category, tags: tag });
-    const categories = enabledSources().map((source) => source.name);
+    const categories = Array.from(new Set(items.map((item) => item.category).filter(Boolean)));
 
     return {
         items: filtered.slice((normalizedPage - 1) * normalizedPageSize, normalizedPage * normalizedPageSize),
