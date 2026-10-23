@@ -253,6 +253,10 @@ export default {
     canvas: {
         defaultTitle: "Infinite Canvas {{count}}",
         library: "Canvas library",
+        search: "Search canvases and folders",
+        noMatches: "No matching canvases or folders",
+        foldersCount: "Folders {{count}}",
+        projectsCount: "Canvases {{count}}",
         backToLibrary: "Back to canvas library",
         title: "Infinite Canvas",
         libraryDescription: "Create, organize, and continue your work",

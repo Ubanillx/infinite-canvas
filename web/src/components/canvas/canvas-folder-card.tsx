@@ -45,7 +45,7 @@ export function CanvasFolderCard({
     const { t } = useTranslation();
     return (
         <article
-            className={`group flex min-h-44 cursor-grab flex-col justify-between rounded-2xl border p-5 shadow-[var(--shadow-surface)] transition-[background-color,box-shadow] active:cursor-grabbing ${dropTarget ? "border-primary bg-accent ring-2 ring-primary/20" : selected ? "border-primary/60 bg-accent/60" : "border-border bg-card hover:bg-accent/40 hover:shadow-[var(--shadow-surface-hover)] dark:border-white/10 dark:bg-white/5 dark:hover:bg-white/10"}`}
+            className={`group flex min-h-40 cursor-grab flex-col justify-between rounded-lg border p-4 transition-colors active:cursor-grabbing ${dropTarget || selected ? "border-border bg-accent" : "border-border bg-card hover:bg-accent/40 dark:border-white/10 dark:bg-white/5 dark:hover:bg-white/10"}`}
             draggable={!editing}
             onClick={onSelect}
             onDoubleClick={(event) => {
@@ -67,17 +67,17 @@ export function CanvasFolderCard({
             }}
         >
             <div className="flex items-start gap-3">
-                <Folder className="mt-0.5 size-5 shrink-0 text-primary dark:text-sky-400" />
+                <Folder className="mt-0.5 size-5 shrink-0 text-muted-foreground" />
                 {editing ? (
                     <Input className="min-w-0" value={editingTitle} onClick={(event) => event.stopPropagation()} onChange={(event) => onEditingTitleChange(event.target.value)} onKeyDown={(event) => event.key === "Enter" && onSave()} autoFocus />
                 ) : (
                     <button type="button" className="min-w-0 cursor-pointer text-left" onClick={(event) => { event.stopPropagation(); onSelect(); }} onDoubleClick={(event) => { event.stopPropagation(); onOpen(); }}>
-                        <h2 className="truncate text-xl font-semibold">{folder.title}</h2>
-                        <p className="mt-3 text-sm leading-6 text-muted-foreground">{t("canvas.folder.itemCount", { count: itemCount })}</p>
+                        <h2 className="truncate text-base font-semibold">{folder.title}</h2>
+                        <p className="mt-2 text-xs text-muted-foreground">{t("canvas.folder.itemCount", { count: itemCount })}</p>
                     </button>
                 )}
             </div>
-            <div className="mt-8 flex items-end justify-end gap-1" onClick={(event) => event.stopPropagation()}>
+            <div className="mt-4 flex items-end justify-end gap-1" onClick={(event) => event.stopPropagation()}>
                 {editing ? (
                     <>
                         <Button type="text" size="small" shape="circle" icon={<Check className="size-4" />} onClick={onSave} aria-label={t("canvas.folder.saveName")} />

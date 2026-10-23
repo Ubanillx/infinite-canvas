@@ -37,7 +37,7 @@ export function CanvasProjectCard({ project, onDragStart, onDragEnd }: { project
 
     return (
         <article
-            className="group flex min-h-44 cursor-grab flex-col justify-between rounded-2xl border border-border bg-card p-5 shadow-[var(--shadow-surface)] transition-[background-color,box-shadow] hover:bg-accent/40 hover:shadow-[var(--shadow-surface-hover)] active:cursor-grabbing dark:border-white/10 dark:bg-white/5 dark:hover:bg-white/10"
+            className="group flex min-h-40 cursor-grab flex-col justify-between rounded-lg border border-border bg-card p-4 transition-colors hover:bg-accent/40 active:cursor-grabbing dark:border-white/10 dark:bg-white/5 dark:hover:bg-white/10"
             draggable={!editing}
             onDragStart={(event) => {
                 if ((event.target as HTMLElement).closest("button,input")) {
@@ -69,15 +69,15 @@ export function CanvasProjectCard({ project, onDragStart, onDragEnd }: { project
                             open();
                         }}
                     >
-                        <h2 className="truncate text-xl font-semibold">{project.title}</h2>
-                        <p className="mt-2 line-clamp-2 whitespace-pre-line text-sm leading-5 text-muted-foreground">{project.description?.trim() || t("canvas.project.noDescription")}</p>
-                        <p className="mt-3 text-sm leading-6 text-muted-foreground">
+                        <h2 className="truncate text-base font-semibold">{project.title}</h2>
+                        <p className="mt-2 line-clamp-2 whitespace-pre-line text-xs leading-5 text-muted-foreground">{project.description?.trim() || t("canvas.project.noDescription")}</p>
+                        <p className="mt-2 text-xs text-muted-foreground">
                             {t("canvas.project.stats", { nodes: project.nodes.length, connections: project.connections.length })}
                         </p>
                     </button>
                 )}
             </div>
-            <div className="mt-8 flex items-end justify-between gap-3">
+            <div className="mt-4 flex items-end justify-between gap-3">
                 <p className="text-xs text-muted-foreground">{t("canvas.project.updated", { date: new Date(project.updatedAt).toLocaleString(i18n.resolvedLanguage, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) })}</p>
                 <div className="flex items-center gap-1" onClick={(event) => event.stopPropagation()}>
                     {editing ? (

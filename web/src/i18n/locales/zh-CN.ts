@@ -253,6 +253,10 @@ export default {
     canvas: {
         defaultTitle: "无限画布 {{count}}",
         library: "画布库",
+        search: "搜索画布、文件夹名称",
+        noMatches: "没有找到匹配的画布或文件夹",
+        foldersCount: "文件夹 {{count}}",
+        projectsCount: "画布 {{count}}",
         backToLibrary: "返回画布库",
         title: "无限画布",
         libraryDescription: "创建、整理和继续你的创作",
