@@ -5,6 +5,40 @@ description: Implemented changes that still need manual verification
 
 # Pending Tests
 
+## Workspace Prompts
+
+- Create, edit, and delete a prompt in one workspace; reload the page and server, then confirm it persists and appears in the image/video prompt pickers. Check search, source categories, tags, Copy prompt, and save to assets. Cards should show a 4:3 cover without a redundant My prompts tag or category; show sharing and external sources only where relevant, and hide category filters without choices. Edit should be icon-only with an accessible name.
+- A private prompt should not appear in another workspace. Turn on sharing, confirm it appears there as read-only, then turn sharing off and confirm it disappears. For account-owned workspaces, check non-members cannot read private prompts or edit any prompt, and viewers cannot write.
+- Generate an example image with the configured image model and rewrite existing text with the text model; the rewrite icon and image preview should leave both as drafts until Save. Remove an image, reload, and check that private and shared covers display. Check missing-model and request-error states, both languages, and both themes. Legacy ownerless workspaces still rely on the app's workspace-ID access model.
+- Export only prompts owned by the current workspace as JSON, including example images. Import that file into another workspace and confirm all entries and covers arrive as private, with no duplicates from shared or external sources in the export. Reject a malformed file without partial writes; show a clear error for oversized files.
+
+## Home Hero
+
+- Confirm the hero shows only the primary Get started action on wide and narrow screens; it still navigates correctly, and the sidebar canvas entry remains available.
+
+## Button Feedback
+
+- Click primary, default, text, icon and danger buttons in libraries, workbenches, dialogs, canvas panels and settings. No expanding wave or press shadow should appear; the press should show only a subtle brightness change. Confirm disabled, keyboard focus and both themes remain clear.
+
+## Search Fields
+
+- Check search fields in the canvas, prompt and asset libraries, their pickers, the canvas side panel, model picker and Agent skills in light and dark themes. Default, hover and focus should differ subtly in surface color without a strong border or shadow; typing, clear actions and keyboard focus should remain usable.
+
+## Libraries
+
+- Check canvas, prompt and asset libraries on wide and narrow screens in both themes: headings and actions should align, search and filters should work, and cards should use subtle borders without large shadows. In the canvas library, verify folder breadcrumbs, drag-and-drop, rename, import/export, selection and deletion. In prompts, verify multi-tag filtering, infinite scrolling, details, copy and save to assets. In assets, verify filtering, pagination, preview and all card actions. Empty states should show real data only.
+
+## Image Studio
+
+- Click New creation and the composer buttons: they should keep a flat appearance throughout the click without an expanding shadow. Check the compact 36px parameter and generate actions, muted tool icons, disabled state, and keyboard focus. The prompt-library and asset-picker dialogs should match in responsive width and height without exceeding the viewport, with their lists scrolling inside. Both search fields should use a slight background change on hover and focus, without a dark border or shadow; the asset search should occupy its own full-width 40px row with filters below it. Clicking an asset card should preview it (original image in a lightbox); the separate Insert button should add it without opening preview. Check image, text and video cards.
+- Open the image studio on a wide screen and confirm the main content and bottom prompt use the full available width, with no centered maximum-width gap. The reference-image and generated-result panels should align at the same taller height while the bottom prompt stays compact. Reference thumbnails should be smaller; clicking one should open the original image in a lightbox, while reordering and removal remain usable. The prompt editor should fill the bottom width, grow when its plain top edge is dragged upward or adjusted with arrow keys, and use a subtle background without a focus shadow. The low-contrast configuration summary, parameter button, and generate button should share one row.
+- Preview a history item, switch between generated results, download or save an image, add it as a reference, start a new creation, and generate with and without reference images. Check drawer open and closed, narrow screens, keyboard focus, both themes, and both languages. Both record management and settings should open on the right and move the workbench content left on desktop; opening one should close the other. The settings drawer should show all image settings without another expansion step. In record management, check selection, Select all, deletion confirmation, and opening a record; the cards should retain count, success/failure, duration, and time details. Inspect both drawers, the delete confirmation, prompt library and asset picker, model list, buttons, prompt and numeric input focus, reference controls, and selected settings: they should use thin theme borders and subtle backgrounds without large shadows or high-contrast selection outlines.
+
+## Video Studio
+
+- Check the compact history strip, side-by-side image/video/audio reference panel and result area, and bottom prompt editor at wide and narrow sizes. On wide screens the main content and bottom prompt should use the full available width without a centered maximum-width gap. The prompt editor should grow by dragging its plain top edge or using arrow keys; parameter summary and Generate should share a row. Add, preview, reorder and remove all three reference types, and verify upload, clipboard, asset picker and prompt library still work.
+- Open Manage history and Generation settings: each should appear in a right drawer, push the studio content left on desktop, and close the other when switched. Settings should expose all options directly for standard and Seedance models, with subtle selection backgrounds, theme borders and no broad shadows. Check light/dark themes, Chinese/English, keyboard focus, creation, pending-task recovery, failed retry, successful video playback, download/save to assets, record selection and deletion confirmation.
+
 ## Home and top navigation
 
 - The canvas top-right button should read "AI Assistant" with a subtle shadow; clicking it should still open and close the assistant panel in both themes.

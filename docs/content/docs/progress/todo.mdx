@@ -5,6 +5,8 @@ description: Planned follow-up work
 
 # TODO
 
+- Bind legacy ownerless workspaces to authenticated members before treating workspace-ID access as private for prompt content and other workspace data.
+
 - Add safe server-side media garbage collection after checking references across canvases, assets, and generation histories; align the reverse-proxy upload limit with the app's 100 MiB per-file limit.
 - Audit browser egress from custom model scripts, externally rendered images, and Agent connections; remove remaining local-proxy configuration after server routes cover the supported flows.
 - Replace the Claude Code CLI adapter with a Claude Agent SDK adapter and improve the tool queue, following the [Local Agent Integration Plan](/docs/progress/local-agent-integration-plan).
