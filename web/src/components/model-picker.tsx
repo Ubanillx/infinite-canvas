@@ -14,11 +14,12 @@ type ModelPickerProps = {
     capability?: ModelCapability;
     className?: string;
     fullWidth?: boolean;
+    flat?: boolean;
     placeholder?: string;
     onMissingConfig?: () => void;
 };
 
-export function ModelPicker({ config, value, onChange, capability, className, fullWidth = false, placeholder, onMissingConfig }: ModelPickerProps) {
+export function ModelPicker({ config, value, onChange, capability, className, fullWidth = false, flat = false, placeholder, onMissingConfig }: ModelPickerProps) {
     const { t } = useTranslation();
     const pickerId = useId();
     const [open, setOpen] = useState(false);
@@ -50,6 +51,7 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                     "canvas-composer-model-picker h-8 w-fit max-w-full gap-2 rounded-full border border-input bg-transparent px-3 text-sm font-normal shadow-sm transition-colors",
                     fullWidth ? "w-full min-w-0 justify-start" : "min-w-[9rem] justify-start",
                     "data-[state=open]:border-ring data-[state=open]:ring-2 data-[state=open]:ring-ring/20",
+                    flat && "!shadow-none data-[state=open]:!border-input data-[state=open]:!bg-muted/40 data-[state=open]:!ring-0 focus-visible:!border-input focus-visible:!ring-0",
                     className,
                 )}
                 onMouseDown={(event) => event.stopPropagation()}
@@ -61,7 +63,7 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
             </SelectTrigger>
             <SelectContent
                 data-canvas-no-zoom
-                className="z-[1200] w-80 max-w-[calc(100vw-24px)] rounded-xl border border-border/70 bg-popover p-1 shadow-xl"
+                className={cn("z-[1200] w-80 max-w-[calc(100vw-24px)] rounded-xl border border-border/70 bg-popover p-1 shadow-xl", flat && "!shadow-none !ring-0")}
                 position="popper"
                 align="start"
                 side="bottom"

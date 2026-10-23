@@ -106,7 +106,7 @@ export function ModelSelectModal({ open, channel, selectedNames, onConfirm, onCl
             ]}
         >
             <div className="flex flex-wrap items-center gap-3">
-                <Input className="min-w-[200px] flex-1" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("config.modelSelect.search")} prefix={<Search className="size-4 text-stone-400" />} allowClear />
+                <Input className="app-search-input min-w-[200px] flex-1" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("config.modelSelect.search")} prefix={<Search className="size-4 text-muted-foreground" />} allowClear />
                 <Input className="min-w-[180px] flex-1" value={manual} onChange={(event) => setManual(event.target.value)} onPressEnter={addManual} placeholder={t("config.modelSelect.modelName")} />
                 <Button onClick={addManual}>{t("config.modelSelect.add")}</Button>
                 <Button icon={<RefreshCw className="size-4" />} loading={loading} onClick={() => void fetchModels()}>
