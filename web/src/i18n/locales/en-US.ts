@@ -110,6 +110,7 @@ export default {
     },
     assets: {
         title: "My Assets",
+        library: "Asset library",
         description: "Save frequently used text and images, then find them quickly by type, title, or tag.",
         search: "Search titles, content, tags, or sources",
         type: "Type",

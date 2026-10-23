@@ -1,4 +1,4 @@
-import { Copy, Download, PencilLine, Search, Trash2, Upload } from "lucide-react";
+import { Copy, Download, FileUp, PencilLine, Plus, Search, Trash2, Upload } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { App, Button, Card, Drawer, Empty, Form, Image, Input, Modal, Pagination, Select, Space, Tag, Typography } from "antd";
 import { saveAs } from "file-saver";
@@ -9,7 +9,6 @@ import { formatBytes, readFileAsDataUrl } from "@/lib/image-utils";
 import { getMediaBlob } from "@/services/file-storage";
 import { getImageBlob, getImagePreviewRevision, subscribeImagePreviews, uploadImage } from "@/services/image-storage";
 import { remoteMediaUrl } from "@/services/api/remote-media";
-import { cn } from "@/lib/utils";
 import { assetCoverUrl, useAssetStore, type Asset, type AssetKind, type ImageAsset } from "@/stores/use-asset-store";
 import { exportAssets, readAssetPackage } from "./asset-transfer";
 
@@ -199,82 +198,24 @@ export default function AssetsPage() {
     };
 
     return (
-        <div className="flex h-full flex-col overflow-hidden bg-background text-stone-900 dark:text-stone-100">
-            <main className="min-h-0 flex-1 overflow-y-auto bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] px-6 py-8 [background-size:16px_16px] dark:bg-[radial-gradient(rgba(245,245,244,.14)_1px,transparent_1px)]">
-                <div className="pb-8">
-                    <div className="mx-auto max-w-5xl text-center">
-                        <h1 className="text-4xl font-semibold tracking-tight text-stone-950 dark:text-stone-100">{t("assets.title")}</h1>
-                        <p className="mt-3 text-sm text-stone-500 dark:text-stone-400">{t("assets.description")}</p>
-                    </div>
-
-                    <div className="mx-auto mt-8 w-full max-w-2xl">
-                        <Input.Search
-                            className="w-full"
-                            size="large"
-                            allowClear
-                            prefix={<Search className="size-4 text-stone-400" />}
-                            value={keyword}
-                            placeholder={t("assets.search")}
-                            onChange={(event) => {
-                                setPage(1);
-                                setKeyword(event.target.value);
-                            }}
-                            onSearch={(value) => {
-                                setPage(1);
-                                setKeyword(value);
-                            }}
-                        />
-                    </div>
-
-                    <div className="mx-auto mt-6 grid max-w-6xl gap-3 text-left">
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                            <div className="grid gap-2 sm:grid-cols-[56px_minmax(0,1fr)] sm:items-center">
-                                <div className="text-xs font-medium text-stone-500 dark:text-stone-400">{t("assets.type")}</div>
-                                <div className="flex flex-wrap gap-2">
-                                    {kindOptions.map((option) => (
-                                        <Tag.CheckableTag
-                                            key={option}
-                                            checked={kindFilter === option}
-                                            className={cn("prompt-filter-tag", kindFilter === option && "is-active")}
-                                            onChange={() => {
-                                                setPage(1);
-                                                setKindFilter(option);
-                                            }}
-                                        >
-                                            {option === "all" ? t("common.all") : t(`assets.kinds.${option}`)}
-                                        </Tag.CheckableTag>
-                                    ))}
-                                </div>
-                            </div>
-                            <div className="flex flex-wrap gap-4">
-                                <button
-                                    type="button"
-                                    className="cursor-pointer text-sm font-medium text-stone-700 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:underline dark:text-stone-300"
-                                    onClick={() => void exportAllAssets()}
-                                >
-                                    {t("assets.export")}
-                                </button>
-                                <button
-                                    type="button"
-                                    className="cursor-pointer text-sm font-medium text-stone-700 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:underline dark:text-stone-300"
-                                    onClick={() => assetInputRef.current?.click()}
-                                >
-                                    {t("assets.import")}
-                                </button>
-                                <button
-                                    type="button"
-                                    className="cursor-pointer text-sm font-medium text-stone-700 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:underline dark:text-stone-300"
-                                    onClick={openCreate}
-                                >
-                                    {t("assets.add")}
-                                </button>
-                            </div>
+        <div className="flex h-full flex-col overflow-hidden bg-background text-foreground">
+            <main className="min-h-0 flex-1 overflow-y-auto px-5 py-6 sm:px-8 lg:px-10">
+                <div className="flex w-full flex-col gap-6">
+                    <header className="flex flex-wrap items-end justify-between gap-5">
+                        <div><p className="text-xs text-muted-foreground">{t("assets.library")}</p><h1 className="mt-1 text-2xl font-semibold">{t("assets.title")}</h1><p className="mt-1 text-sm text-muted-foreground">{t("assets.description")}</p></div>
+                        <div className="flex flex-wrap gap-2">
+                            <Button icon={<Download className="size-4" />} onClick={() => void exportAllAssets()}>{t("assets.export")}</Button>
+                            <Button icon={<FileUp className="size-4" />} onClick={() => assetInputRef.current?.click()}>{t("assets.import")}</Button>
+                            <Button type="primary" className="!shadow-none" icon={<Plus className="size-4" />} onClick={openCreate}>{t("assets.add")}</Button>
                         </div>
+                    </header>
+                    <div className="flex flex-wrap items-center gap-3 border-b border-border pb-5">
+                        <div className="flex flex-wrap items-center gap-2"><span className="mr-1 text-xs text-muted-foreground">{t("assets.type")}</span>
+                            {kindOptions.map((option) => <button type="button" key={option} aria-pressed={kindFilter === option} className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${kindFilter === option ? "border-border bg-accent text-foreground" : "border-border bg-card text-muted-foreground hover:bg-accent/50"}`} onClick={() => { setPage(1); setKindFilter(option); }}>{option === "all" ? t("common.all") : t(`assets.kinds.${option}`)}</button>)}
+                        </div>
+                        <Input className="app-search-input w-full sm:!ml-auto sm:!w-[min(26rem,100%)]" prefix={<Search className="size-4 text-muted-foreground" />} allowClear value={keyword} placeholder={t("assets.search")} onChange={(event) => { setPage(1); setKeyword(event.target.value); }} />
                     </div>
-                </div>
-
-                <div className="mx-auto flex max-w-7xl flex-col gap-5">
-                    <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
                         {visibleAssets.map((asset) => (
                             <AssetCard key={asset.id} asset={asset} onOpen={() => setPreviewAsset(asset)} onEdit={() => openEdit(asset)} onCopy={copyAssetText} onDownload={downloadImage} onDelete={() => setDeletingAsset(asset)} />
                         ))}
@@ -282,7 +223,7 @@ export default function AssetsPage() {
 
                     {!visibleAssets.length ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("assets.empty")} className="py-20" /> : null}
 
-                    <div className="flex justify-center">
+                    <div className="flex justify-center pt-2">
                         <Pagination
                             current={page}
                             pageSize={pageSize}
@@ -423,14 +364,14 @@ function AssetCard({ asset, onOpen, onEdit, onCopy, onDownload, onDelete }: { as
     return (
         <Card
             hoverable
-            className="overflow-hidden"
+            className="overflow-hidden !rounded-lg !border-border !shadow-none hover:!shadow-none"
             styles={{ body: { padding: 0 } }}
             cover={
                 <button type="button" className="block w-full text-left" onClick={onOpen}>
                     {cover ? (
-                        <img src={cover} alt={asset.title} className="aspect-[4/3] w-full object-cover" />
+                        <img src={cover} alt={asset.title} className="aspect-[16/9] w-full bg-accent/30 object-contain" />
                     ) : (
-                        <div className="flex aspect-[4/3] items-center justify-center bg-stone-100 p-5 text-center text-sm leading-6 text-stone-600 dark:bg-stone-900 dark:text-stone-300">{asset.kind === "text" ? asset.data.content : t("assets.noCover")}</div>
+                        <div className="flex aspect-[16/9] items-center justify-center overflow-hidden bg-accent/40 p-5 text-center text-sm leading-6 text-muted-foreground"><span className="line-clamp-5 break-words">{asset.kind === "text" ? asset.data.content : t("assets.noCover")}</span></div>
                     )}
                 </button>
             }
