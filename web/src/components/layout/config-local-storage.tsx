@@ -10,6 +10,7 @@ import { getWorkspaceDataError, subscribeWorkspaceDataError } from "@/services/w
 
 const domainKeys: Record<string, string> = {
     canvas: "canvas",
+    "canvas-templates": "canvasTemplates",
     assets: "assets",
     "image-workbench": "imageWorkbench",
     "video-workbench": "videoWorkbench",

@@ -1,5 +1,5 @@
 import { Bot, Menu } from "lucide-react";
-import { Button, Tooltip } from "antd";
+import { Button } from "antd";
 import { Link, useLocation } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 
@@ -61,9 +61,9 @@ export function AppTopNav() {
                         </div>
 
                         <div className="flex h-9 min-w-0 items-center justify-end gap-2 whitespace-nowrap">
-                            <Tooltip title={t(panelOpen ? "topNav.closeAgent" : "topNav.openAgent")}>
-                                <Button type="text" shape="circle" className="!h-8 !w-8 !min-w-8" icon={<Bot className="size-4" />} onClick={togglePanel} aria-label={t(panelOpen ? "topNav.closeAgent" : "topNav.openAgent")} />
-                            </Tooltip>
+                            <Button type="text" className="!h-9 !rounded-xl !px-3 !font-medium" icon={<Bot className="size-4" />} onClick={togglePanel} aria-label={t(panelOpen ? "topNav.closeAgent" : "topNav.openAgent")}>
+                                {t("canvas.aiAssistant")}
+                            </Button>
                             <div className={panelOpen ? "hidden 2xl:block" : "hidden md:block"}><UserStatusActions showConfig={false} /></div>
                             <WorkspaceSwitcher />
                         </div>
