@@ -65,9 +65,14 @@ export function agentAttachmentToChatAttachment(item: AgentMessageAttachment, en
     return { id: item.id, name: item.name, url: resolveAgentMessageAssetUrl(endpoint, token, item.dataUrl || item.url) };
 }
 
+/** 回复标题跟随当前引擎，避免 Pi 模式下仍显示 Codex。 */
+export function agentReplyTitle(engine: "codex" | "pi") {
+    return i18n.t(engine === "pi" ? "agent.panel.enginePi" : "agent.panel.engineCodex");
+}
+
 export function formatAgentEvent(event: AgentEventPayload): Omit<AgentChatItem, "id"> | null {
     const item = event.item;
-    if (event.type === "item.completed" && item?.type === "agent_message") return { role: "assistant", title: "Codex", text: stringText(item.text) };
+    if (event.type === "item.completed" && item?.type === "agent_message") return { role: "assistant", title: agentReplyTitle(useAgentStore.getState().engine), text: stringText(item.text) };
     return null;
 }
 
@@ -427,8 +432,8 @@ export function workingActivity(item?: AgentChatItem) {
     const key = `${item?.id || "waiting"}-${status}-${item?.text || ""}-${output.length}`;
     if (item?.role !== "tool") return { key, text: tr("thinking") };
     if (["inProgress", "in_progress", "running", "pending"].includes(status)) return { key, text: tr("operationRunning", { operation: item.title || tr("toolOperation") }) };
-    if (item.title === toolName("canvas_get_state")) return { key, text: tr("organizingCanvas") };
-    return { key, text: tr("operationCompleted", { operation: item.title || tr("toolOperation") }) };
+    if (item.title === toolName("canvas_get_state")) return { key, text: tr("organizingCanvas", { engine: agentReplyTitle(useAgentStore.getState().engine) }) };
+    return { key, text: tr("operationCompleted", { operation: item.title || tr("toolOperation"), engine: agentReplyTitle(useAgentStore.getState().engine) }) };
 }
 
 export function currentPlanMessage(messages: AgentChatItem[]) {

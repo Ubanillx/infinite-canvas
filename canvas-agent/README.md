@@ -2,6 +2,8 @@
 
 本地 Canvas Agent 用来连接画布网页和用户电脑上的 Codex / Claude Code。本地开发时优先连接 `http://localhost:3000`，不需要先使用线上站点。
 
+需要 Node.js **22.19 或更高版本**：服务端 Pi 引擎依赖的模型适配层要求该版本。
+
 ## 容器化部署
 
 本仓库 Dockerfile 已包含 Agent，Node 运行 Agent、Bun 运行 Web，Agent 仅监听容器回环 17371 并通过带工作区认证的同源代理访问。Agent 状态与 Codex 登录分别持久化到 /home/node/.infinite-canvas 和 /home/node/.codex；不把账号凭据放入镜像。Jenkins 的 deploy 分支发布和回滚配置见 [部署说明](../deploy/README.md)，真实 Codex 登录与容器运行仍需验收。
@@ -143,6 +145,29 @@ default_tools_approval_mode = "approve"
 侧边栏会展示 Codex 返回的 `thread.started`、`turn.started`、`item.*`、`turn.completed` 等结构化事件；Canvas Agent 会合并短时间内的回复、思考摘要和命令输出增量，网页使用同一条消息持续更新，并把任务进度、计划、搜索、文件修改与工具操作整理为中文过程时间线。
 
 侧边栏上传或粘贴的图片会先发到本机 Canvas Agent，再由 Canvas Agent 临时写入本机文件并作为 app-server `localImage` 输入传给 Codex；前端会提示附件体积，单次请求体限制为 30MB。
+
+## 服务端 Pi 引擎
+
+面板标题栏可以在 **Codex** 和 **Pi** 两个引擎之间切换，Codex 链路完全保留。Pi 引擎基于 `@earendil-works/pi-agent-core`，在 Canvas Agent 进程内直接调用服务器配置里的文本渠道，不需要 Codex 登录、本机 MCP 或 app-server。
+
+- 模型列表来自服务器配置 `config.json` 中的文本模型；`apiFormat` 为 `openai`、`ark`、`gemini` 的渠道可用，`custom`（自定义脚本）渠道不参与。
+- 全部 34 个画布工具的 zod 入参通过 `zod-to-json-schema` 转成 JSON Schema 后注册给 Pi，`execute` 仍调用同一套 `CanvasSession.callTool`，因此浏览器确认、超时、多标签页归属和附件链路完全复用。
+- 会话按工作区保存在 `<workspace>/.infinite-canvas/pi-threads/`，未知版本或损坏文件会被拒绝读取而不是覆盖。
+- Pi 引擎暂不支持 Codex 沙箱权限和内置生图，相关入口在 Pi 模式下隐藏。
+
+### Skill 支持
+
+Pi 引擎直接读取工作空间的 `.agents/skills`，和 Codex 技能页、画布内新建的 Skill 是同一份文件，使用 pi 官方 `@earendil-works/pi-coding-agent` 的 `loadSkillsFromDir` 与 `formatSkillsForPrompt`，因此目录结构和 frontmatter 校验与 Agent Skills 标准一致。
+
+- 系统提示词只注入**已启用** Skill 的名称、描述和路径，正文按需加载，不长期占用上下文。
+- 模型通过 `read_skill` 工具按名称读取 `SKILL.md` 正文；该工具是 Pi 引擎额外提供的第 35 个工具。
+- 网页技能页点「使用」即为显式调用，会把该 Skill 正文作为本轮前置说明，不依赖模型自行判断描述是否命中。
+- 启停状态保存在 `<workspace>/.infinite-canvas/pi-skills.json`（`{ version: 1, disabled: [...] }`），未知版本按原文件保留处理。
+- 启停或增删 Skill 后再次发送任务时会重建运行时上下文，`pi-coding-agent` 的技能扫描在同一进程内没有额外成本。
+
+Pi 模式下的技能页只提供启停和使用，新建、编辑、删除仍由 Codex 技能页完成，避免两个引擎同时写入同一份 `SKILL.md`。
+
+新增的 HTTP 路由：`/agent/pi/models`、`/agent/pi/skills`、`/agent/pi/skills/:name/enabled`、`/agent/pi/threads`、`/agent/pi/threads/:id`、`/agent/pi/threads/new`、`/agent/pi/threads/:id/resume`、`/agent/pi/threads/:id/delete`、`/agent/pi/turn`、`/agent/pi/interrupt`。
 
 ## Claude Code
 

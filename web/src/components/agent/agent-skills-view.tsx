@@ -5,7 +5,7 @@ import { Check, ChevronDown, CircleAlert, FilePenLine, LoaderCircle, LockKeyhole
 import { useTranslation } from "react-i18next";
 
 import { canvasThemes } from "@/lib/canvas-theme";
-import { createCodexSkill, createCodexSkillDraft, deleteCodexSkill, fetchCodexSkill, postState, setCodexSkillEnabled, updateCodexSkill, type AgentSkillDetail, type AgentSkillDraft, type AgentSkillInterface, type AgentSkillScope, type AgentSkillSummary } from "@/services/api/canvas-agent";
+import { createCodexSkill, createCodexSkillDraft, deleteCodexSkill, fetchCodexSkill, postState, setCodexSkillEnabled, setPiSkillEnabled, updateCodexSkill, type AgentSkillDetail, type AgentSkillDraft, type AgentSkillInterface, type AgentSkillScope, type AgentSkillSummary } from "@/services/api/canvas-agent";
 import { useAgentSkillStore } from "@/stores/use-agent-skill-store";
 import { useAgentStore, type AgentChatItem } from "@/stores/use-agent-store";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -22,6 +22,8 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { message, modal } = App.useApp();
     const connected = useAgentStore((state) => state.connected);
+    const engine = useAgentStore((state) => state.engine);
+    const piEngine = engine === "pi";
     const url = useAgentStore((state) => state.url);
     const token = useAgentStore((state) => state.token);
     const activeThreadId = useAgentStore((state) => state.activeThreadId);
@@ -63,7 +65,7 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
 
     const editorValues = editor?.mode === "edit" ? skillFormValues(editor.detail) : editor?.values;
 
-    const refresh = (forceReload = true) => loadSkills(endpoint, token, forceReload);
+    const refresh = (forceReload = true) => loadSkills(endpoint, token, piEngine ? false : forceReload);
     const connectionIsCurrent = (revision: number) => {
         const agent = useAgentStore.getState();
         const skillsState = useAgentSkillStore.getState();
@@ -212,7 +214,8 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
         if (!connectionIsCurrent(connectionRevision)) return;
         setBusySkill(skill.path);
         try {
-            await setCodexSkillEnabled(endpoint, token, skill, enabled);
+            if (piEngine) await setPiSkillEnabled(endpoint, token, skill, enabled);
+            else await setCodexSkillEnabled(endpoint, token, skill, enabled);
             if (!connectionIsCurrent(connectionRevision)) return;
             if (!enabled && selectedSkill?.name === skill.name && selectedSkill.path === skill.path) clearSelection();
             await refresh();
@@ -274,17 +277,19 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
                 <div className="flex items-center justify-between gap-3">
                     <div>
                         <div className="text-sm font-semibold">{t("agent.skillManager.localSkills")}</div>
-                        <div className="mt-0.5 text-xs" style={{ color: theme.node.muted }}>{t("agent.skillManager.localDescription")}</div>
+                        <div className="mt-0.5 text-xs" style={{ color: theme.node.muted }}>{t(piEngine ? "agent.panel.piSkillsHint" : "agent.skillManager.localDescription")}</div>
                     </div>
                     <div className="flex items-center gap-1">
                         <Tooltip title={t("agent.skillManager.reload")}>
                             <Button type="text" shape="circle" className="!h-8 !w-8 !min-w-8" aria-label={t("agent.skillManager.reloadSkill")} disabled={!connected || loading} icon={<RefreshCw className={`size-4 ${loading ? "animate-spin" : ""}`} />} onClick={() => void refresh()} />
                         </Tooltip>
-                        <Dropdown trigger={["click"]} placement="bottomRight" open={createMenuOpen} onOpenChange={setCreateMenuOpen} disabled={!connected || !clientId || Boolean(generatingSource)} menu={createMenu}>
-                            <Button type="text" className="!h-8 !px-2" aria-haspopup="menu" aria-expanded={createMenuOpen} disabled={!connected || !clientId} loading={Boolean(generatingSource)} icon={<Plus className="size-4" />}>
-                                {t("agent.skillManager.createSkill")} <ChevronDown className="size-3.5 opacity-60" />
-                            </Button>
-                        </Dropdown>
+                        {piEngine ? null : (
+                            <Dropdown trigger={["click"]} placement="bottomRight" open={createMenuOpen} onOpenChange={setCreateMenuOpen} disabled={!connected || !clientId || Boolean(generatingSource)} menu={createMenu}>
+                                <Button type="text" className="!h-8 !px-2" aria-haspopup="menu" aria-expanded={createMenuOpen} disabled={!connected || !clientId} loading={Boolean(generatingSource)} icon={<Plus className="size-4" />}>
+                                    {t("agent.skillManager.createSkill")} <ChevronDown className="size-3.5 opacity-60" />
+                                </Button>
+                            </Dropdown>
+                        )}
                     </div>
                 </div>
                 <div className="mt-3 flex gap-2">
@@ -297,7 +302,7 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
                         disabled={!connected}
                         value={scope}
                         onChange={setScope}
-                        options={[{ value: "all", label: t("agent.skillManager.scopes.all") }, ...(["repo", "user", "system", "admin"] as AgentSkillScope[]).map((value) => ({ value, label: t(`agent.skillManager.scopes.${value}`) }))]}
+                        options={[{ value: "all", label: t("agent.skillManager.scopes.all") }, ...((piEngine ? ["repo"] : ["repo", "user", "system", "admin"]) as AgentSkillScope[]).map((value) => ({ value, label: t(`agent.skillManager.scopes.${value}`) }))]}
                     />
                 </div>
                 {errors.length ? (
@@ -334,7 +339,7 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
                                         </label>
                                         <div className="flex items-center gap-0.5">
                                             <Button type="text" size="small" disabled={!connected || !skill.enabled || Boolean(busySkill)} icon={selected ? <Check className="size-3.5" /> : <Sparkles className="size-3.5" />} onClick={() => useSkill(skill)}>{t(selected ? "agent.skillManager.selected" : "agent.skillManager.use")}</Button>
-                                            {skill.managed ? (
+                                            {skill.managed && !piEngine ? (
                                                 <>
                                                     <Tooltip title={t("common.edit")}><Button type="text" shape="circle" size="small" aria-label={t("agent.skillManager.editNamed", { name: skill.interface?.displayName || skill.name })} disabled={!connected || Boolean(busySkill) || Boolean(generatingSource)} icon={<FilePenLine className="size-3.5" />} onClick={() => void openEdit(skill)} /></Tooltip>
                                                     <Tooltip title={t("common.delete")}><Button danger type="text" shape="circle" size="small" aria-label={t("agent.skillManager.deleteNamed", { name: skill.interface?.displayName || skill.name })} disabled={!connected || Boolean(busySkill) || Boolean(generatingSource)} icon={<Trash2 className="size-3.5" />} onClick={() => confirmDelete(skill)} /></Tooltip>

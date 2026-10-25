@@ -156,6 +156,13 @@ export class CanvasSession {
         });
     }
 
+    /** Pi 引擎不依赖 MCP，直接进入可发送状态。 */
+    completePiConversation(threadId: string) {
+        this.conversationInventoryComplete = true;
+        this.preparedConversationThreadId = threadId;
+        return this.updateConversation({ threadId, status: threadId ? "ready" : "idle", mcpStatuses: {}, error: undefined });
+    }
+
     /** 将创建线程或读取 MCP 清单的失败保存为不可发送状态。 */
     failConversationPreparation(error: string) {
         this.conversationInventoryComplete = false;

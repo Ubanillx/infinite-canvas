@@ -39,6 +39,7 @@ export type AgentConversationState = {
     error?: string;
 };
 export type AgentPanelTab = "chat" | "setup" | "history" | "skills" | "log";
+export type AgentEngine = "codex" | "pi";
 
 const CONNECT_TIMEOUT_MS = 6000;
 const SERVER_MANAGED_AGENT_TOKEN = "server-managed";
@@ -71,6 +72,7 @@ type AgentStore = {
     workspacePath: string;
     loadingThreads: boolean;
     activeTab: AgentPanelTab;
+    engine: AgentEngine;
     confirmTools: boolean;
     permissionMode: AgentPermissionMode;
     models: AgentModel[];
@@ -146,6 +148,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     workspacePath: "",
     loadingThreads: false,
     activeTab: "chat",
+    engine: typeof window === "undefined" ? "codex" : (localStorage.getItem("canvas-agent-engine") as AgentEngine) || "codex",
     confirmTools: false,
     permissionMode: typeof window === "undefined" ? "request" : (localStorage.getItem("canvas-agent-permission-mode") as AgentPermissionMode) || "request",
     models: [],

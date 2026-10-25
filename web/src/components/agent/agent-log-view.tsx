@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 import i18n from "@/i18n";
 import { canvasThemes } from "@/lib/canvas-theme";
 import type { AgentEventLog } from "@/stores/use-agent-store";
+import { useAgentStore } from "@/stores/use-agent-store";
 import { formatLogJson, formatLogText, type AgentLogContext } from "./agent-event-formatters";
 import { AgentScrollToBottom } from "./agent-scroll-to-bottom";
 
@@ -335,7 +336,7 @@ function logTitle(fallback: string, value: unknown) {
     if (target.includes("mcp") || target.includes("rmcp")) return "MCP";
     if (target.includes("shell")) return i18n.t("agent.logs.terminal");
     if (target.includes("state_db")) return i18n.t("agent.logs.conversationStorage");
-    return "Codex";
+    return i18n.t(useAgentStore.getState().engine === "pi" ? "agent.panel.enginePi" : "agent.panel.engineCodex");
 }
 
 function logTime(fallback: string, value: unknown) {

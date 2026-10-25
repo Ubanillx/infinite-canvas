@@ -2,6 +2,7 @@ import i18n from "@/i18n";
 import { getActiveWorkspace, workspaceHeaders } from "@/lib/workspace";
 import type { CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import type { AgentReasoningEffort } from "@/stores/use-agent-store";
+import { bindAgentTurnAttachments, persistAgentTurnAttachments, releaseAgentThreadAttachments, restoreAgentAttachments, type AgentAttachmentMessage, type AgentAttachmentTurn } from "./agent-attachments";
 
 type AgentConfigResponse = { ok?: boolean; protocolVersion?: number; url?: string; token?: string; hasToken?: boolean };
 const AGENT_MESSAGE_ASSET_PATTERN = /^agent-asset:([a-f0-9]{64})\/([a-f0-9]{64}\.(?:gif|jpe?g|png|webp))$/;
@@ -51,6 +52,11 @@ export type AgentSkillDraftInput = { source: "conversation" | "canvas"; threadId
 export type AgentSkillsResponse = { ok?: boolean; data?: AgentSkillSummary[]; errors?: unknown[] };
 export type AgentSkillResponse = { ok?: boolean; data?: AgentSkillDetail };
 export type AgentSkillDraftResponse = { ok?: boolean; data?: AgentSkillDraft };
+export type AgentModelsResponse = { ok?: boolean; data?: Array<{ id: string; model: string; displayName: string; defaultReasoningEffort: AgentReasoningEffort; supportedReasoningEfforts: Array<{ reasoningEffort: AgentReasoningEffort; description?: string }>; isDefault?: boolean }> };
+export type AgentPiThread = { id: string; preview: string; name: string | null; cwd: string; status: string; createdAt: number; updatedAt: number };
+export type AgentPiThreadsResponse = { ok?: boolean; workspace?: { workspacePath: string; activeThreadId?: string }; conversation?: AgentConversationStatePayload; data?: AgentPiThread[]; thread?: AgentPiThread; messages?: unknown[] };
+export type AgentPiThreadResponse = { ok?: boolean; workspace?: { workspacePath: string; activeThreadId?: string }; conversation?: AgentConversationStatePayload; thread?: AgentPiThread; messages?: unknown[]; settledTurnIds?: string[] };
+type AgentConversationStatePayload = { revision: number; conversationId: string; threadId: string; status: "idle" | "preparing" | "ready" | "warning" | "running" | "failed"; mcpStatuses: Record<string, { status: "starting" | "ready" | "failed" | "cancelled"; error?: string | null; failureReason?: string | null }>; sourceClientId?: string; error?: string };
 
 export async function postState(endpoint: string, token: string, clientId: string, snapshot: CanvasAgentSnapshot | null) {
     try {
@@ -83,6 +89,34 @@ export async function interruptCodexTurn(endpoint: string, token: string, thread
     await fetchAgentJson(endpoint, token, "/agent/codex/interrupt", jsonPost({ threadId }));
 }
 
+export async function interruptPiTurn(endpoint: string, token: string) {
+    await fetchAgentJson(endpoint, token, "/agent/pi/interrupt", jsonPost({}));
+}
+
+export function fetchPiModels(endpoint: string, token: string) {
+    return fetchAgentJson<AgentModelsResponse>(endpoint, token, "/agent/pi/models");
+}
+
+export function fetchPiThreads(endpoint: string, token: string) {
+    return fetchAgentJson<AgentPiThreadsResponse>(endpoint, token, "/agent/pi/threads");
+}
+
+export function fetchPiThread(endpoint: string, token: string, threadId: string) {
+    return fetchAgentJson<AgentPiThreadResponse>(endpoint, token, `/agent/pi/threads/${encodeURIComponent(threadId)}`);
+}
+
+export function createPiThread(endpoint: string, token: string, clientId: string) {
+    return fetchAgentJson<AgentPiThreadsResponse>(endpoint, token, "/agent/pi/threads/new", jsonPost({ clientId }));
+}
+
+export function resumePiThread(endpoint: string, token: string, threadId: string, clientId: string) {
+    return fetchAgentJson<AgentPiThreadResponse>(endpoint, token, `/agent/pi/threads/${encodeURIComponent(threadId)}/resume`, jsonPost({ clientId }));
+}
+
+export function deletePiThread(endpoint: string, token: string, threadId: string) {
+    return fetchAgentJson<AgentPiThreadsResponse>(endpoint, token, `/agent/pi/threads/${encodeURIComponent(threadId)}/delete`, jsonPost({}));
+}
+
 export async function acknowledgeCodexHistory(endpoint: string, token: string, threadId: string, turnIds: string[]) {
     await fetchAgentJson(endpoint, token, "/agent/codex/history/ack", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId, turnIds }) });
 }
@@ -102,6 +136,18 @@ export function resolveAgentMessageAssetUrl(endpoint: string, token: string, val
 
 export function fetchCodexSkills(endpoint: string, token: string, forceReload = false) {
     return fetchAgentJson<AgentSkillsResponse>(endpoint, token, `/agent/codex/skills${forceReload ? "?forceReload=1" : ""}`);
+}
+
+/** 按当前引擎读取技能列表；两个引擎返回同一套结构，网页技能页可以共用。 */
+export function fetchAgentSkills(endpoint: string, token: string, engine: "codex" | "pi", forceReload = false) {
+    return engine === "pi"
+        ? fetchAgentJson<AgentSkillsResponse>(endpoint, token, "/agent/pi/skills")
+        : fetchCodexSkills(endpoint, token, forceReload);
+}
+
+/** Pi 引擎只支持启停，编辑和删除仍由文件系统或 Codex 技能页负责。 */
+export function setPiSkillEnabled(endpoint: string, token: string, skill: Pick<AgentSkillSummary, "name">, enabled: boolean) {
+    return fetchAgentJson<{ ok?: boolean; data?: AgentSkillSummary[] }>(endpoint, token, `/agent/pi/skills/${encodeURIComponent(skill.name)}/enabled`, jsonPost({ enabled }));
 }
 
 export function fetchCodexSkill(endpoint: string, token: string, name: string) {
@@ -129,10 +175,26 @@ export function setCodexSkillEnabled(endpoint: string, token: string, skill: Pic
 }
 
 export async function fetchAgentJson<T>(endpoint: string, token: string, path: string, init?: RequestInit) {
+    const workspace = getActiveWorkspace();
+    const workspaceId = workspace?.id || "";
+    const turn = /^\/agent\/(codex|pi)\/turn$/.exec(path);
+    const body: AgentAttachmentTurn | null = turn && typeof init?.body === "string" ? JSON.parse(init.body) : null;
+    const persisted = body && await persistAgentTurnAttachments(workspaceId, turn![1], body);
+    if (getActiveWorkspace()?.id !== (workspaceId || undefined)) throw new Error("工作区已切换，未继续原 Agent 请求");
     const url = `${endpoint}${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}${workspaceQuerySuffix()}`;
     const res = await fetch(url, { ...init, headers: { ...workspaceHeaders(), ...init?.headers } });
-    const data = (await res.json().catch(() => ({}))) as T & { error?: string; msg?: string };
+    const data = (await res.json().catch(() => ({}))) as T & { error?: string; msg?: string; threadId?: string; messages?: AgentAttachmentMessage[] };
     if (!res.ok) throw new AgentApiError(res.status, data);
+    if (persisted && body && typeof data.threadId === "string") {
+        // A failed bind must not report an accepted AI turn as unsent. Its pending inventory
+        // still protects every original; a later authoritative history read binds it again.
+        await bindAgentTurnAttachments(workspaceId, turn![1], body.messageId, data.threadId).catch(() => console.warn("Agent 附件已保存，线程绑定待历史恢复后重试"));
+    }
+    const thread = /^\/agent\/(codex|pi)\/threads\/([^/?]+)(?:\/(resume|delete))?$/.exec(path);
+    if (thread && workspaceId) {
+        if (thread[3] === "delete") await releaseAgentThreadAttachments(workspaceId, thread[1], decodeURIComponent(thread[2]));
+        else if (Array.isArray(data.messages)) await restoreAgentAttachments(workspaceId, thread[1], decodeURIComponent(thread[2]), data.messages, workspace?.role !== "viewer");
+    }
     return data;
 }
 

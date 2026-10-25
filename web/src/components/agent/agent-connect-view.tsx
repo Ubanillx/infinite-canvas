@@ -5,6 +5,7 @@ import { Copy, KeyRound, Link2, PlugZap } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { canvasThemes } from "@/lib/canvas-theme";
+import { useAgentStore } from "@/stores/use-agent-store";
 
 const AGENT_PLUGIN_REMOVE_COMMAND = "codex plugin remove infinite-canvas";
 const AGENT_MCP_REMOVE_COMMAND = "codex mcp remove infinite-canvas";
@@ -34,6 +35,8 @@ export function AgentConnectView({
 }) {
     const { t } = useTranslation();
     const { message } = App.useApp();
+    const engine = useAgentStore((state) => state.engine);
+    const piEngine = engine === "pi";
     const steps = [{ title: t("agent.connect.pluginTitle"), text: t("agent.connect.pluginText") }, { title: t("agent.connect.directTitle"), text: t("agent.connect.directText"), command: "npx -y @basketikun/canvas-agent@latest" }];
     const statusText = connectError ? t("agent.status.failed") : connected ? activity : enabled ? t("agent.status.connecting") : t("agent.status.disconnected");
     const statusColor = connectError ? "#dc2626" : connected ? "#16a34a" : enabled ? "#d97706" : theme.node.muted;
@@ -93,10 +96,16 @@ export function AgentConnectView({
                                         </div>
                                     ) : null}
                                 </div>
-                                {index === 0 ? codexPluginReminder : null}
+                                {/* Codex 插件与 MCP 只和 Codex 引擎有关，Pi 模式不显示，避免误以为必须安装。 */}
+                                {index === 0 && !piEngine ? codexPluginReminder : null}
                             </Fragment>
                         );
                     })}
+                    {piEngine ? (
+                        <div className="rounded-lg border px-3 py-2.5 text-xs leading-5" style={{ borderColor: theme.node.stroke, color: theme.node.muted }}>
+                            {t("agent.connect.piDetail")}
+                        </div>
+                    ) : null}
                 </div>
                 <div className="rounded-lg border p-3" style={{ borderColor: theme.node.stroke }}>
                     <div className="flex flex-wrap items-start justify-between gap-3">

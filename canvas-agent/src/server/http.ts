@@ -5,6 +5,10 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import express, { type NextFunction, type Request, type Response } from "express";
 
 import { runClaudeTurn } from "../agent/claude.js";
+import { interruptPiTurn, releasePiRuntime, runPiTurn } from "../agent/pi/engine.js";
+import { piModelOptions, readPiChannels } from "../agent/pi/model.js";
+import { loadPiSkills, PiSkillError, piSkillSummaries, setPiSkillEnabled } from "../agent/pi/skills.js";
+import { PiThreadStore, readPiThread } from "../agent/pi/store.js";
 import { archiveCodexThread, CodexSkillLookupError, configureCodexSkill, generateCodexSkillDraft, interruptCodexTurn, isRecoverableThreadError, listCodexModels, listCodexSkills, listCodexThreads, readCodexThread, resolveCodexApproval, resolveCodexSkill, resumeCodexThread, runCodexTurn, startCodexThread, summarizeCodexThread } from "../agent/codex.js";
 import type { CodexReasoningEffort, CodexSkillSelector } from "../agent/codex-protocol.js";
 import { messageMetadataStoreForWorkspace } from "../agent/message-metadata.js";
@@ -373,6 +377,145 @@ export function startHttpServer() {
         const nextWorkspace = setActiveThread(workspace.activeThreadId === threadId ? "" : workspace.activeThreadId || "", { sourceClientId: String(req.body?.clientId || "") });
         res.json({ ok: true, workspace: nextWorkspace, conversation: session.conversationStateSnapshot });
     }));
+    app.get("/agent/pi/models", route(async (_req, res) => {
+        res.json({ ok: true, data: piModelOptions(await readPiChannels()) });
+    }));
+    app.get("/agent/pi/skills", route(async (req, res) => {
+        const workspace = requestWorkspace(config, req);
+        const result = await loadPiSkills(workspace.workspacePath);
+        res.json({ ok: true, data: piSkillSummaries(result.skills), errors: result.errors });
+    }));
+    app.post("/agent/pi/skills/:name/enabled", piMutation(async (req, res) => {
+        if (typeof req.body?.enabled !== "boolean") return res.status(400).json({ ok: false, error: "Skill 启用状态无效" });
+        const workspace = requestWorkspace(config, req);
+        const data = await setPiSkillEnabled(workspace.workspacePath, routeParam(req.params.name), req.body.enabled);
+        res.json({ ok: true, data });
+    }));
+    app.get("/agent/pi/threads", route(async (req, res) => {
+        const workspace = requestWorkspace(config, req);
+        res.json({ ok: true, workspace, conversation: session.conversationStateSnapshot, data: await new PiThreadStore(workspace.workspacePath).list() });
+    }));
+    app.get("/agent/pi/threads/:threadId", route(async (req, res) => {
+        const workspace = requestWorkspace(config, req);
+        const detail = await readPiThread(workspace.workspacePath, routeParam(req.params.threadId));
+        if (!detail) return res.status(404).json({ ok: false, error: "找不到该 Pi 会话" });
+        res.json({ ok: true, workspace, conversation: session.conversationStateSnapshot, ...detail });
+    }));
+    app.post("/agent/pi/threads/new", piMutation(async (req, res) => {
+        const workspace = requestWorkspace(config, req);
+        const clientId = String(req.body?.clientId || "");
+        session.bindClient(clientId);
+        const thread = await new PiThreadStore(workspace.workspacePath).create();
+        setActiveThread(thread.id, { emptyThread: true, sourceClientId: clientId }, true);
+        session.completePiConversation(thread.id);
+        res.json({ ok: true, workspace: requestWorkspace(config, req), conversation: session.conversationStateSnapshot, thread: { id: thread.id, preview: "", name: null, cwd: workspace.workspacePath, status: "idle", createdAt: thread.createdAt, updatedAt: thread.updatedAt }, messages: [] });
+    }));
+    app.post("/agent/pi/threads/:threadId/resume", piMutation(async (req, res) => {
+        const workspace = requestWorkspace(config, req);
+        const threadId = routeParam(req.params.threadId);
+        const clientId = String(req.body?.clientId || "");
+        const detail = await readPiThread(workspace.workspacePath, threadId);
+        if (!detail) return res.status(404).json({ ok: false, error: "找不到该 Pi 会话" });
+        session.bindClient(clientId);
+        setActiveThread(threadId, { sourceClientId: clientId }, true);
+        session.completePiConversation(threadId);
+        res.json({ ok: true, workspace: requestWorkspace(config, req), conversation: session.conversationStateSnapshot, ...detail });
+    }));
+    app.post("/agent/pi/threads/:threadId/delete", piMutation(async (req, res) => {
+        const workspace = requestWorkspace(config, req);
+        const threadId = routeParam(req.params.threadId);
+        await new PiThreadStore(workspace.workspacePath).remove(threadId);
+        releasePiRuntime(workspace.workspacePath, threadId);
+        const nextWorkspace = setActiveThread(workspace.activeThreadId === threadId ? "" : workspace.activeThreadId || "", { sourceClientId: String(req.body?.clientId || "") });
+        if (!nextWorkspace.activeThreadId) session.completePiConversation("");
+        res.json({ ok: true, workspace: nextWorkspace, conversation: session.conversationStateSnapshot });
+    }));
+    app.post("/agent/pi/turn", piMutation(async (req, res) => {
+        const attachments = Array.isArray(req.body?.attachments) ? (req.body.attachments as AgentAttachment[]) : [];
+        const workspace = requestWorkspace(config, req);
+        const prompt = String(req.body?.prompt || "");
+        if (!prompt.trim()) return res.status(400).json({ ok: false, error: "请输入任务内容" });
+        const clientId = String(req.body?.clientId || "");
+        if (!clientId || !session.hasClient(clientId)) return res.status(409).json({ ok: false, error: "发起任务的网页已断开，请重新连接后再试" });
+        const requestedThreadId = String(req.body?.threadId || "");
+        const activeThreadId = workspace.activeThreadId || "";
+        const conversation = session.conversationStateSnapshot;
+        if (requestedThreadId !== activeThreadId || conversation.threadId !== activeThreadId) {
+            return res.status(409).json({ ok: false, code: "CONVERSATION_STALE", error: "当前会话已切换，已同步最新状态，请确认后重试", state: conversation });
+        }
+        if (!activeThreadId || !["ready", "warning"].includes(conversation.status)) {
+            return res.status(409).json({ ok: false, code: "CONVERSATION_NOT_READY", error: "Pi 对话仍在初始化，请稍后再试", state: conversation });
+        }
+        const messageId = String(req.body?.messageId || Date.now());
+        const messageText = String(req.body?.messageText || prompt || `发送了 ${attachments.length} 张图片`);
+        const messageMetadata = await messageMetadataStoreForWorkspace(workspace.workspacePath).recordPending(messageId, req.body?.messageMetadata);
+        logger.info("Pi turn accepted", { threadId: activeThreadId, model: req.body?.model || "default", promptLength: prompt.length, attachmentCount: attachments.length });
+        // Pi 工具仍然回浏览器执行，因此和 Codex 一样把整轮绑定到发起页面。
+        session.bindClient(clientId);
+        session.markConversationRunning(activeThreadId);
+        session.setCodexState({ busy: true, threadId: activeThreadId, turnId: "" });
+        try {
+            const attachmentRefs = session.setTurnAttachments(clientId, attachments);
+            session.emitThread("chat_message", activeThreadId, {
+                sourceClientId: clientId,
+                message: { id: `${activeThreadId}:pending:synthetic:user`, itemId: "synthetic:user", clientMessageId: messageId, threadId: activeThreadId, turnId: "", role: "user", text: messageText, ...messageMetadata },
+            });
+            let turnId = "";
+            const lifecycleEmit = (type: string, payload: unknown) => {
+                const value = payload && typeof payload === "object" && !Array.isArray(payload) ? payload as Record<string, unknown> : { value: payload };
+                const eventThreadId = String(value.threadId || value.thread_id || activeThreadId);
+                const eventTurnId = String(value.turnId || value.turn_id || turnId);
+                session.emitThread(type, eventThreadId, {
+                    ...value,
+                    threadId: eventThreadId,
+                    thread_id: eventThreadId,
+                    ...(eventTurnId ? { turnId: eventTurnId, turn_id: eventTurnId } : {}),
+                    sourceClientId: clientId,
+                });
+            };
+            void runPiTurn(withAttachmentContext(prompt, attachmentRefs), lifecycleEmit, attachments, {
+                threadId: activeThreadId,
+                cwd: workspace.workspacePath,
+                session,
+                model: String(req.body?.model || "") || undefined,
+                effort: reasoningEffort(req.body?.effort),
+                ...(req.body?.skill ? { skill: req.body.skill as { name?: unknown; path?: unknown } } : {}),
+                messageText,
+                onStart: () => session.bindClient(clientId),
+                onThread: (actualThreadId) => {
+                    session.markConversationRunning(actualThreadId);
+                    session.setCodexState({ busy: true, threadId: actualThreadId, turnId: "" });
+                },
+                onTurn: (actualTurnId) => {
+                    turnId = actualTurnId;
+                    session.emitThread("chat_message", activeThreadId, {
+                        turnId,
+                        sourceClientId: clientId,
+                        message: { id: `${activeThreadId}:${turnId}:synthetic:user`, itemId: "synthetic:user", clientMessageId: messageId, threadId: activeThreadId, turnId, role: "user", text: messageText, ...messageMetadata },
+                    });
+                    void messageMetadataStoreForWorkspace(workspace.workspacePath).bindTurn(messageId, activeThreadId, turnId).catch((error) => logger.warn("Failed to bind pi message metadata to turn", { clientMessageId: messageId, threadId: activeThreadId, turnId, error }));
+                    session.setCodexState({ busy: true, threadId: activeThreadId, turnId });
+                },
+                onFinish: () => {
+                    session.clearTurnAttachments(clientId);
+                    if (clientId) session.releaseClient(clientId);
+                    session.setCodexState({ busy: false, threadId: activeThreadId, turnId });
+                    session.finishConversationRun(activeThreadId);
+                },
+            });
+            res.json({ ok: true, threadId: activeThreadId });
+        } catch (error) {
+            await messageMetadataStoreForWorkspace(workspace.workspacePath).remove(messageId, activeThreadId).catch(() => undefined);
+            session.releaseClient(clientId);
+            session.setCodexState({ busy: false, threadId: activeThreadId, turnId: "" });
+            session.finishConversationRun(activeThreadId);
+            throw error;
+        }
+    }));
+    app.post("/agent/pi/interrupt", route(async (req, res) => {
+        const ok = interruptPiTurn(requestWorkspace(config, req).workspacePath);
+        res.status(ok ? 200 : 409).json({ ok, ...(ok ? {} : { error: "当前没有可停止的任务" }) });
+    }));
     app.post("/agent/codex/turn", codexMutation(async (req, res) => {
         const attachments = Array.isArray(req.body?.attachments) ? (req.body.attachments as AgentAttachment[]) : [];
         const workspace = requestWorkspace(config, req);
@@ -494,6 +637,17 @@ export function startHttpServer() {
             }
         });
     }
+    /** Pi 引擎与 Codex 共用同一把会话互斥锁，避免两个引擎同时切换线程。 */
+    function piMutation(handler: (req: Request, res: Response) => unknown | Promise<unknown>) {
+        return route(async (req, res) => {
+            if (!session.beginCodexMutation()) return res.status(409).json({ ok: false, code: "CONVERSATION_BUSY", error: "Agent 正在运行或正在切换会话，请稍后重试", state: session.conversationStateSnapshot });
+            try {
+                return await handler(req, res);
+            } finally {
+                session.endCodexMutation();
+            }
+        });
+    }
     app.post("/agent/codex/approval", route(async (req, res) => {
         const decision = String(req.body?.decision || "");
         if (!["accept", "acceptForSession", "decline", "cancel"].includes(decision)) return res.status(400).json({ ok: false, error: "无效的审批决定" });
@@ -511,7 +665,7 @@ export function startHttpServer() {
     app.use((_req, res) => res.status(404).json({ ok: false, error: "not found" }));
     app.use((error: Error, req: Request, res: Response, _next: NextFunction) => {
         logger.error("HTTP request failed", { method: req.method, path: req.path, error });
-        if (error instanceof SkillStoreError || error instanceof CodexSkillLookupError) return void res.status(error.statusCode).json({ ok: false, error: error.message });
+        if (error instanceof SkillStoreError || error instanceof CodexSkillLookupError || error instanceof PiSkillError) return void res.status(error.statusCode).json({ ok: false, error: error.message });
         res.status(500).json({ ok: false, error: error.message });
     });
 
