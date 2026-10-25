@@ -1,0 +1,72 @@
+---
+title: Canvas Media References and Safe Garbage Collection Plan
+description: Implemented membership checks, transactional references and report-only GC, with deletion still deferred
+---
+
+# Canvas Media References and Safe Garbage Collection Plan
+
+Membership authorization, media reference tables, and GC dry-run are implemented and pending manual acceptance. Physical deletion, template packages, sharing, and cross-workspace copying are not implemented. See [Pending Tests](/docs/progress/pending-test) for actual regression results.
+
+## Current backend contract
+
+- PostgreSQL + RustFS store authoritative data. `GET/PUT /api/data/:domain` uses revision-conditional writes; templates have a separate `canvas-templates` domain.
+- Workspace access requires a valid session and `workspace_members` row. Owners/editors can write; viewers are read-only. Lists, summaries, private prompts, and private example images check real membership, not a workspace ID or cached role. Explicitly shared prompt images remain readable by other authenticated users.
+- Workspace creation atomically creates ownership and owner membership. Authoritative data/media-index writes lock the workspace and recheck membership; audit fields use the real user ID. Legacy workspaces without members are denied, not automatically claimed. Administrator binding and member-management UI remain deferred.
+- Media uses `PUT/GET/HEAD /api/media/blob/:storageKey`, deterministically mapped to `media/<workspaceId>/<sha256(storageKey)>`. Same-workspace copies check read/write access and receive fresh storage keys.
+- Uploads retain the existing 100 MiB limit and explicit `ContentLength`. No retention period, scan schedule, timeout, retry count, or concurrency boundary is added here.
+- `/api/media/agent-attachments` exposes the versioned workspace inventory: members may read it, owners/editors may reserve, bind, or release message references, and viewers cannot mutate it. The server validates every referenced object against the current workspace index before committing the manifest and reference rows.
+- Existing manual WebDAV snapshots still exclude templates. Prompt example images live in PostgreSQL rather than the RustFS inventory.
+
+## Implemented reference inventory
+
+### Schema and transactions
+
+- `media_files` adds `lifecycle_state` (`staged` / `ready` only) and `last_referenced_at`. There is no deletion queue or `delete_pending` state.
+- `media_references` records workspace, storage key, owner kind/ID, source domain/revision, JSON Pointer path, optional scan ID, and observation time. Repeated paths retain separate rows while object counts are deduplicated.
+- `media_reference_scans` stores scan ID, workspace, parser version, succeeded/blocked status, the complete JSON report, and start/finish times.
+- A domain CAS write, its reference replacement, and marking referenced media ready commit in the same database transaction. Conflicts return 409; unsupported/corrupt reference formats return 422, retaining previous payload and references.
+- References deliberately have no foreign key to media indexes, allowing missing indexes to be diagnosed rather than dropping dangling references. Deleting a canvas/template changes authoritative JSON and references, not media objects.
+
+### Extraction scope
+
+- `canvas`: nodes, batch results, explicit media references, and attachments inside canvas `chatSessions`; current version 0 and the existing omitted-version form are accepted.
+- `canvas-templates`: version 1 content plus separate `template-cover` ownership; unfilled input placeholders are not objects.
+- `assets`: version 0 media and covers; `image-workbench` / `video-workbench` use the current unversioned logs format.
+- Recognized storage keys in `storageKey`, `content`, `references`, `dataUrl`, `url`, and `coverUrl` are included. Explicit plugin storage keys support valid custom prefixes. Remote URLs, `blob:`, `data:`, WebDAV paths, ordinary prose, and `template-input:` placeholders are excluded.
+- Unknown domains/versions, malformed collections, duplicate owners, invalid storage keys (including objects/arrays), unknown media-bearing fields, and unowned root references fail closed rather than being interpreted as empty.
+- **Standalone `agent-sessions` uses a version-1 attachment manifest.** Every original is uploaded and reserved before an Agent turn is forwarded; pending bindings remain protected until authoritative history supplies thread/turn/item IDs. Codex and Pi identities stay separate, and restore only enriches matching user messages with canonical server media URLs. Invalid versions, transient URLs, duplicate message identities, and credential fields fail closed. Existing Agent engine preview/history files are not rewritten and legacy thumbnails are not upgraded automatically.
+
+## Implemented GC dry-run
+
+Only the workspace owner may call:
+
+```http
+POST /api/media/gc/dry-run
+Cookie: <valid session>
+x-infinite-canvas-workspace: <member workspace ID>
+```
+
+1. Read all existing domains and media indexes in a `REPEATABLE READ READ ONLY` transaction, retaining each revision.
+2. Extract references; missing indexes block the scan. HEAD each server-indexed object and compare its size. External `remote_path` snapshot indexes are neither checked with HEAD nor proposed as candidates.
+3. In a final transaction, acquire the same workspace lock used by authoritative writes and recheck all domain revisions and the media-index snapshot.
+4. Success refreshes references and stores the report. Parsing, HEAD, size, or concurrent-change failures return `blocked` with no candidates and preserve the previous inventory. Database/service failures return an error instead of false success.
+5. Reports always set `mode: "dry-run"`, `deletionEnabled: false`, and `scope: "workspace-prefix-reconciliation"`. The exact `media/<workspaceId>/` prefix is listed page by page, then indexed objects are checked with HEAD and the listing is repeated. Missing, changed, cross-prefix, or incomplete results block the scan; unindexed objects are diagnostics only and are never adopted or deleted. Candidate rows contain key, size, lifecycle state, and `eligibleForDeletion: false`.
+
+**The scan persists reports/references, so it is not a read-only request, but it never deletes objects or business media indexes.** Upload and copy first create a durable active intent and complete it with the media index in one transaction; a failed completion is recorded without removing the object. Active intents (including crash-left leases, which never auto-expire) block reconciliation and preserve the prior inventory. Partial diagnostic counts in a blocked report never authorize deletion.
+
+## Remaining boundaries
+
+- Active upload/copy intents are durable protection, but there is no automatic expiry or unsafe unlock endpoint. Failed requests retain the original object and diagnostics; manual resolution is deferred.
+- Reconciliation lists only the exact workspace prefix and never scans another workspace. Listing/HEAD/DB checks are fail-closed; a remote mutation after the final list remains a residual race because no deletion is executed. Unknown objects stay unindexed diagnostics and are not adopted.
+- No object-generation/immutability guarantee spans HEAD and final commit. Size and database-snapshot checks are not a physical-deletion protocol. No deletion is performed now, and future deletion races are not claimed solved.
+- PostgreSQL commit-failure injection and the Docker-pinned runtime/copy manifest are not fully verified. Focused desktop/mobile tests do not replace them or manual acceptance of expanded narrow layouts, real audio/video/plugins, and multi-user editing.
+
+## Prerequisites for actual deletion (Not Implemented)
+
+1. Define retention, operator resolution for crash-left intents, object generations, and the pre-deletion claim protocol. Standalone Agent attachments, upload intents/leases, and constrained reconciliation are now implemented and remain report-only.
+2. Only a complete successful scan may propose candidates. Deletion requires separate authorization and confirmation of retention, scheduling, batch sizes, and concurrency boundaries.
+3. **Before any object deletion**, transactionally check current references, revisions, candidate generation, and media generation, then atomically claim deletion. Every save/upload/copy path must respect that claim and prohibit new references or overwrites of the same deleting object, using immutable generations or equivalent isolation.
+4. Only a separately authorized server executor may delete while that isolation holds throughout the operation. Post-delete database confirmation provides idempotent recovery/index cleanup; checking revisions after deletion cannot undo an unsafe delete.
+5. Define recovery for object success followed by database failure, timeouts, duplicate execution, and restarts. Never silently reuse an old key or report false success.
+
+Acceptance must cover new-reference/claim races, interrupted uploads, generation changes, database failures, and workspace isolation. Continue using isolated PostgreSQL databases/schemas, RustFS buckets/prefixes, and `.local` artifacts; never clear business data. Template packages and sharing remain future work, not formal Features.

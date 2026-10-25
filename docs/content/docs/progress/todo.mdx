@@ -5,9 +5,11 @@ description: Planned follow-up work
 
 # TODO
 
-- Bind legacy ownerless workspaces to authenticated members before treating workspace-ID access as private for prompt content and other workspace data.
+- Canvas template follow-ups: selection, insertion, inputs, explicit updates, dependency checks, read-only previews, and server-side media copying are now in Pending Tests. Follow the [Canvas Template Plan](/docs/progress/canvas-template-plan) to define portable manifests and media inventories before import/export and manual WebDAV snapshots. Sharing and cross-workspace copies require account ownership, membership, and media authorization work first. Neither V1 nor V2 moves into Features before acceptance.
+- Canvas narrow-screen layout: prevent right-side toolbar controls from obstructing the canvas menu when the left panel is expanded; verify both expanded and collapsed states without relying on test-only panel preferences.
+- Workspace ownership follow-ups: real-session membership and role checks are now in Pending Tests. Legacy workspaces without members are denied rather than automatically claimed. Explicit administrator binding and member-management UI still need implementation and acceptance for existing workspaces.
 
-- Add safe server-side media garbage collection after checking references across canvases, assets, and generation histories; align the reverse-proxy upload limit with the app's 100 MiB per-file limit.
+- Server media: membership checks, transactional reference inventories, version-1 standalone Agent attachments, durable pre-upload intents/leases, and exact-prefix object reconciliation are now in Pending Tests. Follow the [Canvas Media References and Safe Garbage Collection Plan](/docs/progress/canvas-media-lifecycle-plan) for crash-left lease handling and the future atomic pre-deletion claims/object generations. Physical deletion, retention, and scheduling remain disabled and require separate confirmation; candidates are not deletion authorization. Align the reverse-proxy upload limit with the app's 100 MiB per-file limit.
 - Audit browser egress from custom model scripts, externally rendered images, and Agent connections; remove remaining local-proxy configuration after server routes cover the supported flows.
 - Replace the Claude Code CLI adapter with a Claude Agent SDK adapter and improve the tool queue, following the [Local Agent Integration Plan](/docs/progress/local-agent-integration-plan).
 - Add Skill installation from web search, Skill resource-file management, and controlled local-memory persistence.

@@ -1,0 +1,59 @@
+---
+title: Canvas Template Plan
+description: V1 and V2 implementation boundaries and remaining lifecycle work
+---
+
+# Canvas Template Plan
+
+## V1: Implemented, Pending Acceptance
+
+Use Save as template in the canvas menu, Templates in the canvas library, or From template in the creation dialog. V1 includes whole-canvas snapshots, names, descriptions, automatic thumbnails, enlarged previews, search, metadata editing, and deletion.
+
+- Templates belong to the active workspace and live in the server's `canvas-templates` domain. The browser only holds an in-memory list; no new local authoritative business-data copy is introduced.
+- Snapshots contain nodes, groups, edges, prompts, model settings, appearance, and viewport, not source-project links. Conversations, server credentials, running states, and job IDs are excluded. Instantiation never starts generation.
+- Source-to-template and template-to-canvas operations each clone graph identities and media into independent server objects. Covers are also server media. Repeated references deduplicate only within each copy.
+- Media and covers are saved before template metadata. Template mutations update the list after server acknowledgement. Derived canvases enter the canvas store only after an acknowledged server write. Revision conflicts refuse overwrites and use the existing refresh flow.
+- Covers are static whole-graph overviews with edges, titles, text excerpts, and images. They do not play audio/video or execute plugins. Separate plugin storage and external dependencies embedded in content are outside the snapshot.
+- V1 excludes selection templates, insertion, input slots, content replacement, sharing, portable template packages, and WebDAV template snapshots. Current access checks real sessions and membership roles; legacy workspaces without members are denied pending explicit administrator binding, not automatically claimed.
+
+Acceptance scenarios and desktop, mobile, and unit regression results are in [Pending Tests](/docs/progress/pending-test). Focused automation does not constitute full manual acceptance. No syntax checks or builds were run.
+
+## V2 Goal
+
+Expand reusable whole-canvas starting points into composable modules without implicit synchronization or automatic AI execution.
+
+Priorities 1 and 2, plus read-only previews, server-side copying, membership checks, transactional references, and report-only GC dry-run from Priority 3, are implemented and pending acceptance. Physical deletion, portable packages, and sharing remain follow-ups whose prerequisites are not yet complete.
+
+## Priority 1: Selection Templates and Insertion (Implemented, Pending Acceptance)
+
+- Reuse V1 naming, preview, management, and persistence for selected nodes. Include group members, preserve relative layout, and retain internal connections.
+- Detect dependencies outside the selection. Ask users to include them or expose them as replacement inputs; do not silently drop essential references.
+- Dependencies include incoming connections, composer node mentions, and media references that resolve to source nodes. Standalone referenced media without a matching node is still copied to the server. External text/image nodes can become required inputs; configuration, group, and plugin dependencies must be included.
+- Separate Create canvas from Insert into current canvas. Insert near the viewport, select the inserted module, and regenerate graph/result/media identities.
+- Treat insertion as one undoable operation. Undo/redo must preserve media reference safety.
+
+Acceptance: insert a template multiple times into one canvas without identity collisions, lost existing content, or deletion of another module's media.
+
+## Priority 2: Inputs and Explicit Updates (Implemented, Pending Acceptance)
+
+- Mark text/image nodes as replacement inputs with labels and instructions before introducing a template expression language.
+- Offer a short input step, retain editable nodes, and prompt for required values without running generation.
+- Add Keep generated examples. Unchecking clears only terminal generated results, retaining connected inputs, uploaded media, and explicit references; this is not an unconditional structure-only mode.
+- Support explicit Update existing template and Save as new template, with preview and confirmation. Do not sync from source canvases or alter previously created canvases. Defer full version history.
+- Check model/plugin dependencies before use and require an explicit replacement for unavailable models rather than silently substituting one.
+
+Acceptance: canceled updates retain the old template, accepted updates leave existing canvases unchanged, missing dependencies are actionable, and inputs remain workspace-scoped.
+
+## Priority 3: Preview, Transfer, and Lifecycle
+
+- Implemented: zoomable, scrollable read-only graph previews with mouse/keyboard node selection and type, prompt, input, and model details. Render data only, not node/plugin execution components; no generation or media playback occurs.
+- Implemented: persisted media is copied server-side under the active workspace's read/write permissions, with fresh media identities. URLs, blobs, and new image inputs still need uploading. No mutable-media sharing or cross-workspace copying is introduced.
+- Implemented, pending acceptance: membership checks, transactional references across canvases, template content/covers, assets, histories, version-1 Agent attachment manifests, durable upload intents, exact-prefix object reconciliation, and GC dry-run. Unindexed objects remain diagnostics only; nothing is adopted or deleted. Crash-left lease handling, object generations, and pre-deletion claims remain in the [Media Lifecycle Plan](/docs/progress/canvas-media-lifecycle-plan).
+- Define portable template manifests and media inventories before implementing import/export and manual WebDAV snapshots. Failed imports must not partially commit; WebDAV remains manual, not bidirectional auto-sync.
+- Resolve account ownership, memberships, and media read authorization before sharing or cross-workspace copies. Do not start with a template marketplace.
+
+Any new timeout, retry, size, or concurrency boundary requires prior user confirmation of its scope, default, and failure handling.
+
+## Delivery Order
+
+Keep V1 and the implemented V2 scope in Pending Tests until user acceptance, then update formal Features. Current delivery stops at cross-domain reference checks, Agent attachment persistence, upload intents, object reconciliation, and GC dry-run, without deletion. Crash-left lease resolution, object generations, and pre-deletion isolation remain future work; packages, sharing, and cross-workspace copies still need separate authorization and scheduling.
