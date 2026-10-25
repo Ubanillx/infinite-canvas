@@ -1,0 +1,85 @@
+# 本地开发中间件：PostgreSQL + RustFS（S3 兼容对象存储）
+# 只负责数据层，应用仍用 `npm run dev` 跑在宿主机上。
+#   docker compose -f docker-compose.middleware.yml up -d --wait
+#   docker compose -f docker-compose.middleware.yml down
+# 端口刻意避开 5432/9000，防止与本机其它项目的中间件冲突。
+name: infinite-canvas-middleware
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-infinite_canvas}
+      POSTGRES_USER: ${POSTGRES_USER:-infinite}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-infinite_canvas_dev}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - middleware-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    # 容器以非 root 的 rustfs 用户运行，数据与日志目录需要预先存在且可写；
+    # 使用命名卷时 Docker 会按镜像声明的属主初始化，无需额外 chown 容器。
+    command: ["/data"]
+    environment:
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY:-infinite}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_KEY:-infinite_canvas_dev}
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ADDRESS: ":9001"
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_OBS_LOGGER_LEVEL: error
+      RUSTFS_OBS_LOG_DIRECTORY: /logs
+    ports:
+      - "127.0.0.1:${RUSTFS_PORT:-9010}:9000"
+      - "127.0.0.1:${RUSTFS_CONSOLE_PORT:-9011}:9001"
+    volumes:
+      - middleware-rustfs:/data
+      - middleware-rustfs-logs:/logs
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  # 一次性建桶。RustFS 镜像内不带 mc，这里用 AWS CLI 完成初始化，
+  # 避免额外依赖一个会退役的专用客户端镜像。
+  rustfs-init:
+    image: amazon/aws-cli:latest
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        aws --endpoint-url "$$S3_ENDPOINT" s3api head-bucket --bucket "$$S3_BUCKET" 2>/dev/null \
+          || aws --endpoint-url "$$S3_ENDPOINT" s3api create-bucket --bucket "$$S3_BUCKET"
+        echo "bucket ready: $$S3_BUCKET"
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-infinite}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-infinite_canvas_dev}
+      AWS_DEFAULT_REGION: ${S3_REGION:-us-east-1}
+      S3_ENDPOINT: http://rustfs:9000
+      S3_BUCKET: ${S3_BUCKET:-infinite-canvas}
+    restart: "no"
+
+networks:
+  default:
+    name: infinite-canvas-middleware
+
+volumes:
+  middleware-postgres:
+  middleware-rustfs:
+  middleware-rustfs-logs:

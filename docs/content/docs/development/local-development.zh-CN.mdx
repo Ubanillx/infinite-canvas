@@ -7,7 +7,17 @@ description: 前端优先的本地开发方式
 
 当前主应用以 `web/` 前端为主，AI 请求由浏览器前台直连用户自己的 OpenAI 兼容接口。
 
-## 1. 启动前端
+## 1. 启动中间件
+
+服务端需要 PostgreSQL 与 S3 兼容对象存储（默认 RustFS）。在仓库根目录执行：
+
+```bash
+docker compose -f docker-compose.middleware.yml up -d --wait
+```
+
+默认端口为 PostgreSQL `5433`、RustFS `9010`（控制台 `9011`），刻意避开常见的 5432/9000。应用内置了对应的默认连接值，不需要额外配置即可启动；需要覆盖时参考 `deploy/middleware.env.example`。
+
+## 2. 启动前端
 
 ```bash
 cd web
@@ -21,11 +31,13 @@ bun run dev
 http://localhost:3000
 ```
 
-## 2. 配置模型
+开发服务器的接口与中间件共用同一进程内的服务端逻辑：账号认证、工作区数据、媒体索引走 PostgreSQL，媒体对象走 RustFS。浏览器仍然只访问同源的 `/api/*`，不直连数据库或对象存储。
+
+## 3. 配置模型
 
 打开右上角配置弹窗，填写自己的 `Base URL`、`API Key` 和模型名。第三方提示词和 WebDAV 都由浏览器前端直连。
 
-## 3. 启动文档站
+## 4. 启动文档站
 
 如果需要单独调整文档站，在 `docs` 目录执行：
 
@@ -36,6 +48,8 @@ bun run dev
 ## 调试与测试
 
 接口冒烟、浏览器探针、截图、交互步骤和日志扫描都收在[开发调试与测试工具](/zh-CN/docs/development/debug-tooling)里，常用入口是 `npm run dev:smoke`、`npm run dev:probe` 和 `npm run logs`。
+
+端到端测试需要中间件已启动。`npm run test:e2e` 会为本次运行自动创建独立的 PostgreSQL database 和 RustFS bucket，测试结束后删除，不会读写开发数据；同一时间请只跑一次，避免端口 3100 冲突。
 
 ## 常见场景
 

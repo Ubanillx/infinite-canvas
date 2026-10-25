@@ -34,6 +34,7 @@
 
 - [更新日志](/zh-CN/docs/progress/changelog)
 - [待测试](/zh-CN/docs/progress/pending-test)
+- [画布媒体引用与安全垃圾回收规划](/zh-CN/docs/progress/canvas-media-lifecycle-plan)
 - [TODO](/zh-CN/docs/progress/todo)
 
 ## 说明

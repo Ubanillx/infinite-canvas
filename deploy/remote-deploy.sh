@@ -32,6 +32,9 @@ gzip -dc image.tar.gz | docker load
 printf 'APP_IMAGE=%s\n' "$image" > image.env
 chmod 600 "$root/shared/production.env"
 install -m 600 "$root/shared/production.env" runtime.env
+# 数据服务（PostgreSQL / RustFS）是长期有状态组件：
+#   - 只运行 deployment 的 app 服务，由 --no-deps 保证不会连带重置数据服务；
+#   - 镜像与配置回滚只回滚 app，数据库和对象存储不随发布回滚。
 compose() {
     local dir="$1"; shift
     APP_IMAGE="$(cat "$dir/image-ref")" docker compose --project-name "$project" --env-file "$dir/runtime.env" --env-file "$dir/image.env" -f "$dir/compose.yml" "$@"
@@ -51,12 +54,18 @@ if [[ -f "$root/shared/project-name" ]]; then
 else
     printf '%s\n' "$project" > "$root/shared/project-name"
 fi
+# 部署主机不访问镜像仓库，数据服务镜像必须预先存在（见 deploy/README.md）。
+# 缺少时给出明确提示，而不是让 compose 在此处静默拉取或长时间等待。
+for image in postgres:17-alpine rustfs/rustfs:latest amazon/aws-cli:latest; do
+    docker image inspect --format '{{.Id}}' "$image" >/dev/null 2>&1 \
+        || { echo "Missing infrastructure image $image; preload it on the deploy host first" >&2; exit 1; }
+done
 rollback() {
     local status=$?
     trap - EXIT INT TERM
     if [[ -n "$previous" ]]; then
         echo 'Deployment failed; restoring the previous image (data is not rolled back)' >&2
-        if compose "$previous" up -d --no-build --pull never --wait --wait-timeout 120; then
+        if compose "$previous" up -d --no-deps --no-build --pull never --wait --wait-timeout 120 app; then
             echo 'Previous release restored' >&2
         else
             echo 'ROLLBACK FAILED: manual intervention required' >&2

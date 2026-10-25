@@ -57,6 +57,13 @@ GitHub 插件收到事件后让 Git 插件检查 SCM 是否变化，不是把每
 
 安装 Docker Engine 与 Compose v2（需支持 `up --wait --wait-timeout`）、Bash、GNU coreutils/tar、gzip 和 util-linux（flock）。这里不自动安装或修改防火墙。
 
+数据服务镜像需在部署前加载到主机（部署不访问镜像仓库）：
+
+```bash
+docker pull postgres:17-alpine rustfs/rustfs:latest amazon/aws-cli:latest
+# 离线环境改为 docker load -i <导出的镜像 tar>
+```
+
 以已存在的专用账号 `canvas-deploy` 为例（账号、公钥和权限由管理员配置）：
 
 ```bash
@@ -65,7 +72,9 @@ sudo install -d -m 700 -o canvas-deploy -g canvas-deploy /opt/infinite-canvas/sh
 sudo install -m 600 -o canvas-deploy -g canvas-deploy deploy/production.env.example /opt/infinite-canvas/shared/production.env
 ```
 
-把模板从仓库安全复制到主机后再执行最后一条，编辑其中站点域名、监听地址、端口和允许网段。部署用户须能无交互执行 Docker（加入 docker 组需重新登录，等效 root 权限），并可写部署目录。无需 sudo，也无需目标主机持有 GitHub 或镜像仓库凭据。
+把模板从仓库安全复制到主机后再执行最后一条，编辑其中站点域名、监听地址、端口和允许网段，并替换 `POSTGRES_PASSWORD`、`S3_ACCESS_KEY`、`S3_SECRET_KEY` 的 `CHANGE_ME` 默认值。部署用户须能无交互执行 Docker（加入 docker 组需重新登录，等效 root 权限），并可写部署目录。无需 sudo，也无需目标主机持有 GitHub 或镜像仓库凭据。
+
+数据服务容器监听容器内端口，不经 Compose 发布到宿主机；默认只有 `app` 绑定 `127.0.0.1:3000`。PostgreSQL 与 RustFS 控制台不对公网开放，需要运维访问时使用 SSH 隧道，不要直接添加 `ports` 映射。
 
 创建目录和 SSH 密钥并不等于完成运行配置初始化。若流水线在 SSH deploy 阶段提示 `Initialize readable .../shared/production.env first`，应先在部署主机创建该文件（权限 600、归部署用户所有），而不是重新生成密钥或关闭主机公钥校验。脚本分别报告预检、上传或激活的失败环节，不会输出配置内容。
 
@@ -78,13 +87,16 @@ sudo install -m 600 -o canvas-deploy -g canvas-deploy deploy/production.env.exam
 ## 容器与持久化
 
 - 一个非 root 容器内同时监管 Web（Bun/Vite preview，3000）和 Agent（Node，回环 17371），不公开 Agent 端口。Agent 显式使用自己的 PORT，避免与 Web 端口冲突。
-- Web 仍包含原有服务端认证、SQLite、工作区数据、媒体、只写配置、WebDAV/AI/Agent 代理，不能换成纯 nginx 静态目录。
-- Docker healthcheck 验证首页、构建 JS 资源、未登录的认证响应（同时打开 SQLite）和同源 Agent 健康响应；不要求真实 AI Key，不代表供应商生成或 Codex 账号已验收。
+- Web 仍包含原有服务端认证、工作区数据、媒体、只写配置、WebDAV/AI/Agent 代理，不能换成纯 nginx 静态目录。
+- 同一 Compose 项目还运行两个有状态服务：`postgres`（账号、工作区数据、媒体索引）与 `rustfs`（S3 兼容对象存储，保存媒体对象），外加一次性的 `rustfs-init` 建桶任务。应用通过 `DATABASE_URL` 与 `S3_*` 连接，浏览器不直连桶。
+- Docker healthcheck 验证首页、构建 JS 资源、未登录的认证响应（同时确认 PostgreSQL 可用）和同源 Agent 健康响应；不要求真实 AI Key，不代表供应商生成或 Codex 账号已验收。
+- 仅 `app` 的 healthcheck 参与容器健康判定。发布只重建 `app`，数据服务容器保持运行；`compose up --wait` 会等待依赖就绪（含必须成功退出的一次性 `rustfs-init`），但不重建未变化的服务。
 - 任一主进程退出会停止另一个并退出容器，由 restart 策略重启；SIGTERM 同时转发到两个进程。仅健康状态变为 unhealthy 但进程未退出时，Docker 的 restart 策略不会自动重启，应另行监控告警。
-- 数据卷：`<project>_infinite-canvas-data` → `/data`（数据库、配置、媒体）；`<project>_infinite-canvas-agent` → `/home/node/.infinite-canvas`（Agent 配置/会话/工作区）；`<project>_infinite-canvas-codex` → `/home/node/.codex`（Codex 登录/状态）。
+- 数据卷：`<project>_infinite-canvas-data` → `/data`（服务端配置等）；`<project>_infinite-canvas-agent` → `/home/node/.infinite-canvas`（Agent 配置/会话/工作区）；`<project>_infinite-canvas-codex` → `/home/node/.codex`（Codex 登录/状态）；`<project>_infinite-canvas-postgres` → PostgreSQL 数据目录；`<project>_infinite-canvas-rustfs` / `...-rustfs-logs` → 对象数据与日志。
 - 容器用户 UID/GID 为 1000，空命名卷按镜像目录权限初始化。首次 Codex 登录需由管理员在运行容器内执行 `docker compose ... exec app codex login --device-auth`，具体账号/API key 方式按组织规范操作，不把登录凭据打进镜像。
 - 旧容器若使用 root 和 `/root/.infinite-canvas`，不能直接假定已有卷可被 UID 1000 读取。先停旧服务并完整备份，在离线副本上校验权限、配置中的绝对工作区路径和 Codex 状态，再制定迁移；本次不自动 chown 或迁移未知卷。
-- 更新前备份数据卷，SQLite 数据需要停服备份或使用 SQLite 在线备份，不能只复制 WAL 模式下的数据库主文件。禁止 `docker compose down -v` 或 volume prune。
+- 更新前备份数据：PostgreSQL 使用 `pg_dump` 逻辑备份（或停服冷备），对象存储备份 bucket；只备份其中一方会导致数据与媒体不一致。禁止 `docker compose down -v` 或 volume prune。
+- 部署主机默认不访问镜像仓库（`--pull never`），因此 `postgres:17-alpine`、`rustfs/rustfs:latest` 与 `amazon/aws-cli:latest` 必须预先 `docker pull` 或离线导入；脚本在部署前逐个检查并给出明确提示。
 
 首次部署遇到同名但不受 current 管理的已有容器会拒绝接管，防止误覆盖旧部署。Compose 项目名、数据卷身份和部署目录应长期稳定。
 
@@ -98,7 +110,7 @@ sudo install -m 600 -o canvas-deploy -g canvas-deploy deploy/production.env.exam
 
 更新前不执行 down。成功后才更新 current，并移除已加载的传输镜像包；保留历史 Compose、运行配置和 Docker 镜像供回滚，脚本不自动清理旧镜像/卷。管理员应按备份和回滚策略维护磁盘，不要全局 prune。
 
-失败时自动用旧版本 `up`，即使恢复成功 Jenkins 仍判本次发布失败；回滚也失败时明确报告 `ROLLBACK FAILED`。首次部署失败没有旧版可恢复，保留容器与传输文件供调查。镜像/配置回滚不回滚 SQLite、业务密钥、媒体或 Agent/Codex 数据；未来出现不兼容数据迁移时，先备份并准备人工恢复，不能只依赖镜像回滚。
+失败时自动用旧版本 `up`，即使恢复成功 Jenkins 仍判本次发布失败；回滚也失败时明确报告 `ROLLBACK FAILED`。首次部署失败没有旧版可恢复，保留容器与传输文件供调查。镜像/配置回滚只回滚 `app`，不回滚 PostgreSQL、对象存储、业务密钥、媒体或 Agent/Codex 数据；数据库结构与对象存储内容不会随版本回退，出现不兼容数据变更时必须先备份并准备人工恢复，不能只依赖镜像回滚。
 
 人工回滚（先确认目标版本和无其他部署进行；后续 Jenkins 部署仍须遵循同一发布流程）：
 
@@ -125,6 +137,8 @@ mv -Tf ".manual-$release_id" current
 ## 针对性测试与待验收
 
 CI 的 test 阶段运行部署脚本模拟测试、健康探针测试、Web 回归测试和 Agent 测试。模拟测试不挂载 Docker socket，覆盖传输包校验、首次失败、更新回滚、回滚失败、镜像不匹配、并发锁、项目名限制、SSH 严格校验、参数注入拒绝、子进程退出和 SIGTERM。
+
+冒烟阶段使用 `docker-compose.smoke.yml` 启动一套与生产项目同构的隔离栈（`app` + `postgres` + `rustfs` + `rustfs-init`，项目名 `infinite-canvas-smoke`），等待健康后由 `post` 无条件 `down -v` 清理，不发布端口、不影响宿主机已有中间件。
 
 本地不执行应用构建/类型检查（遵循仓库约定），构建留给流水线。真实镜像构建、Jenkins 语法/插件兼容性、Webhook 投递、SSH 登录、卷初始化、Codex 实际登录以及生产回滚仍需真实环境验收。
 

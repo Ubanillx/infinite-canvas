@@ -16,19 +16,21 @@ docker compose -f docker-compose.local.yml up -d --build --wait --wait-timeout 1
 
 默认只绑定 `127.0.0.1:3000`。生产环境请通过宿主机 HTTPS 反向代理访问，配置精确的 `INFINITE_CANVAS_ALLOWED_HOSTS`；局域网直连需要显式设置 `APP_BIND_ADDRESS` 并配置防火墙。镜像构建包含回归测试。
 
-`docker-compose.yml` 用于已加载本仓库镜像的运行部署，`APP_IMAGE` 必须指向本次构建产物（默认 `infinite-canvas:local`，需先构建）。不能使用上游 `ghcr.io/basketikun/...:latest` 来代替这个 dev 分支的服务端实现。
+`docker-compose.yml` 用于已加载本仓库镜像的运行部署，`APP_IMAGE` 必须指向本次构建产物（默认 `infinite-canvas:local`，需先构建）。不能使用上游 `ghcr.io/basketikun/...:latest` 来代替这个 dev 分支的服务端实现。该文件会一并启动 PostgreSQL、RustFS 和一次性的建桶任务；连接外部实例时改用 `deploy/production.env.example` 中的变量并替换默认密码。
 
 ## 服务与数据
 
-容器以 UID/GID 1000 运行 Web 的 Bun/Vite preview 服务和 Node Canvas Agent。Web 保留账号认证、SQLite、工作区数据、媒体、只写密钥配置及 AI/WebDAV/Agent 同源代理；Agent 仅监听容器回环 17371，不单独暴露端口。它不是 Next.js 或 nginx 纯静态应用。
+容器以 UID/GID 1000 运行 Web 的 Bun/Vite preview 服务和 Node Canvas Agent。Web 保留账号认证、工作区数据、媒体、只写密钥配置及 AI/WebDAV/Agent 同源代理；Agent 仅监听容器回环 17371，不单独暴露端口。它不是 Next.js 或 nginx 纯静态应用。
 
-命名卷分别持久化 `/data`、`/home/node/.infinite-canvas` 和 `/home/node/.codex`。AI API Key 保存在服务器，WebDAV 仅手动上传与选择导入快照。不要运行 `down -v` 或 volume prune。备份 SQLite 时需使用一致性备份方法，而非仅复制 WAL 数据库主文件。
+数据层由两个配套服务承担：PostgreSQL 保存账号、工作区数据和媒体索引，RustFS 保存媒体对象。RustFS 是 S3 兼容的对象存储，应用只使用标准 S3 API，因此也可替换为其他兼容实现（AWS S3、MinIO 等）。应用通过 `DATABASE_URL` 与 `S3_*` 环境变量连接它们，浏览器不直连桶，媒体读写仍经过认证的同源接口。两者无需对外暴露端口；RustFS 控制台仅在需要运维时临时映射。
+
+命名卷分别持久化 `/data`、`/home/node/.infinite-canvas`、`/home/node/.codex` 以及 PostgreSQL、RustFS 的数据与日志目录。AI API Key 保存在服务器，WebDAV 仅手动上传与选择导入快照。不要运行 `down -v` 或 volume prune。备份需同时覆盖 PostgreSQL 逻辑备份与对象存储桶，只备份其中一个会导致数据与媒体不一致。
 
 旧容器使用 root 目录的卷需要先离线备份并验证 UID、文件权限与配置内绝对路径；不自动修改未知卷。Codex 登录状态不能放入镜像，由管理员首次登录后保存在专用卷中。
 
 ## 自动发布
 
-[Jenkins 自动部署](/zh-CN/docs/overview/jenkins) 使用 deploy 分支、GitHub Push Webhook、SSH 严格主机密钥校验、镜像 ID 校验、Compose 健康检查及上一版本恢复。详细配置见仓库 deploy/README.md。
+[Jenkins 自动部署](/zh-CN/docs/overview/jenkins) 使用 deploy 分支、GitHub Push Webhook、SSH 严格主机密钥校验、镜像 ID 校验、Compose 健康检查及上一版本恢复。冒烟检查会在隔离的 Compose 项目中临时拉起同一套 PostgreSQL 与 RustFS，通过后清理；部署只重建 `app`，数据服务与数据卷不随版本回滚。部署主机不访问镜像仓库，数据服务镜像需预先加载。详细配置见仓库 deploy/README.md。
 
 ## 统计与文档站
 

@@ -36,6 +36,8 @@
 
 - [Changelog](/docs/progress/changelog)
 - [Pending Tests](/docs/progress/pending-test)
+- [Canvas Template Plan](/docs/progress/canvas-template-plan)
+- [Canvas Media References and Safe Garbage Collection Plan](/docs/progress/canvas-media-lifecycle-plan)
 - [TODO](/docs/progress/todo)
 
 ## Notes

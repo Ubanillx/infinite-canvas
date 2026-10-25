@@ -1,0 +1,73 @@
+# 仅供 CI 隔离冒烟检查使用：临时 PostgreSQL + RustFS，与生产编排无关。
+# 容器之间只走内部网络，不向宿主机发布端口。
+name: infinite-canvas-smoke
+
+services:
+  app:
+    image: ${APP_IMAGE:?}
+    init: true
+    environment:
+      PORT: "3000"
+      INFINITE_CANVAS_DATA_DIR: /data
+      DATABASE_URL: postgres://infinite:infinite_canvas_dev@postgres:5432/infinite_canvas
+      S3_ENDPOINT: http://rustfs:9000
+      S3_REGION: us-east-1
+      S3_BUCKET: infinite-canvas
+      S3_ACCESS_KEY: infinite
+      S3_SECRET_KEY: infinite_canvas_dev
+    tmpfs:
+      - /data:uid=1000,gid=1000,mode=0700
+      - /home/node/.infinite-canvas:uid=1000,gid=1000,mode=0700
+      - /home/node/.codex:uid=1000,gid=1000,mode=0700
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rustfs:
+        condition: service_healthy
+      rustfs-init:
+        condition: service_completed_successfully
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: infinite_canvas
+      POSTGRES_USER: infinite
+      POSTGRES_PASSWORD: infinite_canvas_dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    command: ["/data"]
+    environment:
+      RUSTFS_ACCESS_KEY: infinite
+      RUSTFS_SECRET_KEY: infinite_canvas_dev
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ENABLE: "false"
+      RUSTFS_OBS_LOGGER_LEVEL: error
+      RUSTFS_OBS_LOG_DIRECTORY: /logs
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  rustfs-init:
+    image: amazon/aws-cli:latest
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket infinite-canvas 2>/dev/null \
+          || aws --endpoint-url http://rustfs:9000 s3api create-bucket --bucket infinite-canvas
+    environment:
+      AWS_ACCESS_KEY_ID: infinite
+      AWS_SECRET_ACCESS_KEY: infinite_canvas_dev
+      AWS_DEFAULT_REGION: us-east-1
+    restart: "no"
