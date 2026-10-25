@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, BookOpen, Bot, Download, Home, Images, Menu, PanelLeftClose, PanelLeftOpen, Plus, Redo2, Trash2, Undo2, Upload } from "lucide-react";
+import { ArrowLeft, BookOpen, Bot, Download, Home, Images, LayoutTemplate, Menu, PanelLeftClose, PanelLeftOpen, Plus, Redo2, Trash2, Undo2, Upload } from "lucide-react";
 import { Button, Dropdown, Modal, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
@@ -8,6 +8,7 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { useCanvasSidePanelStore } from "@/stores/use-canvas-side-panel-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { DOCS_URL } from "@/constant/env";
+import { getActiveWorkspace } from "@/lib/workspace";
 
 export function CanvasTopBar({
     title,
@@ -24,6 +25,10 @@ export function CanvasTopBar({
     onCreateProject,
     onDeleteProject,
     onExportProject,
+    onSaveTemplate,
+    onSaveSelectionTemplate,
+    onUpdateTemplate,
+    onInsertTemplate,
     onImportImage,
     onOpenPlugins,
     onUndo,
@@ -46,12 +51,16 @@ export function CanvasTopBar({
     onCreateProject: () => void;
     onDeleteProject: () => void;
     onExportProject: () => void;
+    onSaveTemplate: () => void;
+    onSaveSelectionTemplate?: () => void;
+    onUpdateTemplate: () => void;
+    onInsertTemplate: () => void;
     onImportImage: () => void;
     onOpenPlugins: () => void;
     onUndo: () => void;
     onRedo: () => void;
     agentOpen: boolean;
-    compactAgentStatus: { connected: boolean; enabled: boolean; activity: string };
+    compactAgentStatus: { connected: boolean; enabled: boolean; activity: string; engine: "codex" | "pi" };
     onToggleAgent: () => void;
 }) {
     const colorTheme = useThemeStore((state) => state.theme);
@@ -100,6 +109,10 @@ export function CanvasTopBar({
                                 { key: "projects", icon: <Images className="size-4" />, label: t("canvas.projects"), onClick: onProjects },
                                 { type: "divider" },
                                 { key: "new", icon: <Plus className="size-4" />, label: t("canvas.create"), onClick: onCreateProject },
+                                { key: "template", disabled: getActiveWorkspace()?.role === "viewer", icon: <LayoutTemplate className="size-4" />, label: t("canvas.templates.v2.saveAsNew"), onClick: onSaveTemplate },
+                                { key: "template-selection", disabled: !onSaveSelectionTemplate || getActiveWorkspace()?.role === "viewer", label: t("canvas.templates.v2.saveSelection"), onClick: onSaveSelectionTemplate },
+                                { key: "template-update", disabled: getActiveWorkspace()?.role === "viewer", label: t("canvas.templates.v2.update"), onClick: onUpdateTemplate },
+                                { key: "template-insert", disabled: getActiveWorkspace()?.role === "viewer", label: t("canvas.templates.v2.insert"), onClick: onInsertTemplate },
                                 { key: "delete", danger: true, icon: <Trash2 className="size-4" />, label: t("canvas.deleteCurrent"), onClick: onDeleteProject },
                                 { type: "divider" },
                                 { key: "import", icon: <Upload className="size-4" />, label: t("canvas.importAsset"), onClick: onImportImage },
@@ -189,11 +202,12 @@ function MenuLabel({ text, shortcut }: { text: string; shortcut: string }) {
     );
 }
 
-function CompactAgentStatus({ status, onClick }: { status: { connected: boolean; enabled: boolean; activity: string }; onClick: () => void }) {
+function CompactAgentStatus({ status, onClick }: { status: { connected: boolean; enabled: boolean; activity: string; engine: "codex" | "pi" }; onClick: () => void }) {
     const colorTheme = useThemeStore((state) => state.theme);
     const theme = canvasThemes[colorTheme];
     const { t } = useTranslation();
-    const label = status.connected ? t("canvas.agentConnected") : status.enabled ? t("canvas.agentConnecting", { activity: status.activity || t("canvas.connecting") }) : t("canvas.agentDisconnected");
+    const engine = t(status.engine === "pi" ? "agent.panel.enginePi" : "agent.panel.engineCodex");
+    const label = status.connected ? t("canvas.agentConnected", { engine }) : status.enabled ? t("canvas.agentConnecting", { engine, activity: status.activity || t("canvas.connecting") }) : t("canvas.agentDisconnected", { engine });
     const dotColor = status.connected ? "#22c55e" : status.enabled ? "#f59e0b" : theme.node.muted;
     return (
         <button type="button" className="flex h-8 items-center gap-1.5 text-xs transition hover:opacity-75" style={{ color: status.connected ? "#16a34a" : status.enabled ? "#d97706" : theme.node.muted }} onClick={onClick} title={t("canvas.openAgent")}>

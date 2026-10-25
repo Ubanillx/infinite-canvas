@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { App, Button, Input, Modal } from "antd";
-import { ChevronRight, Download, FileUp, FolderPlus, Home, Images, Plus, Search } from "lucide-react";
+import { ChevronRight, Download, FileUp, FolderPlus, Home, Images, LayoutTemplate, Plus, Search } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { readZip } from "@/lib/zip";
@@ -10,6 +10,7 @@ import { setMediaBlob } from "@/services/file-storage";
 import { setImageBlob } from "@/services/image-storage";
 import { CanvasDeleteProjectsDialog } from "@/components/canvas/canvas-delete-projects-dialog";
 import { CanvasCreateProjectDialog } from "@/components/canvas/canvas-create-project-dialog";
+import { CanvasTemplateLibraryDialog } from "@/components/canvas/canvas-template-library";
 import { CanvasProjectCard } from "@/components/canvas/canvas-project-card";
 import { CanvasFolderCard } from "@/components/canvas/canvas-folder-card";
 import type { CanvasExportFile } from "@/types/canvas-export";
@@ -49,6 +50,8 @@ export default function CanvasPage() {
     const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
     const [editingFolderTitle, setEditingFolderTitle] = useState("");
     const [createProjectOpen, setCreateProjectOpen] = useState(false);
+    const [templateLibraryOpen, setTemplateLibraryOpen] = useState(false);
+    const [initialTemplateId, setInitialTemplateId] = useState<string>();
     const [keyword, setKeyword] = useState("");
 
     const mode = searchParams.get("mode");
@@ -74,7 +77,7 @@ export default function CanvasPage() {
     const matchingProjects = visibleProjects.filter((project) => `${project.title} ${project.description || ""}`.toLowerCase().includes(keyword.trim().toLowerCase()));
     const visibleSelectedIds = selectedIds.filter((id) => matchingProjects.some((project) => project.id === id));
     const folderPath = useMemo(() => buildFolderPath(folders, currentFolderId), [currentFolderId, folders]);
-    const createAndEnter = () => setCreateProjectOpen(true);
+    const createAndEnter = () => { setInitialTemplateId(undefined); setCreateProjectOpen(true); };
     const createFolderAndEdit = () => {
         const id = createFolder(t("canvas.folder.untitled"), currentFolderId);
         setSelectedFolderId(id);
@@ -202,6 +205,7 @@ export default function CanvasPage() {
                         <Button disabled={!hydrated} icon={<FileUp className="size-4" />} onClick={() => inputRef.current?.click()}>
                             {t("canvas.import")}
                         </Button>
+                        <Button disabled={!hydrated} icon={<LayoutTemplate className="size-4" />} onClick={() => setTemplateLibraryOpen(true)}>{t("canvas.templates.library")}</Button>
                         <Button disabled={!hydrated} type="primary" className="!shadow-none" icon={<Plus className="size-4" />} onClick={createAndEnter}>
                             {t("canvas.create")}
                         </Button>
@@ -266,10 +270,11 @@ export default function CanvasPage() {
             </div>
 
             <input ref={inputRef} type="file" accept="application/zip,.zip" className="hidden" onChange={(event) => void importCanvas(event.target.files?.[0])} />
-            <CanvasCreateProjectDialog open={createProjectOpen} folderId={currentFolderId} onCancel={() => {
+            <CanvasCreateProjectDialog open={createProjectOpen} folderId={currentFolderId} initialTemplateId={initialTemplateId} onCancel={() => {
                 setCreateProjectOpen(false);
                 if (mode === "new" || mode === "recent") navigate(`/canvas?mode=choose${hasAgentUrlBootstrap(window.location.hash) ? window.location.hash : ""}`, { replace: true });
             }} onCreated={enterProject} />
+            <CanvasTemplateLibraryDialog open={templateLibraryOpen} onClose={() => setTemplateLibraryOpen(false)} onUse={(template) => { setInitialTemplateId(template.id); setTemplateLibraryOpen(false); setCreateProjectOpen(true); }} />
             <CanvasDeleteProjectsDialog />
         </main>
     );

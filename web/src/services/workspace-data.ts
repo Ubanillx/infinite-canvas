@@ -1,6 +1,6 @@
 import { getActiveWorkspace } from "@/lib/workspace";
 
-export type WorkspaceDomain = "canvas" | "assets" | "image-workbench" | "video-workbench" | "agent-sessions";
+export type WorkspaceDomain = "canvas" | "canvas-templates" | "assets" | "image-workbench" | "video-workbench" | "agent-sessions";
 type StoredDomain<T> = { payload: T | null; revision: number; updatedAt: string | null; updatedBy: string | null };
 type ConflictDetail = { domain: WorkspaceDomain; payload: unknown; revision: number };
 
@@ -35,12 +35,12 @@ function clearWorkspaceError(key: string) {
     listeners.forEach((listener) => listener());
 }
 
-export async function loadWorkspaceData<T>(domain: WorkspaceDomain): Promise<T | null> {
+export async function loadWorkspaceData<T>(domain: WorkspaceDomain, options: { reportError?: boolean } = {}): Promise<T | null> {
     const workspaceId = getActiveWorkspace()?.id;
-    return workspaceId ? loadWorkspaceDataFor<T>(domain, workspaceId) : null;
+    return workspaceId ? loadWorkspaceDataFor<T>(domain, workspaceId, options.reportError) : null;
 }
 
-async function loadWorkspaceDataFor<T>(domain: WorkspaceDomain, workspaceId: string): Promise<T | null> {
+async function loadWorkspaceDataFor<T>(domain: WorkspaceDomain, workspaceId: string, reportError = true): Promise<T | null> {
     const key = `${workspaceId}:${domain}`;
     try {
         const response = await fetch(`/api/data/${encodeURIComponent(domain)}`, { headers: { "x-infinite-canvas-workspace": workspaceId } });
@@ -50,12 +50,12 @@ async function loadWorkspaceDataFor<T>(domain: WorkspaceDomain, workspaceId: str
         if (!failedWrites.has(key) && errors.get(key)?.mode !== "conflict") clearWorkspaceError(key);
         return data.payload;
     } catch (error) {
-        setWorkspaceError(key, error instanceof Error ? error.message : "无法读取工作区数据", "read");
+        if (reportError) setWorkspaceError(key, error instanceof Error ? error.message : "无法读取工作区数据", "read");
         throw error;
     }
 }
 
-export function saveWorkspaceData(domain: WorkspaceDomain, payload: unknown) {
+export function saveWorkspaceData(domain: WorkspaceDomain, payload: unknown, options: { retryable?: boolean } = {}) {
     const workspaceId = getActiveWorkspace()?.id;
     if (!workspaceId) return Promise.reject(new Error("未选择工作区，数据未保存"));
     const key = `${workspaceId}:${domain}`;
@@ -86,8 +86,9 @@ export function saveWorkspaceData(domain: WorkspaceDomain, payload: unknown) {
     }).catch((error) => {
         const conflict = (error as { code?: string })?.code === "conflict";
         if (conflict) failedWrites.delete(key);
-        else failedWrites.set(key, { domain, payload });
-        setWorkspaceError(key, error instanceof Error ? error.message : "工作区数据保存失败", conflict ? "conflict" : "write");
+        else if (options.retryable !== false) failedWrites.set(key, { domain, payload });
+        // Explicit commands keep their draft and retry UI in the caller; conflicts still need global handling.
+        if (conflict || options.retryable !== false) setWorkspaceError(key, error instanceof Error ? error.message : "工作区数据保存失败", conflict ? "conflict" : "write");
         throw error;
     });
     writes.set(key, write.then(() => undefined, () => undefined));

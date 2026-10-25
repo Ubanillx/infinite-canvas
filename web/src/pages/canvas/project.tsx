@@ -75,6 +75,12 @@ import { CanvasPluginManagerModal } from "@/components/canvas/canvas-plugin-mana
 import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
 import { CanvasTopBar } from "@/components/canvas/canvas-top-bar";
 import { CanvasCreateProjectDialog } from "@/components/canvas/canvas-create-project-dialog";
+import { CanvasTemplateInsertDialog } from "@/components/canvas/canvas-template-insert-dialog";
+import { positionTemplateContent } from "@/lib/canvas/canvas-template";
+import { copyCanvasTemplateContent, requireTemplateWorkspace } from "@/services/canvas-templates";
+import { getActiveWorkspace } from "@/lib/workspace";
+import type { CanvasTemplateContent } from "@/types/canvas-template";
+import { CanvasTemplateEditorDialog, type TemplateSource } from "@/components/canvas/canvas-template-editor-dialog";
 import { ConnectionCreateMenu, NodeCreateMenu, type PendingConnectionCreate } from "@/components/canvas/canvas-create-menus";
 import {
     CanvasNodeType,
@@ -146,6 +152,7 @@ function applyGeneratedVideo(item: CanvasNodeData, video: UploadedFile, extra: C
 
 export default function CanvasPage() {
     const [mounted, setMounted] = useState(false);
+    const { id: projectId } = useParams<{ id: string }>();
 
     useEffect(() => {
         setMounted(true);
@@ -153,7 +160,8 @@ export default function CanvasPage() {
 
     if (!mounted) return <CanvasRefreshShell />;
 
-    return <InfiniteCanvasPage />;
+    // Keep editor state and async callbacks owned by one canvas, including its first autosave.
+    return <InfiniteCanvasPage key={projectId} />;
 }
 
 function measureFocusFrame(container: HTMLDivElement | null, nodeId: string) {
@@ -179,6 +187,7 @@ function InfiniteCanvasPage() {
     const localAgentConnected = useAgentStore((state) => state.connected);
     const localAgentActivity = useAgentStore((state) => state.activity);
     const localAgentEnabled = useAgentStore((state) => state.enabled);
+    const localAgentEngine = useAgentStore((state) => state.engine);
     const fragmentBootstrap = useAgentStore((state) => state.fragmentBootstrap);
     const agentPanelOpen = useAgentStore((state) => state.panelOpen);
     const toggleAgentPanel = useAgentStore((state) => state.togglePanel);
@@ -248,8 +257,15 @@ function InfiniteCanvasPage() {
     const [showImageInfo, setShowImageInfo] = useState(false);
     const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
     const [createProjectOpen, setCreateProjectOpen] = useState(false);
+    const [templateSource, setTemplateSource] = useState<TemplateSource | null>(null);
+    const [insertTemplateOpen, setInsertTemplateOpen] = useState(false);
+    const [createTemplateId, setCreateTemplateId] = useState<string>();
+    const templateActiveRef = useRef(true);
+    useEffect(() => { templateActiveRef.current = true; return () => { templateActiveRef.current = false; }; }, []);
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
     const [projectLoaded, setProjectLoaded] = useState(false);
+    const [projectLoadError, setProjectLoadError] = useState<Error | null>(null);
+    const [restoreAttempt, setRestoreAttempt] = useState(0);
     const [toolbarNodeId, setToolbarNodeId] = useState<string | null>(null);
     const [nodeImageSettingsOpen, setNodeImageSettingsOpen] = useState(false);
     const [dialogNodeId, setDialogNodeId] = useState<string | null>(null);
@@ -297,6 +313,8 @@ function InfiniteCanvasPage() {
         }),
         [activeChatId, backgroundMode, chatSessions, showImageInfo],
     );
+    const createHistoryEntryRef = useRef(createHistoryEntry);
+    createHistoryEntryRef.current = createHistoryEntry;
 
     const cleanupCanvasFiles = useCallback(
         (extra?: unknown) => {
@@ -441,7 +459,9 @@ function InfiniteCanvasPage() {
 
     useEffect(() => {
         if (!hydrated) return;
+        let active = true;
         setProjectLoaded(false);
+        setProjectLoadError(null);
         const project = openProject(projectId);
         if (!project) {
             navigate("/canvas", { replace: true });
@@ -450,7 +470,9 @@ function InfiniteCanvasPage() {
 
         const restore = async () => {
             const restoredNodes = await hydrateCanvasImages(resetInterruptedGeneration(project.nodes));
+            if (!active) return;
             const restoredSessions = await hydrateAssistantImages(project.chatSessions || []);
+            if (!active) return;
             setNodes(restoredNodes);
             setConnections(project.connections);
             setChatSessions(restoredSessions);
@@ -474,8 +496,11 @@ function InfiniteCanvasPage() {
             setHistoryState({ canUndo: false, canRedo: false });
             setProjectLoaded(true);
         };
-        void restore();
-    }, [hydrated, navigate, openProject, projectId]);
+        void restore().catch((error) => {
+            if (active) setProjectLoadError(error instanceof Error ? error : new Error());
+        });
+        return () => { active = false; };
+    }, [hydrated, navigate, openProject, projectId, restoreAttempt]);
 
     useEffect(() => {
         if (!projectLoaded) return;
@@ -1188,8 +1213,45 @@ function InfiniteCanvasPage() {
     }, [applyHistory]);
 
     const createAndOpenProject = useCallback(() => {
+        setCreateTemplateId(undefined);
         setCreateProjectOpen(true);
     }, []);
+
+    const saveTemplateSnapshot = (selection?: string[], replacing = false) => setTemplateSource(structuredClone({
+        title: currentProject?.title || t("canvas.projectPage.untitledCanvas"), description: currentProject?.description,
+        nodes: nodesRef.current, connections: connectionsRef.current, backgroundMode, showImageInfo, viewport: viewportRef.current,
+        selection, replacing,
+    }));
+
+    const insertTemplate = async (source: CanvasTemplateContent) => {
+        if (!templateActiveRef.current) return;
+        const workspaceId = getActiveWorkspace()?.id;
+        requireTemplateWorkspace(workspaceId);
+        const content = await copyCanvasTemplateContent(source, workspaceId);
+        if (!templateActiveRef.current) return;
+        const restored = await hydrateCanvasImages(content.nodes);
+        if (!templateActiveRef.current) return;
+        requireTemplateWorkspace(workspaceId);
+        const view = viewportRef.current;
+        const inserted = positionTemplateContent({ ...content, nodes: restored }, { x: (size.width / 2 - view.x) / view.k, y: (size.height / 2 - view.y) / view.k });
+        if (!inserted.nodes.length) return;
+        if (historyCommitTimerRef.current) { clearTimeout(historyCommitTimerRef.current); historyCommitTimerRef.current = null; }
+        const before = createHistoryEntryRef.current();
+        const last = lastHistoryRef.current;
+        // Flush pending edits separately; the entire inserted graph is exactly one history entry.
+        if (last && (last.nodes !== before.nodes || last.connections !== before.connections || last.chatSessions !== before.chatSessions || last.activeChatId !== before.activeChatId || last.backgroundMode !== before.backgroundMode || last.showImageInfo !== before.showImageInfo)) historyRef.current.past.push(last);
+        historyRef.current.past = [...historyRef.current.past.slice(-49), before];
+        historyRef.current.future = [];
+        const nextNodes = [...nodesRef.current, ...inserted.nodes];
+        const nextConnections = [...connectionsRef.current, ...inserted.connections];
+        lastHistoryRef.current = { ...before, nodes: nextNodes, connections: nextConnections };
+        nodesRef.current = nextNodes;
+        connectionsRef.current = nextConnections;
+        setNodes(nextNodes); setConnections(nextConnections);
+        setSelectedNodeIds(new Set(inserted.nodes.map((node) => node.id)));
+        setSelectedConnectionId(null);
+        setHistoryState({ canUndo: true, canRedo: false });
+    };
 
     const deleteCurrentProject = useCallback(() => {
         deleteProjects([projectId]);
@@ -3157,6 +3219,10 @@ function InfiniteCanvasPage() {
     }
     const retainedPreview = retainedPreviewRef.current;
 
+    if (projectLoadError) return <div className="flex h-full flex-col items-center justify-center gap-4 bg-background p-6 text-foreground">
+        <div role="alert" className="max-w-lg text-center"><p>{t("canvas.projectPage.loadFailed")}</p><p className="mt-2 text-sm text-muted-foreground">{projectLoadError.message}</p></div>
+        <div className="flex gap-2"><Button onClick={() => setRestoreAttempt((attempt) => attempt + 1)}>{t("common.retry")}</Button><Button type="text" onClick={() => navigate("/canvas")}>{t("canvas.backToLibrary")}</Button></div>
+    </div>;
     if (!projectLoaded) return <CanvasRefreshShell />;
 
     return (
@@ -3178,12 +3244,16 @@ function InfiniteCanvasPage() {
                     onCreateProject={createAndOpenProject}
                     onDeleteProject={deleteCurrentProject}
                     onExportProject={exportCurrentProject}
+                    onSaveTemplate={() => saveTemplateSnapshot()}
+                    onSaveSelectionTemplate={selectedNodeIds.size ? () => saveTemplateSnapshot([...selectedNodeIdsRef.current]) : undefined}
+                    onUpdateTemplate={() => saveTemplateSnapshot(undefined, true)}
+                    onInsertTemplate={() => setInsertTemplateOpen(true)}
                     onImportImage={() => handleUploadRequest()}
                     onOpenPlugins={() => setPluginManagerOpen(true)}
                     onUndo={undoCanvas}
                     onRedo={redoCanvas}
                     agentOpen={agentPanelOpen}
-                    compactAgentStatus={{ connected: localAgentConnected, enabled: localAgentEnabled, activity: localAgentActivity }}
+                    compactAgentStatus={{ connected: localAgentConnected, enabled: localAgentEnabled, activity: localAgentActivity, engine: localAgentEngine }}
                     onToggleAgent={toggleAgentPanel}
                 />
 
@@ -3429,7 +3499,9 @@ function InfiniteCanvasPage() {
 
                 <CanvasNodeInfoModal node={infoNode} open={Boolean(infoNode)} onClose={() => setInfoNodeId(null)} />
                 <CanvasPluginManagerModal open={pluginManagerOpen} onClose={() => setPluginManagerOpen(false)} />
-                <CanvasCreateProjectDialog open={createProjectOpen} onCancel={() => setCreateProjectOpen(false)} onCreated={(id) => navigate(`/canvas/${id}`)} />
+                <CanvasCreateProjectDialog open={createProjectOpen} initialTemplateId={createTemplateId} onCancel={() => setCreateProjectOpen(false)} onCreated={(id) => { setCreateProjectOpen(false); navigate(`/canvas/${id}`); }} />
+                {insertTemplateOpen ? <CanvasTemplateInsertDialog onClose={() => setInsertTemplateOpen(false)} onInsert={insertTemplate} onCreate={(id) => { setInsertTemplateOpen(false); setCreateTemplateId(id); setCreateProjectOpen(true); }} /> : null}
+                <CanvasTemplateEditorDialog source={templateSource} onClose={() => setTemplateSource(null)} />
 
                 {cropNode?.metadata?.content ? <CanvasNodeCropDialog dataUrl={cropNode.metadata.content} open={Boolean(cropNode)} onClose={() => setCropNodeId(null)} onConfirm={(crop) => void cropImageNode(cropNode!, crop)} /> : null}
 

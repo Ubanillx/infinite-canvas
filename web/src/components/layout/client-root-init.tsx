@@ -49,7 +49,7 @@ function ReadyClientRoot({ children }: { children: ReactNode }) {
     useEffect(() => {
         const onConflict = (event: Event) => {
             const detail = (event as CustomEvent<{ domain?: string }>).detail;
-            const labels: Record<string, string> = { canvas: "画布", assets: "素材库", "image-workbench": "生图记录", "video-workbench": "视频记录", "agent-sessions": "Agent 会话" };
+            const labels: Record<string, string> = { canvas: "画布", "canvas-templates": "画布模板", assets: "素材库", "image-workbench": "生图记录", "video-workbench": "视频记录", "agent-sessions": "Agent 会话" };
             setConflict(labels[detail?.domain || ""] || "工作区数据");
         };
         window.addEventListener("infinite-canvas:workspace-conflict", onConflict);

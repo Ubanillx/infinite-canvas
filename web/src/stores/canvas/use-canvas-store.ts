@@ -4,10 +4,11 @@ import { persist, type PersistStorage, type StorageValue } from "zustand/middlew
 import { nanoid } from "nanoid";
 import i18n from "@/i18n";
 import { localForageStorage } from "@/lib/localforage-storage";
-import { workspaceStorageKey } from "@/lib/workspace";
+import { getActiveWorkspace, workspaceStorageKey } from "@/lib/workspace";
 import { loadWorkspaceData, saveWorkspaceData } from "@/services/workspace-data";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
+import type { CanvasTemplateContent } from "@/types/canvas-template";
 
 export type CanvasProject = {
     id: string;
@@ -45,6 +46,7 @@ type CanvasStore = {
     deletedProjects: CanvasDeletedProject[];
     createProject: (title?: string, folderId?: string | null, description?: string) => string;
     importProject: (project: Partial<CanvasProject>, folderId?: string | null) => string;
+    createProjectFromTemplate: (content: CanvasTemplateContent, title: string, description: string, folderId: string | null) => Promise<string>;
     createFolder: (title?: string, parentId?: string | null) => string;
     renameFolder: (id: string, title: string) => void;
     deleteFolders: (ids: string[]) => string[];
@@ -63,6 +65,17 @@ const CANVAS_STORE_KEY = "infinite-canvas:canvas_store";
 type PersistedCanvasState = Pick<CanvasStore, "projects" | "folders" | "deletedProjects">;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let queuedPersistState: PersistedCanvasState | null = null;
+let canvasWrites: Promise<unknown> = Promise.resolve();
+
+function enqueueCanvasWrite<T>(write: () => Promise<T>) {
+    const next = canvasWrites.catch(() => undefined).then(write);
+    canvasWrites = next;
+    return next;
+}
+
+function persistedState(state: CanvasStore): PersistedCanvasState {
+    return { projects: state.projects, folders: state.folders, deletedProjects: state.deletedProjects };
+}
 
 const canvasStorage: PersistStorage<CanvasStore> = {
     getItem: async (name) => {
@@ -93,9 +106,15 @@ const canvasStorage: PersistStorage<CanvasStore> = {
         if (queuedPersistState && queuedPersistState.projects === nextState.projects && queuedPersistState.folders === nextState.folders && queuedPersistState.deletedProjects === nextState.deletedProjects) return;
         queuedPersistState = nextState;
         if (saveTimer) clearTimeout(saveTimer);
+        const workspaceId = getActiveWorkspace()?.id;
         saveTimer = setTimeout(() => {
             saveTimer = null;
-            void saveWorkspaceData("canvas", value).then(() => localForageStorage.removeItem(name)).catch(() => undefined);
+            // Read at execution time so an autosave cannot erase an acknowledged template-created project.
+            void enqueueCanvasWrite(async () => {
+                if (getActiveWorkspace()?.id !== workspaceId || name !== workspaceStorageKey(CANVAS_STORE_KEY)) return;
+                await saveWorkspaceData("canvas", { state: persistedState(useCanvasStore.getState()), version: 0 });
+                await localForageStorage.removeItem(name);
+            }).catch(() => undefined);
         }, 400);
     },
     removeItem: (name) => localForageStorage.removeItem(name),
@@ -190,6 +209,23 @@ export const useCanvasStore = create<CanvasStore>()(
                 };
                 set((state) => ({ projects: [project, ...state.projects] }));
                 return project.id;
+            },
+            createProjectFromTemplate: (content, title, description, folderId) => {
+                const workspaceId = getActiveWorkspace()?.id;
+                return enqueueCanvasWrite(async () => {
+                    if (!workspaceId || getActiveWorkspace()?.id !== workspaceId || useCanvasStore.persist.getOptions().name !== workspaceStorageKey(CANVAS_STORE_KEY)) throw new Error(i18n.t("canvas.templates.workspaceChanged"));
+                    if (!get().hydrated) throw new Error(i18n.t("canvas.loading"));
+                    const now = new Date().toISOString();
+                    const project: CanvasProject = {
+                        ...content, id: nanoid(), title, description,
+                        folderId: get().folders.some((folder) => folder.id === folderId) ? folderId : null,
+                        createdAt: now, updatedAt: now, chatSessions: [], activeChatId: null,
+                    };
+                    await saveWorkspaceData("canvas", { state: { ...persistedState(get()), projects: [project, ...get().projects] }, version: 0 }, { retryable: false });
+                    if (getActiveWorkspace()?.id !== workspaceId) throw new Error(i18n.t("canvas.templates.workspaceChanged"));
+                    set((state) => ({ projects: [project, ...state.projects] }));
+                    return project.id;
+                });
             },
             createFolder: (title = i18n.t("canvas.folder.untitled"), parentId = null) => {
                 const now = new Date().toISOString();
