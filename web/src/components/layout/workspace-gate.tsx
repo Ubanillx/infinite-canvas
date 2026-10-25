@@ -5,6 +5,8 @@ import { ArrowLeft, ArrowUpRight, Check, ChevronDown, FolderClosed, LayoutGrid, 
 import { useTranslation } from "react-i18next";
 
 import { WorkspaceAmbientBackground } from "@/components/layout/workspace-ambient-background";
+import { WorkspaceAccountForm } from "@/components/layout/workspace-account-form";
+import { getWorkspaceSession } from "@/services/api/workspace-auth";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { clearActiveWorkspace, getActiveWorkspace, getKnownWorkspaces, migrateLegacyDataToWorkspace, setActiveWorkspace, setKnownWorkspaces, type WorkspaceAccess } from "@/lib/workspace";
 import { migrateWorkspaceMedia } from "@/services/workspace-media";
@@ -13,7 +15,7 @@ import { createWorkspace, listWorkspaces } from "@/services/workspace";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useAppLoadingStore } from "@/stores/use-app-loading-store";
 
-type GateMode = "select" | "create";
+type GateMode = "select" | "create" | "account";
 const CREATE_WORKSPACE_KEY = "infinite-canvas:create-workspace";
 
 export function WorkspaceGate({ children }: { children: ReactNode }) {
@@ -42,6 +44,9 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
         }
         void (async () => {
             try {
+                const session = await getWorkspaceSession();
+                if (!current) return;
+                if (!session.user) { setMode("account"); return; }
                 const available = await listWorkspaces();
                 if (!current) return;
                 setKnownWorkspaces(available);
@@ -111,11 +116,11 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
                 </div>
                 {mode === "create" && workspaces.length ? <button type="button" className="mb-8 inline-flex items-center gap-2 text-sm transition-opacity hover:opacity-60" style={{ color: theme.node.muted }} onClick={() => { form.resetFields(); setError(""); setMode("select"); }}><ArrowLeft className="size-4" />返回工作区列表</button> : null}
                 <header className="mb-10 sm:mb-14">
-                    <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">{mode === "create" ? "新建工作区" : "选择工作区"}</h1>
+                    <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">{mode === "account" ? "登录工作区" : mode === "create" ? "新建工作区" : "选择工作区"}</h1>
                     <p className="mt-3 text-sm" style={{ color: theme.node.muted }}>数据按工作区独立保存，选择后即可进入。</p>
                 </header>
                 {error ? <div role="alert" className="mb-6 max-w-xl rounded-md border border-red-400/40 px-4 py-3 text-sm text-red-500">{error}</div> : null}
-                {loading ? null : mode === "select" ? (
+                {loading ? null : mode === "account" ? <WorkspaceAccountForm /> : mode === "select" ? (
                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-5">
                         {workspaces.map((workspace) => {
                             const summary = summaries[workspace.id];
