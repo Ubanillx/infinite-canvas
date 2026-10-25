@@ -41,7 +41,10 @@
 - 页面文案保持中文。
 - 资源页与创作工作台的主题、布局和交互遵循 `docs/content/docs/development/theme-system.zh-CN.mdx`；用语义化主题变量，窄屏不遮挡操作，保留可辨识的键盘焦点。
 - 全站搜索输入框复用 `app-search-input` 样式，以轻微底色表达悬停和聚焦，不显示明显描边或阴影。
+- 生图/视频工作台的提示词输入框复用 `app-prompt-input` 样式（无边框状态由全局 token 提供，自身只叠加微弱底色递进）；同类多页复用的输入外观用全局类，不要再在页面里写一长串 `!border-border hover:!bg-… focus:!shadow-none`。
+- 页面提示词编辑器等普通表单里的 Input/TextArea 不要再写行内边框覆盖，直接用全局 token 的三态；只有工作台这类整块浅底色需求才用 `app-prompt-input`。
 - 全站按钮点击反馈由根层 ConfigProvider 和全局按下态统一控制：关闭 Ant Design wave，按下时只保留轻微明度变化，不加外扩阴影；保留键盘焦点和危险操作语义色。
+- 全站输入类 antd 控件（`Input`、`Input.TextArea`、`InputNumber`、`Select`）的悬停和聚焦统一在 `web/src/lib/app-theme.ts` 的组件 Token 中配置：默认、悬停、聚焦只用微弱底色差和细边框区分，`activeShadow` / `activeOutlineColor` 设为 `none` / `transparent`，禁止出现 2px 外扩聚焦光环、近黑/近白高对比描边；不要在每个弹窗或页面里逐个用 `!shadow-none`、`focus:!border-…` 覆盖。组件 Token 中的 `errorActiveShadow` / `warningActiveShadow` 也必须一并置空，否则错误态聚焦仍会出现光环。
 - 生图工作台的抽屉、弹窗不使用大面积投影；按钮、输入框和选中态优先用主题细边框与轻微底色差表达，避免高对比度描边或整块强调色。按钮需同时检查静态阴影与点击波纹；生图页通过 ConfigProvider 关闭 wave，避免点击时重新出现外扩投影。
 - 不要在组件里堆太多无关逻辑；复杂逻辑优先抽成同目录工具函数或小组件。
 - 样式优先由组件自己管理；组件私有样式优先使用 Tailwind className 或少量内联 style，不要为单个组件新增大量全局 CSS。
@@ -93,6 +96,8 @@
 
 ## 项目注意事项
 
+- 服务端数据层为 PostgreSQL + S3 兼容对象存储（默认 RustFS）；本地开发先执行 `docker compose -f docker-compose.middleware.yml up -d --wait`，端口默认 5433/9010，避开 5432/9000。
+- 对象存储上传必须显式传 `ContentLength`：RustFS 对不带长度的 chunked 流式上传会直接失败，浏览器上传已天然带长度，服务端不要改成无长度的 `Readable`。
 - CI 兼容性回归须使用 Dockerfile 固定的运行时版本和实际复制清单；仅在宿主机新版运行时或挂载完整仓库通过，不能视为容器内测试通过。
 - 新增或调整超时、重试次数、大小限制、并发上限等会改变实际行为的边界值前，必须先向用户说明适用环节、默认值和失败后的处理方式，并取得确认；不要把经验值当成纯内部实现静默加入。
 - 当前画布项目和“我的素材”按工作区在服务器保存并在浏览器缓存；WebDAV 仅支持手动快照上传和导入，不要误写成双向自动同步。

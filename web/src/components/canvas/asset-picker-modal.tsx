@@ -20,7 +20,7 @@ type Props = {
 export function AssetPickerModal({ open, onInsert, onClose, flat = false }: Props) {
     const { t } = useTranslation();
     return (
-        <Modal title={t("canvas.assetPicker.title")} open={open} onCancel={onClose} footer={null} width={flat ? "min(1360px, calc(100vw - 48px))" : 860} centered={flat} destroyOnHidden classNames={flat ? { root: "image-workbench-overlay", body: "[&_button]:!shadow-none [&_.ant-input-affix-wrapper]:!shadow-none" } : undefined} styles={{ body: { padding: flat ? 0 : "0 24px 24px", minHeight: 480, ...(flat ? { height: "min(76dvh, 900px)" } : {}) }, ...(flat ? { container: { boxShadow: "none", border: "1px solid var(--border)" } } : {}) }}>
+        <Modal title={t("canvas.assetPicker.title")} open={open} onCancel={onClose} footer={null} width={flat ? "min(1360px, calc(100vw - 48px))" : 860} centered={flat} destroyOnHidden classNames={flat ? { root: "image-workbench-overlay", body: "[&_button]:!shadow-none" } : undefined} styles={{ body: { padding: flat ? 0 : "0 24px 24px", minHeight: 480, ...(flat ? { height: "min(76dvh, 900px)" } : {}) }, ...(flat ? { container: { boxShadow: "none", border: "1px solid var(--border)" } } : {}) }}>
             <MyAssetsTab onInsert={onInsert} flat={flat} />
         </Modal>
     );

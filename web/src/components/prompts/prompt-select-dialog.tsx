@@ -39,7 +39,7 @@ export function PromptSelectDialog({ open, onOpenChange, onSelect, flat = false 
     };
 
     return (
-        <Modal title={t("prompts.library")} open={open} onCancel={() => onOpenChange(false)} footer={null} width={flat ? "min(1360px, calc(100vw - 48px))" : 880} centered classNames={flat ? { root: "image-workbench-overlay", body: "[&_button]:!shadow-none [&_.ant-input-affix-wrapper]:!shadow-none [&_.ant-card]:!shadow-none [&_.ant-card:hover]:!translate-y-0" } : undefined} styles={flat ? { container: { boxShadow: "none", border: "1px solid var(--border)" } } : undefined}>
+        <Modal title={t("prompts.library")} open={open} onCancel={() => onOpenChange(false)} footer={null} width={flat ? "min(1360px, calc(100vw - 48px))" : 880} centered classNames={flat ? { root: "image-workbench-overlay", body: "[&_button]:!shadow-none [&_.ant-card]:!shadow-none [&_.ant-card:hover]:!translate-y-0" } : undefined} styles={flat ? { container: { boxShadow: "none", border: "1px solid var(--border)" } } : undefined}>
             <div className={cn("grid min-h-0 gap-5", flat ? "h-[min(76dvh,900px)]" : "h-[62dvh]", (showCategories || showTags) && (flat ? "sm:grid-cols-[220px_minmax(0,1fr)]" : "sm:grid-cols-[200px_minmax(0,1fr)]"))} data-canvas-no-zoom onWheelCapture={(event) => event.stopPropagation()}>
                 {showCategories || showTags ? <aside className="thin-scrollbar min-h-0 overflow-y-auto border-r border-stone-200 pr-4 dark:border-stone-800">
                     {showCategories ? <><div className="mb-2 text-xs font-semibold uppercase tracking-widest text-stone-400 dark:text-stone-500">{t("prompts.category")}</div><div className="flex flex-wrap gap-1.5">

@@ -492,7 +492,7 @@ export default function ImagePage() {
                                 <Button type="primary" className="!h-9 !min-w-28 !gap-2 !rounded-lg !px-4 !text-sm !font-medium disabled:!border-transparent disabled:!bg-muted/60 disabled:!text-muted-foreground/50" icon={<Sparkles className="size-4" />} loading={running} disabled={!canGenerate || running} onClick={() => void generate()}>{t("workbench.generate")}{generationCount > 1 ? ` (${generationCount})` : ""}</Button>
                             </div>
                         </div>
-                        <Input.TextArea id="image-prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={4} placeholder={t("imageWorkbench.promptPlaceholder")} className="!min-h-[96px] !flex-1 !resize-none !rounded-lg !border-border !bg-muted/20 !shadow-none hover:!border-input hover:!bg-muted/30 hover:!shadow-none focus:!border-input focus:!bg-muted/40 focus:!shadow-none" />
+                        <Input.TextArea id="image-prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={4} placeholder={t("imageWorkbench.promptPlaceholder")} className="app-prompt-input !min-h-[96px] !flex-1" />
                     </div>
                 </section>
                 <input

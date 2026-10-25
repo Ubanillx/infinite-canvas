@@ -14,6 +14,7 @@ const neutral = {
         itemText: lightPalette.text,
         tableSelectedBg: "rgba(48, 51, 47, 0.04)",
         tableSelectedHoverBg: "rgba(48, 51, 47, 0.07)",
+        input: { hoverBorder: "#e1e2dc", activeBorder: "#d5d6cf", hoverBg: "#f8f8f5", activeBg: lightPalette.soft },
     },
     dark: {
         primary: "#fafafa",
@@ -26,11 +27,13 @@ const neutral = {
         itemText: "#fafafa",
         tableSelectedBg: "rgba(255, 255, 255, 0.08)",
         tableSelectedHoverBg: "rgba(255, 255, 255, 0.12)",
+        input: { hoverBorder: "rgba(255, 255, 255, 0.22)", activeBorder: "rgba(255, 255, 255, 0.28)", hoverBg: "rgba(255, 255, 255, 0.03)", activeBg: "rgba(255, 255, 255, 0.06)" },
     },
 };
 
 export function getAntThemeConfig(dark: boolean): ThemeConfig {
     const color = dark ? neutral.dark : neutral.light;
+    const inputTokens = { hoverBorderColor: color.input.hoverBorder, activeBorderColor: color.input.activeBorder, activeShadow: "none", errorActiveShadow: "none", warningActiveShadow: "none", hoverBg: color.input.hoverBg, activeBg: color.input.activeBg };
 
     return {
         algorithm: dark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
@@ -90,7 +93,12 @@ export function getAntThemeConfig(dark: boolean): ThemeConfig {
                 optionActiveBg: color.itemHoverBg,
                 optionSelectedBg: color.itemSelectedBg,
                 optionSelectedColor: color.itemText,
+                hoverBorderColor: color.input.hoverBorder,
+                activeBorderColor: color.input.activeBorder,
+                activeOutlineColor: "transparent",
             },
+            Input: inputTokens,
+            InputNumber: inputTokens,
             Table: {
                 rowSelectedBg: color.tableSelectedBg,
                 rowSelectedHoverBg: color.tableSelectedHoverBg,

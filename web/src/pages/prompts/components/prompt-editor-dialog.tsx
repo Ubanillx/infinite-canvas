@@ -96,9 +96,9 @@ export function PromptEditorDialog({ open, prompt, onClose, onSave, onError }: {
     return (
         <Modal title={prompt ? t("prompts.edit") : t("prompts.create")} open={open} onCancel={() => { if (!saving && !generatingImage && !rewriting) onClose(); }} onOk={() => void save()} okText={t("prompts.save")} okButtonProps={{ loading: saving, disabled: generatingImage || rewriting, className: "!shadow-none" }} width={720} destroyOnHidden styles={{ container: { boxShadow: "none", border: "1px solid var(--border)" } }}>
             <Form form={form} layout="vertical" className="pt-3" initialValues={{ shared: false }}>
-                <Form.Item name="title" label={t("prompts.promptTitle")} rules={[{ required: true, whitespace: true, message: t("prompts.titleRequired") }]}><Input className="!border-border/50 !bg-accent/20 !shadow-none hover:!border-border/50 focus:!border-border/50 focus:!bg-accent/35" /></Form.Item>
+                <Form.Item name="title" label={t("prompts.promptTitle")} rules={[{ required: true, whitespace: true, message: t("prompts.titleRequired") }]}><Input /></Form.Item>
                 <Form.Item name="prompt" label={t("prompts.promptText")} rules={[{ required: true, whitespace: true, message: t("prompts.textRequired") }]}>
-                    <Input.TextArea rows={8} className="!border-border/50 !bg-accent/20 !shadow-none hover:!border-border/50 focus:!border-border/50 focus:!bg-accent/35" placeholder={t("prompts.promptPlaceholder")} />
+                    <Input.TextArea rows={8} placeholder={t("prompts.promptPlaceholder")} />
                 </Form.Item>
                 <div className="mb-4 flex flex-wrap items-center gap-2">
                     <Button className="!shadow-none" icon={<ImagePlus className="size-4" />} loading={generatingImage} disabled={rewriting} onClick={() => void generateImage()}>{t("prompts.aiGenerateImage")}</Button>
@@ -106,7 +106,7 @@ export function PromptEditorDialog({ open, prompt, onClose, onSave, onError }: {
                     <span className="text-xs text-muted-foreground">{t("prompts.aiDraftHint")}</span>
                 </div>
                 {coverPreview ? <div className="mb-4 flex items-end gap-3"><Image src={coverPreview} alt={t("prompts.exampleImage")} className="!h-28 !w-40 rounded-md !object-cover" /><Button type="text" size="small" onClick={() => { setCoverDataUrl(null); setCoverPreview(""); }}>{t("prompts.removeImage")}</Button></div> : null}
-                <Form.Item name="tagsText" label={t("prompts.tags")}><Input className="!border-border/50 !bg-accent/20 !shadow-none hover:!border-border/50 focus:!border-border/50 focus:!bg-accent/35" placeholder={t("prompts.tagsHint")} /></Form.Item>
+                <Form.Item name="tagsText" label={t("prompts.tags")}><Input placeholder={t("prompts.tagsHint")} /></Form.Item>
                 <Form.Item name="shared" label={t("prompts.shareWithEveryone")} valuePropName="checked"><Switch /></Form.Item>
                 <p className="-mt-4 text-xs text-muted-foreground">{t("prompts.shareHint")}</p>
             </Form>

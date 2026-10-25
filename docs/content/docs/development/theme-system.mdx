@@ -29,6 +29,8 @@ Use semantic classes such as `bg-background`, `bg-card`, `bg-muted`, `text-foreg
 ## Components and feedback
 
 - Distinguish cards, fields, and selections with thin borders and slight surface changes. Avoid broad shadows, decorative dot grids, high-contrast outlines, and expanding click shadows; a small soft shadow is acceptable where a floating layer needs separation.
+- antd input controls (`Input`, `Input.TextArea`, `InputNumber`, `Select`) use only slight surface changes and thin borders across default, hover, and focus: no 2px expanding focus ring, and no near-white outline in dark mode. These colors live in the component tokens in `web/src/lib/app-theme.ts`; individual components do not override them.
+- Ordinary forms, such as the prompt editor, use those global states directly without inline border or shadow overrides. The image and video studio prompt fields need a full-width tinted surface, so they reuse the shared `app-prompt-input` class, which only layers the surface steps while borders and focus still come from the global tokens.
 - Search fields across the app use slight surface changes for default, hover, and focus states without prominent borders or shadows; focus must remain perceptible.
 - Make primary actions clear without oversizing them. Group related actions nearby instead of displaying every function at once; controls remain easy to click and icon-only actions have accessible names.
 - Button presses use only a slight brightness change, without expanding waves or press shadows. Destructive actions keep their semantic color, and keyboard focus remains perceptible.

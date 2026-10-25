@@ -271,6 +271,20 @@
         outline: none;
     }
 
+    .app-prompt-input.ant-input {
+        border-radius: var(--radius-lg) !important;
+        background: color-mix(in oklab, var(--muted) 20%, transparent) !important;
+        resize: none;
+    }
+
+    .app-prompt-input.ant-input:hover {
+        background: color-mix(in oklab, var(--muted) 30%, transparent) !important;
+    }
+
+    .app-prompt-input.ant-input:focus {
+        background: color-mix(in oklab, var(--muted) 40%, transparent) !important;
+    }
+
     .thin-scrollbar {
         scrollbar-color: rgba(120, 113, 108, 0.45) transparent;
         scrollbar-width: thin;
@@ -336,35 +350,6 @@
         opacity: 1;
     }
 
-    .canvas-control-select.ant-select .ant-select-selector,
-    .canvas-control-number.ant-input-number {
-        border-color: rgba(120, 113, 108, 0.32) !important;
-        box-shadow: none !important;
-    }
-
-    .canvas-compact-control.canvas-control-select.ant-select {
-        height: 100%;
-    }
-
-    .canvas-compact-control.canvas-control-select.ant-select .ant-select-selector,
-    .canvas-compact-control.canvas-control-number.ant-input-number {
-        height: 100% !important;
-    }
-
-    .canvas-compact-control.canvas-control-select.ant-select .ant-select-selection-item,
-    .canvas-compact-control.canvas-control-select.ant-select .ant-select-selection-placeholder {
-        align-items: center;
-        display: flex;
-    }
-
-    .canvas-compact-control.canvas-control-select.ant-select .ant-select-selection-item,
-    .canvas-compact-control.canvas-control-select.ant-select .ant-select-selection-placeholder,
-    .canvas-compact-control.canvas-control-select.ant-select .ant-select-selection-search-input,
-    .canvas-compact-control.canvas-control-number.ant-input-number .ant-input-number-input {
-        height: 100% !important;
-        line-height: 1 !important;
-    }
-
     .canvas-composer-icon.ant-btn {
         flex: 0 0 32px;
         width: 32px;
@@ -428,21 +413,6 @@
         .canvas-composer-tools .canvas-select-chevron {
             display: inline;
         }
-    }
-
-    .canvas-control-select.ant-select-focused .ant-select-selector,
-    .canvas-control-number.ant-input-number-focused {
-        border-color: #a8a29e !important;
-    }
-
-    .dark .canvas-control-select.ant-select .ant-select-selector,
-    .dark .canvas-control-number.ant-input-number {
-        border-color: rgba(214, 211, 209, 0.2) !important;
-    }
-
-    .dark .canvas-control-select.ant-select-focused .ant-select-selector,
-    .dark .canvas-control-number.ant-input-number-focused {
-        border-color: #78716c !important;
     }
 
     .canvas-image-settings-popover .ant-popover-inner {
