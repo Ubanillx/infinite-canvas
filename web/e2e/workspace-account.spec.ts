@@ -1,0 +1,40 @@
+import { randomUUID } from "node:crypto";
+import { test, expect } from "@playwright/test";
+
+test("registration, logout and login use real sessions instead of cached workspace identity", async ({ page }, info) => {
+    const username = `account-${randomUUID()}`;
+    const password = randomUUID();
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.addInitScript(() => {
+        if (sessionStorage.getItem("account-test-seeded")) return;
+        sessionStorage.setItem("account-test-seeded", "1");
+        const stale = { id: "not-a-membership", name: "Cached stranger workspace", role: "owner", createdAt: new Date().toISOString() };
+        localStorage.setItem("infinite-canvas:active-workspace", JSON.stringify(stale));
+        localStorage.setItem("infinite-canvas:known-workspaces", JSON.stringify([stale]));
+    });
+    await page.goto("/canvas");
+    await expect(page.getByRole("heading", { name: "登录工作区" })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Cached stranger workspace/ })).toHaveCount(0);
+    await expect(page.locator(".app-loading-overlay")).toBeHidden();
+    await page.screenshot({ path: info.outputPath("account-login.png") });
+    await page.getByRole("button", { name: "注册账户", exact: true }).click();
+    await page.getByLabel("用户名", { exact: true }).fill(username);
+    await page.getByLabel("密码", { exact: true }).fill(password);
+    await page.getByRole("button", { name: "注册并创建工作区", exact: true }).click();
+    const workspace = page.getByRole("button", { name: new RegExp(`^${username}的工作区`) });
+    await expect(workspace).toBeVisible();
+    await workspace.click();
+    await expect(page.getByRole("button", { name: "新建画布", exact: true }).first()).toBeVisible();
+    const before = await (await page.request.get("/api/auth/me")).json();
+    expect(before.user.username).toBe(username);
+    expect((await page.request.post("/api/auth/logout")).status()).toBe(200);
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "登录工作区" })).toBeVisible();
+    await page.getByLabel("用户名", { exact: true }).fill(username);
+    await page.getByLabel("密码", { exact: true }).fill(password);
+    await page.getByRole("button", { name: "登录", exact: true }).click();
+    await expect(workspace).toBeVisible();
+    expect((await (await page.request.get("/api/auth/me")).json()).user.id).toBe(before.user.id);
+    expect(errors).toEqual([]);
+});

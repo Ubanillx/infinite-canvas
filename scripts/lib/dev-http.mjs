@@ -13,7 +13,7 @@ export async function requestJson(url, { method = "GET", headers, body, timeout 
     } catch {
         data = text;
     }
-    return { status: response.status, ok: response.ok, data, text };
+    return { status: response.status, ok: response.ok, data, text, setCookie: response.headers.get("set-cookie") };
 }
 
 /** 在指定工作区下创建隔离的工作区记录，用于验证接口与测试数据。 */
@@ -24,7 +24,7 @@ export async function createWorkspace(baseUrl, name = `tooling-${Date.now().toSt
 }
 
 /** 探活：轮询指定接口直到返回非错误状态，超时后抛出最后一次失败原因。 */
-export async function waitForServer(baseUrl, { timeoutMs = 60000, intervalMs = 500, healthPath = "/api/workspaces" } = {}) {
+export async function waitForServer(baseUrl, { timeoutMs = 60000, intervalMs = 500, healthPath = "/" } = {}) {
     const deadline = Date.now() + timeoutMs;
     let last = "no response";
     while (Date.now() < deadline) {

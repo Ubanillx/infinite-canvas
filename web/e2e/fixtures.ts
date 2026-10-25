@@ -1,4 +1,4 @@
-import { test as base, expect } from "@playwright/test";
+import { test as base, expect } from "./auth";
 
 export const test = base.extend<{ diagnostics: void }>({
     diagnostics: [async ({ page }, use, info) => {

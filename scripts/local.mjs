@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, appendFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,11 +49,18 @@ function checkLogs(files) {
 let code = 0;
 if (command === "dev" || command === "e2e-server") {
     const testing = command === "e2e-server";
-    const data = process.env.INFINITE_CANVAS_DATA_DIR || resolve(artifacts, "dev-data");
-    if (testing && !process.env.INFINITE_CANVAS_DATA_DIR) throw new Error("E2E requires an isolated data directory");
     const log = process.env.LOCAL_SERVER_LOG || resolve(artifacts, "dev-server.jsonl");
-    console.log(`Data: ${data}\nLog: ${log}`);
-    code = await run(process.execPath, ["--bun", "node_modules/vite/bin/vite.js", "--host", "127.0.0.1", "--port", testing ? "3100" : "3000", "--strictPort"], "web", { INFINITE_CANVAS_DATA_DIR: data }, log);
+    // E2E 必须指向独立的 database 与 bucket；缺少时拒绝启动，避免污染开发数据。
+    const env = {};
+    if (testing) {
+        if (!process.env.DATABASE_URL || !process.env.S3_BUCKET) throw new Error("E2E requires DATABASE_URL and S3_BUCKET for an isolated database and bucket");
+        env.DATABASE_URL = process.env.DATABASE_URL;
+        env.S3_BUCKET = process.env.S3_BUCKET;
+        console.log(`Database: ${process.env.DATABASE_URL}\nBucket:   ${process.env.S3_BUCKET}\nLog:      ${log}`);
+    } else {
+        console.log(`Log: ${log}`);
+    }
+    code = await run(process.execPath, ["--bun", "node_modules/vite/bin/vite.js", "--host", "127.0.0.1", "--port", testing ? "3100" : "3000", "--strictPort"], "web", env, log);
 } else if (command === "test") {
     for (const [exe, args, cwd] of [
         [process.execPath, ["test", "tests", "src/server/ai-response.test.mjs"], "web"],
@@ -68,9 +75,21 @@ if (command === "dev" || command === "e2e-server") {
     const runDir = resolve(artifacts, `e2e-${new Date().toISOString().replace(/[:.]/g, "-")}`);
     mkdirSync(runDir, { recursive: true });
     const log = resolve(runDir, "server.jsonl");
-    code = await run("node", ["node_modules/@playwright/test/cli.js", "test", ...process.argv.slice(3)], "web", {
-        INFINITE_CANVAS_DATA_DIR: resolve(runDir, "data"), LOCAL_SERVER_LOG: log,
-    });
+    const runId = `${Date.now().toString(36)}_${process.pid}`;
+    const middleware = JSON.parse(execFileSync("node", ["scripts/e2e-middleware.mjs", "up", runId], { encoding: "utf8" }).trim());
+    console.log(`E2E database: ${middleware.database}\nE2E bucket:   ${middleware.bucket}`);
+    try {
+        code = await run("node", ["node_modules/@playwright/test/cli.js", "test", ...process.argv.slice(3)], "web", {
+            DATABASE_URL: middleware.databaseUrl, S3_BUCKET: middleware.bucket, LOCAL_SERVER_LOG: log,
+            PLAYWRIGHT_OUTPUT_DIR: resolve(runDir, "test-results"), PLAYWRIGHT_HTML_REPORT: resolve(runDir, "report"),
+        }, resolve(runDir, "tests.jsonl"));
+    } finally {
+        try {
+            execFileSync("node", ["scripts/e2e-middleware.mjs", "down", runId], { stdio: "inherit" });
+        } catch {
+            console.error(`E2E cleanup failed for run ${runId}; remove database ${middleware.database} manually`);
+        }
+    }
     if (existsSync(log)) code = checkLogs([log]) || code;
     console.log(`E2E artifacts: ${runDir}`);
 } else if (command === "logs") {

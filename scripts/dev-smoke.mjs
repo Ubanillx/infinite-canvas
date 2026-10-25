@@ -31,36 +31,45 @@ const check = async (name, run) => {
 };
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 const workspaces = [];
+let cookie = "";
+const authenticatedRequest = (url, options = {}) => requestJson(url, { ...options, headers: { cookie, ...options.headers } });
 
 try {
+    await check("register an isolated smoke account", async () => {
+        const response = await requestJson(`${baseUrl}/api/auth/register`, { method: "POST", body: { username: `smoke-${crypto.randomUUID()}`, password: crypto.randomUUID() } });
+        assert(response.status === 201, `registration failed: ${response.status}`);
+        cookie = response.setCookie?.split(";")[0] || "";
+        assert(cookie, "session cookie missing");
+    });
     await check("GET /api/workspaces returns a list", async () => {
-        const response = await requestJson(`${baseUrl}/api/workspaces`);
+        const response = await authenticatedRequest(`${baseUrl}/api/workspaces`);
         assert(response.status === 200, `unexpected status ${response.status}`);
         assert(Array.isArray(response.data?.workspaces), "workspaces is not an array");
     });
 
     await check("POST /api/workspaces creates isolated workspaces", async () => {
         for (const suffix of ["a", "b"]) {
-            const response = await requestJson(`${baseUrl}/api/workspaces`, { method: "POST", body: { name: `smoke-${Date.now()}-${suffix}` } });
+            const response = await authenticatedRequest(`${baseUrl}/api/workspaces`, { method: "POST", body: { name: `smoke-${Date.now()}-${suffix}` } });
             assert(response.status === 201, `unexpected status ${response.status}`);
             workspaces.push(response.data.workspace.id);
         }
     });
 
     await check("GET /api/data/canvas requires a workspace header", async () => {
-        const response = await requestJson(`${baseUrl}/api/data/canvas`);
+        const response = await authenticatedRequest(`${baseUrl}/api/data/canvas`);
         assert(response.status === 403, `expected 403, got ${response.status}`);
     });
 
     await check("workspace data round-trips and isolates workspaces", async () => {
         const headers = { "x-infinite-canvas-workspace": workspaces[0] };
-        const write = await requestJson(`${baseUrl}/api/data/canvas`, { method: "PUT", headers, body: { revision: 0, payload: { marker: "smoke" } } });
+        const payload = { version: 0, state: { projects: [], folders: [], marker: "smoke" } };
+        const write = await authenticatedRequest(`${baseUrl}/api/data/canvas`, { method: "PUT", headers, body: { revision: 0, payload } });
         assert(write.status === 200 && write.data.revision === 1, `write failed: ${write.status} ${write.text}`);
-        const read = await requestJson(`${baseUrl}/api/data/canvas`, { headers });
-        assert(read.data?.payload?.marker === "smoke", "payload was not persisted");
-        const stale = await requestJson(`${baseUrl}/api/data/canvas`, { method: "PUT", headers, body: { revision: 0, payload: { marker: "stale" } } });
+        const read = await authenticatedRequest(`${baseUrl}/api/data/canvas`, { headers });
+        assert(read.data?.payload?.state?.marker === "smoke", "payload was not persisted");
+        const stale = await authenticatedRequest(`${baseUrl}/api/data/canvas`, { method: "PUT", headers, body: { revision: 0, payload } });
         assert(stale.status === 409, `expected 409 on stale revision, got ${stale.status}`);
-        const other = await requestJson(`${baseUrl}/api/data/canvas`, { headers: { "x-infinite-canvas-workspace": workspaces[1] } });
+        const other = await authenticatedRequest(`${baseUrl}/api/data/canvas`, { headers: { "x-infinite-canvas-workspace": workspaces[1] } });
         assert(other.data?.payload === null, "workspaces are not isolated");
     });
 

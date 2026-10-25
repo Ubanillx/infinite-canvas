@@ -15,7 +15,7 @@ export const SUSPECT = /\b(error|fatal|exception|unhandled)\b|request failed|pro
  * 启动受管的开发服务器：输出同时进入终端和 JSONL 日志。
  * 返回句柄后可以继续做浏览器验证，最后通过 stop() 关闭服务。
  */
-export async function startDevServer({ port = 3000, dataDir, logFile, env = {}, quiet = false, readyPath = "/api/workspaces", readyTimeoutMs = 60000 } = {}) {
+export async function startDevServer({ port = 3000, dataDir, logFile, env = {}, quiet = false, readyPath = "/", readyTimeoutMs = 60000 } = {}) {
     const web = projectDir("web");
     if (await portAnswers(port)) throw new Error(`Port ${port} is already in use; stop the other server or pass --port`);
     if (logFile) mkdirSync(dirname(logFile), { recursive: true });
