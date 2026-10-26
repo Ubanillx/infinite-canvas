@@ -4,17 +4,19 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { stripVTControlCharacters } from "node:util";
+import { homedir } from "node:os";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const artifacts = resolve(root, ".local");
 const command = process.argv[2];
 mkdirSync(artifacts, { recursive: true });
 
-function run(executable, args, cwd, env = {}, logFile) {
+function run(executable, args, cwd, env = {}, logFile, signal) {
     return new Promise((done) => {
-        const child = spawn(executable, args, { cwd: resolve(root, cwd), env: { ...process.env, ...env }, stdio: ["inherit", "pipe", "pipe"] });
+        const child = spawn(executable, args, { cwd: resolve(root, cwd), env: { ...process.env, ...env }, stdio: ["inherit", "pipe", "pipe"], signal });
         for (const [stream, output] of [[child.stdout, process.stdout], [child.stderr, process.stderr]]) {
             createInterface({ input: stream }).on("line", (line) => {
+                if (cwd === "canvas-agent") line = line.replace(/(Connect token:)\s*\S+/i, "$1 [REDACTED]");
                 output.write(`${line}\n`);
                 if (logFile) appendFileSync(logFile, `${JSON.stringify({ time: new Date().toISOString(), message: stripVTControlCharacters(line) })}\n`);
             });
@@ -22,7 +24,7 @@ function run(executable, args, cwd, env = {}, logFile) {
         const stop = () => child.kill("SIGTERM");
         process.on("SIGINT", stop);
         process.on("SIGTERM", stop);
-        child.on("error", (error) => { console.error(error.message); });
+        child.on("error", (error) => { if (error.name !== "AbortError") console.error(error.message); });
         child.on("close", (code) => {
             process.off("SIGINT", stop);
             process.off("SIGTERM", stop);
@@ -47,11 +49,28 @@ function checkLogs(files) {
 }
 
 let code = 0;
+const agentEnv = { INFINITE_CANVAS_DATA_DIR: process.env.INFINITE_CANVAS_DATA_DIR || resolve(homedir(), ".infinite-canvas/data") };
+const agentArgs = ["--import", "tsx", "src/index.ts"];
+async function agentRunning() {
+    try {
+        const config = JSON.parse(readFileSync(resolve(homedir(), ".infinite-canvas/canvas-agent.json"), "utf8"));
+        const response = await fetch(`${config.url}/health`);
+        if (!response.ok) return false;
+        if ((await response.json()).protocolVersion !== 7) throw new Error("Canvas Agent 协议已更新，请停止旧 Agent 后重新启动 npm run dev");
+        return true;
+    } catch (error) {
+        if (error instanceof Error && error.message.includes("协议已更新")) throw error;
+        return false;
+    }
+}
+if (command === "agent") {
+    code = await run("node", [...agentArgs, "--debug"], "canvas-agent", agentEnv, resolve(artifacts, "dev-agent.jsonl"));
+} else
 if (command === "dev" || command === "e2e-server") {
     const testing = command === "e2e-server";
     const log = process.env.LOCAL_SERVER_LOG || resolve(artifacts, "dev-server.jsonl");
     // E2E 必须指向独立的 database 与 bucket；缺少时拒绝启动，避免污染开发数据。
-    const env = {};
+    const env = { ...agentEnv };
     if (testing) {
         if (!process.env.DATABASE_URL || !process.env.S3_BUCKET) throw new Error("E2E requires DATABASE_URL and S3_BUCKET for an isolated database and bucket");
         env.DATABASE_URL = process.env.DATABASE_URL;
@@ -60,7 +79,14 @@ if (command === "dev" || command === "e2e-server") {
     } else {
         console.log(`Log: ${log}`);
     }
-    code = await run(process.execPath, ["--bun", "node_modules/vite/bin/vite.js", "--host", "127.0.0.1", "--port", testing ? "3100" : "3000", "--strictPort"], "web", env, log);
+    const stopAgent = new AbortController();
+    const agent = !testing && !await agentRunning() ? run("node", agentArgs, "canvas-agent", agentEnv, resolve(artifacts, "dev-agent.jsonl"), stopAgent.signal) : null;
+    try {
+        code = await run(process.execPath, ["--bun", "node_modules/vite/bin/vite.js", "--host", "127.0.0.1", "--port", testing ? "3100" : "3000", "--strictPort"], "web", env, log);
+    } finally {
+        stopAgent.abort();
+        await agent;
+    }
 } else if (command === "test") {
     for (const [exe, args, cwd] of [
         [process.execPath, ["test", "tests", "src/server/ai-response.test.mjs"], "web"],

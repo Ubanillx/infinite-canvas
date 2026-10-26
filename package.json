@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "dev": "bun scripts/local.mjs dev",
-    "dev:agent": "npm --prefix canvas-agent run debug",
+    "dev:agent": "bun scripts/local.mjs agent",
     "dev:server": "node scripts/dev-run.mjs",
     "dev:smoke": "node scripts/dev-smoke.mjs",
     "dev:probe": "node scripts/dev-probe.mjs",

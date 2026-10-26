@@ -5,7 +5,7 @@ description: 前端优先的本地开发方式
 
 # 本地开发
 
-当前主应用以 `web/` 前端为主，AI 请求由浏览器前台直连用户自己的 OpenAI 兼容接口。
+当前主应用以 `web/` 前端为主；AI 助手的 Codex/Pi 请求由同源服务端网关转发到本机 Canvas Agent，浏览器不持有 Agent 或渠道密钥。
 
 ## 1. 启动中间件
 
@@ -17,13 +17,9 @@ docker compose -f docker-compose.middleware.yml up -d --wait
 
 默认端口为 PostgreSQL `5433`、RustFS `9010`（控制台 `9011`），刻意避开常见的 5432/9000。应用内置了对应的默认连接值，不需要额外配置即可启动；需要覆盖时参考 `deploy/middleware.env.example`。
 
-## 2. 启动前端
+## 2. 启动前端和 Canvas Agent
 
-```bash
-cd web
-bun install
-bun run dev
-```
+从仓库根目录执行 `npm run dev`；它会共用同一份 `INFINITE_CANVAS_DATA_DIR` 启动 Vite 和 Canvas Agent。只需 Agent 时执行 `npm run dev:agent`。
 
 前端默认访问：
 
@@ -31,7 +27,7 @@ bun run dev
 http://localhost:3000
 ```
 
-开发服务器的接口与中间件共用同一进程内的服务端逻辑：账号认证、工作区数据、媒体索引走 PostgreSQL，媒体对象走 RustFS。浏览器仍然只访问同源的 `/api/*`，不直连数据库或对象存储。
+开发服务器的接口与中间件共用同一进程内的服务端逻辑：账号认证、工作区数据、媒体索引走 PostgreSQL，媒体对象走 RustFS。浏览器仍然只访问同源的 `/api/*`；Agent 网关会校验登录工作区成员身份，不暴露本机 Agent 端口。
 
 ## 3. 配置模型
 

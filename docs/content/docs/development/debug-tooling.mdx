@@ -9,11 +9,12 @@ Every script under `scripts/` follows one rule: a run writes its data, logs, scr
 
 ## Layout
 
-- `scripts/local.mjs`: the existing unified entry (`dev`, `test`, `e2e`, `logs`, `doctor`), unchanged.
+- `scripts/local.mjs`: unified entry (`dev`, `agent`, `test`, `e2e`, `logs`, `doctor`); development supervises both Web and Canvas Agent.
 - `scripts/dev-run.mjs`: supervised development server. Usable as a command, or import `startDevServer()` to keep working after startup.
 - `scripts/dev-smoke.mjs`: API and SPA-shell smoke check without a browser; answers in seconds.
 - `scripts/dev-probe.mjs`: real Chromium visits routes, collects console errors, uncaught exceptions and failed requests, and saves screenshots.
 - `scripts/dev-browse.mjs`: interactive browser debugging with repeatable steps.
+- `scripts/dev-agent-check.mjs`: a separate browser/account checks the Agent gateway, initialization and engine switching; `--codex` and `--pi` opt into a real request for the respective engine. Pi requires a configured text channel and also checks reply persistence after refresh.
 - `scripts/dev-shot.mjs`: one-command screenshot for quick UI checks.
 - `scripts/dev-logs.mjs`: list, scan and follow JSONL run logs under `.local`.
 - `scripts/lib/dev-env.mjs`, `dev-http.mjs`, `dev-browser.mjs`: shared directory, request and browser helpers used by the scripts above.
@@ -22,7 +23,9 @@ Every script under `scripts/` follows one rule: a run writes its data, logs, scr
 
 | Command | Purpose |
 | --- | --- |
-| `npm run dev` | Development server with data in `.local/dev-data` and log in `.local/dev-server.jsonl` |
+| `npm run dev` | Web and Canvas Agent share `INFINITE_CANVAS_DATA_DIR`; Web log is `.local/dev-server.jsonl` |
+| `node scripts/dev-agent-check.mjs --url http://127.0.0.1:3000 --codex` | Reuse the server to check connection, a real Codex reply, Pi refresh and engine recovery; artifacts go to `.local/agent-check-*/` |
+| `node scripts/dev-agent-check.mjs --url http://127.0.0.1:3000 --pi` | Check a real Pi provider reply and its recovery after refresh using the saved server channel |
 | `npm run dev:server` | Same server, started by `scripts/dev-run.mjs`, with a log scan on exit |
 | `npm run dev:smoke` | Isolated server plus checks for workspaces, data isolation, revision conflicts and the SPA shell |
 | `npm run dev:smoke -- --url http://127.0.0.1:3000` | Reuse a running server instead of starting a new one |

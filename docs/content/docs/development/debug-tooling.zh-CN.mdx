@@ -9,11 +9,12 @@ description: 可复用的日志、接口冒烟、浏览器探针和 E2E 工具
 
 ## 目录约定
 
-- `scripts/local.mjs`：原有统一入口（`dev`、`test`、`e2e`、`logs`、`doctor`），保持不动。
+- `scripts/local.mjs`：统一入口（`dev`、`agent`、`test`、`e2e`、`logs`、`doctor`），开发时同时管理 Web 与 Canvas Agent。
 - `scripts/dev-run.mjs`：受管开发服务器。可当命令用，也可以在脚本里 `startDevServer()` 启动后继续做验证。
 - `scripts/dev-smoke.mjs`：接口与页面外壳冒烟，不开浏览器，几秒内给出结论。
 - `scripts/dev-probe.mjs`：真实 Chromium 打开页面，收集控制台、未捕获异常和失败请求，并截图。
 - `scripts/dev-browse.mjs`：交互式浏览器调试，按步骤操作真实页面。
+- `scripts/dev-agent-check.mjs`：独立浏览器和测试账号验证 Agent 网关、初始化与引擎切换；`--codex`、`--pi` 分别实际请求对应引擎的模型。Pi 需先配置文本渠道，并会验证真实回复刷新后仍能恢复。
 - `scripts/dev-shot.mjs`：单条命令截图，适合快速看 UI 效果。
 - `scripts/dev-logs.mjs`：列出、扫描、跟踪 `.local` 下的 JSONL 运行日志。
 - `scripts/lib/dev-env.mjs`、`dev-http.mjs`、`dev-browser.mjs`：上面脚本共用的目录、请求和浏览器能力。
@@ -22,7 +23,9 @@ description: 可复用的日志、接口冒烟、浏览器探针和 E2E 工具
 
 | 命令 | 作用 |
 | --- | --- |
-| `npm run dev` | 开发服务器，数据在 `.local/dev-data`，日志 `.local/dev-server.jsonl` |
+| `npm run dev` | 启动 Web 和 Canvas Agent，共用 `INFINITE_CANVAS_DATA_DIR`，Web 日志 `.local/dev-server.jsonl` |
+| `node scripts/dev-agent-check.mjs --url http://127.0.0.1:3000 --codex` | 复用现有服务验证 Agent 连接、真实 Codex 回复、Pi 刷新与切回会话；截图和报告写入 `.local/agent-check-*/` |
+| `node scripts/dev-agent-check.mjs --url http://127.0.0.1:3000 --pi` | 使用已保存的服务端渠道验证真实 Pi 回复与刷新恢复 |
 | `npm run dev:server` | 同上，由 `scripts/dev-run.mjs` 受管启动，退出时自动扫描日志 |
 | `npm run dev:smoke` | 起隔离服务并验证工作区接口、数据隔离、版本冲突和页面外壳 |
 | `npm run dev:smoke -- --url http://127.0.0.1:3000` | 不新起服务，直接打已经在跑的开发服务器 |

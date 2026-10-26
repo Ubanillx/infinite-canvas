@@ -5,7 +5,7 @@ description: Frontend-first local development
 
 # Local Development
 
-The main application lives in `web/`; its development server also runs the workspace APIs. The browser sends AI requests to the configured OpenAI-compatible endpoint. Local state and logs are isolated from normal user data under the repository's ignored `.local/` directory.
+The main application lives in `web/`; its development server also runs the workspace APIs. Codex/Pi requests from the AI Assistant go through the same-origin server gateway to the local Canvas Agent, so the browser does not receive Agent or channel credentials. Local state and logs are isolated from normal user data under the repository's ignored `.local/` directory.
 
 ## Start the middleware
 
@@ -30,7 +30,7 @@ Node.js 22 and Python 3 are also needed for the full test suite. `--legacy-peer-
 
 ## Run locally
 
-From the repository root, run `npm run dev` and open `http://127.0.0.1:3000`. Accounts, workspace data and the media index live in PostgreSQL, media objects in RustFS; the browser still only calls same-origin `/api/*` routes. Server output is appended as JSONL to `.local/dev-server.jsonl`. To run the local Canvas Agent with debug logging in another terminal, run `npm run dev:agent`.
+From the repository root, run `npm run dev` and open `http://127.0.0.1:3000`. Accounts, workspace data and the media index live in PostgreSQL, media objects in RustFS; the browser still only calls same-origin `/api/*` routes. The command starts Vite and Canvas Agent with the same `INFINITE_CANVAS_DATA_DIR`; run `npm run dev:agent` when only the Agent is needed. Server output is appended as JSONL to `.local/dev-server.jsonl`.
 
 ## Tests and diagnostics
 
