@@ -21,26 +21,13 @@ import { extractMediaReferences, MEDIA_REFERENCE_DOMAINS, MediaReferenceError, r
 import { completeMediaIntent, createMediaIntent, failMediaIntent, type MediaIntentInput } from "./src/server/media-intents";
 import { readAgentAttachments, saveAgentAttachments, updateAgentAttachments } from "./src/server/agent-attachments";
 import { AgentAttachmentError } from "./src/lib/agent/agent-attachment-contract";
+import { canvasAgentProxyPath, forwardCanvasAgent } from "./src/server/canvas-agent-gateway";
+import { homedir } from "node:os";
 
 const webDir = dirname(fileURLToPath(import.meta.url));
 const localVersion = readFileSync(resolve(webDir, "../VERSION"), "utf8").trim() || "dev";
 const localChangelog = readFileSync(resolve(webDir, "../CHANGELOG.md"), "utf8");
-const canvasAgentProxyPath = "/api/canvas-agent";
-const canvasAgentProxy = {
-    target: "http://127.0.0.1:17371",
-    changeOrigin: true,
-    rewrite: (path: string) => path.replace(/^\/api\/canvas-agent/, ""),
-    headers: canvasAgentProxyHeaders(),
-};
-function canvasAgentProxyHeaders() {
-    try {
-        const configPath = process.env.CANVAS_AGENT_CONFIG || resolve(process.env.HOME || webDir, ".infinite-canvas/canvas-agent.json");
-        const config = JSON.parse(readFileSync(configPath, "utf8")) as { token?: unknown };
-        return typeof config.token === "string" && config.token ? { "x-canvas-agent-token": config.token } : {};
-    } catch {
-        return {};
-    }
-}
+const canvasAgentConfigPath = process.env.CANVAS_AGENT_CONFIG || resolve(homedir(), ".infinite-canvas/canvas-agent.json");
 
 function normalizeIp(value: string) {
     return value.trim().replace(/^::ffff:/, "");
@@ -204,6 +191,27 @@ async function workspaceContext(req: IncomingMessage, requestUrl = new URL(req.u
 
 function canWriteWorkspace(context: WorkspaceContext) {
     return context.role === "owner" || context.role === "editor";
+}
+
+function canvasAgentGateway(): Plugin {
+    const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+        const url = new URL(req.url || "/", "http://localhost");
+        if (!url.pathname.startsWith(`${canvasAgentProxyPath}/`)) return next();
+        try {
+            if (url.pathname !== `${canvasAgentProxyPath}/health`) {
+                const workspace = await workspaceContext(req, url);
+                if (!workspace) return sendJson(res, 403, { error: "工作区不存在或无权访问" });
+                if (req.method !== "GET" && !canWriteWorkspace(workspace)) return sendJson(res, 403, { error: "当前工作区为只读权限" });
+                req.headers["x-infinite-canvas-workspace"] = workspace.id;
+                url.searchParams.set("workspaceId", workspace.id);
+                req.url = `${url.pathname}${url.search}`;
+            }
+            await forwardCanvasAgent(req, res, canvasAgentConfigPath);
+        } catch {
+            if (!res.headersSent) sendJson(res, 503, { error: "Agent 网关暂时不可用" });
+        }
+    };
+    return { name: "canvas-agent-gateway", configureServer: (server) => { server.middlewares.use(middleware); }, configurePreviewServer: (server) => { server.middlewares.use(middleware); } };
 }
 
 async function withWorkspaceWrite<T>(context: WorkspaceContext, write: (tx: SqlExecutor) => Promise<T>) {
@@ -1296,9 +1304,8 @@ function localPluginsManifest(): Plugin {
 
 export default defineConfig({
     base: process.env.VITE_BASE || "/",
-    plugins: [react(), localPluginsManifest(), sessionContext(), authAccess(), serverApiAccessControl(), workspaceAccess(), workspaceMediaStorage(), workspaceDataAccess(), workspacePromptsAccess(), serverWebdavProxy(), serverConfigStorage(), aiProviderProxy(), promptSourceProxy(), remoteMediaProxy(), imageProxy()],
-    server: { proxy: { [canvasAgentProxyPath]: canvasAgentProxy } },
-    preview: { allowedHosts: (process.env.INFINITE_CANVAS_ALLOWED_HOSTS || "ubuntu-server").split(",").map((host) => host.trim()).filter(Boolean), proxy: { [canvasAgentProxyPath]: canvasAgentProxy } },
+    plugins: [react(), localPluginsManifest(), sessionContext(), authAccess(), serverApiAccessControl(), canvasAgentGateway(), workspaceAccess(), workspaceMediaStorage(), workspaceDataAccess(), workspacePromptsAccess(), serverWebdavProxy(), serverConfigStorage(), aiProviderProxy(), promptSourceProxy(), remoteMediaProxy(), imageProxy()],
+    preview: { allowedHosts: (process.env.INFINITE_CANVAS_ALLOWED_HOSTS || "ubuntu-server").split(",").map((host) => host.trim()).filter(Boolean) },
     resolve: {
         alias: {
             "@": resolve(webDir, "src"),
