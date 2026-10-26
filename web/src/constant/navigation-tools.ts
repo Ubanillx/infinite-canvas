@@ -1,4 +1,4 @@
-import { Cloud, Database, FileText, ImagePlus, Images, KeyRound, Settings2, Shapes, SlidersHorizontal, Video, Waypoints } from "lucide-react";
+import { Cloud, Database, FileText, ImagePlus, Images, KeyRound, LayoutTemplate, Settings2, Shapes, SlidersHorizontal, Video, Waypoints } from "lucide-react";
 import type { ConfigTabKey } from "@/stores/use-config-store";
 
 export const configSections = [
@@ -27,6 +27,10 @@ export const navigationTools = [
         icon: FileText,
     },
     {
+        slug: "templates",
+        icon: LayoutTemplate,
+    },
+    {
         slug: "assets",
         icon: Images,
     },
@@ -40,6 +44,6 @@ export type NavigationToolSlug = (typeof navigationTools)[number]["slug"];
 
 export const navigationGroups = [
     { key: "create", tools: navigationTools.slice(0, 3) },
-    { key: "resources", tools: navigationTools.slice(3, 5) },
-    { key: "settings", tools: navigationTools.slice(5) },
+    { key: "resources", tools: navigationTools.slice(3, 6) },
+    { key: "settings", tools: navigationTools.slice(6) },
 ] as const;

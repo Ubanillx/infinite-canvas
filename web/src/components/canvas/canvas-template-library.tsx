@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { App, Button, Input, Modal } from "antd";
+import { App, Button, Input } from "antd";
 import { Check, LayoutTemplate, Pencil, Search, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -9,7 +9,7 @@ import { getActiveWorkspace } from "@/lib/workspace";
 import { useCanvasTemplateStore } from "@/stores/canvas/use-canvas-template-store";
 import type { CanvasTemplate } from "@/types/canvas-template";
 
-export function CanvasTemplateGallery({ selectedId, onSelect, manage = false, disabled = false }: { selectedId?: string; onSelect: (template: CanvasTemplate) => void; manage?: boolean; disabled?: boolean }) {
+export function CanvasTemplateGallery({ selectedId, onSelect, manage = false, disabled = false, fullPage = false }: { selectedId?: string; onSelect: (template: CanvasTemplate) => void; manage?: boolean; disabled?: boolean; fullPage?: boolean }) {
     const { t } = useTranslation();
     const { message, modal } = App.useApp();
     const templates = useCanvasTemplateStore((state) => state.templates);
@@ -44,11 +44,12 @@ export function CanvasTemplateGallery({ selectedId, onSelect, manage = false, di
         },
     });
     return <>
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <Input className="app-search-input w-full sm:!w-72" prefix={<Search className="size-4 text-muted-foreground" />} value={keyword} allowClear placeholder={t("canvas.templates.search")} aria-label={t("canvas.templates.search")} onChange={(event) => setKeyword(event.target.value)} />
-            <span className="text-xs text-muted-foreground">{t("canvas.templates.count", { count: templates.length })}</span>
+        <div className={fullPage ? "mb-5 flex flex-wrap items-center justify-between gap-3 border-b border-border pb-5" : "mb-4 flex flex-wrap items-center justify-between gap-3"}>
+            {fullPage ? <span className="text-sm text-muted-foreground">{t("canvas.templates.count", { count: templates.length })}</span> : null}
+            <Input className={fullPage ? "app-search-input w-full sm:!ml-auto sm:!w-[min(26rem,100%)]" : "app-search-input w-full sm:!w-72"} prefix={<Search className="size-4 text-muted-foreground" />} value={keyword} allowClear placeholder={t("canvas.templates.search")} aria-label={t("canvas.templates.search")} onChange={(event) => setKeyword(event.target.value)} />
+            {!fullPage ? <span className="text-xs text-muted-foreground">{t("canvas.templates.count", { count: templates.length })}</span> : null}
         </div>
-        {loading ? <p role="status" className="py-12 text-center text-sm text-muted-foreground">{t("canvas.loading")}</p> : error ? <div role="alert" className="py-8 text-center"><p className="mb-4 text-sm text-red-500">{error}</p><Button onClick={() => void load().catch(() => undefined)}>{t("canvas.templates.retry")}</Button></div> : loaded && !matches.length ? <div className="flex flex-col items-center gap-3 py-12 text-center text-muted-foreground"><LayoutTemplate className="size-9 opacity-50" /><p className="text-sm">{t(keyword.trim() ? "canvas.templates.noMatches" : "canvas.templates.empty")}</p><p className="max-w-md text-xs leading-5">{t("canvas.templates.emptyHint")}</p></div> : <div className="grid max-h-[45dvh] grid-cols-1 gap-4 overflow-y-auto p-1 sm:grid-cols-2 lg:grid-cols-3">
+        {loading ? <p role="status" className="py-12 text-center text-sm text-muted-foreground">{t("canvas.loading")}</p> : error ? <div role="alert" className="py-8 text-center"><p className="mb-4 text-sm text-red-500">{error}</p><Button onClick={() => void load().catch(() => undefined)}>{t("canvas.templates.retry")}</Button></div> : loaded && !matches.length ? <div className="flex flex-col items-center gap-3 py-12 text-center text-muted-foreground"><LayoutTemplate className="size-9 opacity-50" /><p className="text-sm">{t(keyword.trim() ? "canvas.templates.noMatches" : "canvas.templates.empty")}</p><p className="max-w-md text-xs leading-5">{t("canvas.templates.emptyHint")}</p></div> : <div className={fullPage ? "grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5" : "grid max-h-[45dvh] grid-cols-1 gap-4 overflow-y-auto p-1 sm:grid-cols-2 lg:grid-cols-3"}>
             {matches.map((template) => <article key={template.id} className={`min-w-0 overflow-hidden rounded-lg border bg-card ${selectedId === template.id ? "border-foreground/50" : "border-border"}`}>
                 <button type="button" disabled={disabled} className="block w-full cursor-pointer focus-visible:outline-2 focus-visible:-outline-offset-2" aria-label={t("canvas.templates.previewNamed", { name: template.title })} onClick={() => setPreview(template)}><CanvasTemplateCover template={template} /></button>
                 <div className="p-3">
@@ -65,12 +66,4 @@ export function CanvasTemplateGallery({ selectedId, onSelect, manage = false, di
         <CanvasTemplatePreviewDialog template={preview} onClose={() => setPreview(null)} onUse={disabled || readOnly ? undefined : (template) => { setPreview(null); onSelect(template); }} />
         <CanvasTemplateEditorDialog template={editing} onClose={() => setEditing(null)} />
     </>;
-}
-
-export function CanvasTemplateLibraryDialog({ open, onClose, onUse }: { open: boolean; onClose: () => void; onUse: (template: CanvasTemplate) => void }) {
-    const { t } = useTranslation();
-    return <Modal title={t("canvas.templates.library")} open={open} onCancel={onClose} footer={null} width={1000} destroyOnHidden styles={{ body: { maxHeight: "72dvh", overflowY: "auto" } }}>
-        <p className="mb-5 text-sm text-muted-foreground">{t("canvas.templates.libraryHint")}</p>
-        <CanvasTemplateGallery manage onSelect={onUse} />
-    </Modal>;
 }

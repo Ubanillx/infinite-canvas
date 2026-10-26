@@ -64,7 +64,7 @@ export async function createCanvasTemplateThumbnail(content: CanvasTemplateConte
             if (node.metadata?.storageKey?.startsWith("image:")) {
                 const blob = await loadMediaBlob(node.metadata.storageKey);
                 if (!blob) throw new Error(i18n.t("canvas.templates.mediaMissing"));
-                const image = await createImageBitmap(blob);
+                const image = await createImageBitmap(blob).catch(() => { throw new Error(i18n.t("canvas.templates.mediaInvalid")); });
                 const imageScale = Math.min(node.width / image.width, Math.max(1, node.height - 36) / image.height);
                 ctx.drawImage(image, x + (node.width - image.width * imageScale) / 2, y + 36 + (node.height - 36 - image.height * imageScale) / 2, image.width * imageScale, image.height * imageScale);
                 image.close();
