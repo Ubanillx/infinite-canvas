@@ -1,7 +1,7 @@
 import i18n from "@/i18n";
 import { getActiveWorkspace, workspaceHeaders } from "@/lib/workspace";
 import type { CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
-import type { AgentReasoningEffort } from "@/stores/use-agent-store";
+import type { AgentConversationState, AgentReasoningEffort } from "@/stores/use-agent-store";
 import { bindAgentTurnAttachments, persistAgentTurnAttachments, releaseAgentThreadAttachments, restoreAgentAttachments, type AgentAttachmentMessage, type AgentAttachmentTurn } from "./agent-attachments";
 
 type AgentConfigResponse = { ok?: boolean; protocolVersion?: number; url?: string; token?: string; hasToken?: boolean };
@@ -56,7 +56,7 @@ export type AgentModelsResponse = { ok?: boolean; data?: Array<{ id: string; mod
 export type AgentPiThread = { id: string; preview: string; name: string | null; cwd: string; status: string; createdAt: number; updatedAt: number };
 export type AgentPiThreadsResponse = { ok?: boolean; workspace?: { workspacePath: string; activeThreadId?: string }; conversation?: AgentConversationStatePayload; data?: AgentPiThread[]; thread?: AgentPiThread; messages?: unknown[] };
 export type AgentPiThreadResponse = { ok?: boolean; workspace?: { workspacePath: string; activeThreadId?: string }; conversation?: AgentConversationStatePayload; thread?: AgentPiThread; messages?: unknown[]; settledTurnIds?: string[] };
-type AgentConversationStatePayload = { revision: number; conversationId: string; threadId: string; status: "idle" | "preparing" | "ready" | "warning" | "running" | "failed"; mcpStatuses: Record<string, { status: "starting" | "ready" | "failed" | "cancelled"; error?: string | null; failureReason?: string | null }>; sourceClientId?: string; error?: string };
+type AgentConversationStatePayload = AgentConversationState;
 
 export async function postState(endpoint: string, token: string, clientId: string, snapshot: CanvasAgentSnapshot | null) {
     try {

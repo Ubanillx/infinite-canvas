@@ -240,9 +240,10 @@ export function parseEventData<T>(event: Event) {
     }
 }
 
-export function isCurrentThreadEvent(event: { threadId?: string; thread_id?: string }) {
+export function isCurrentThreadEvent(event: { threadId?: string; thread_id?: string; agent?: string }) {
     const threadId = event.threadId || event.thread_id || "";
-    return Boolean(threadId) && threadId === useAgentStore.getState().activeThreadId;
+    const current = useAgentStore.getState();
+    return Boolean(threadId) && threadId === current.activeThreadId && (!event.agent || event.agent === current.engine) && current.conversation.engine === current.engine;
 }
 
 export function registerLiveAgentTurn(
@@ -526,12 +527,12 @@ export function agentMessageId(threadId: string, turnId: string, itemId: string)
     return `${threadId}:${turnId}:${itemId}`;
 }
 
-export function scopeChatItem(item: AgentChatItem, threadId: string, turnId: string) {
+export function scopeChatItem(item: AgentChatItem, threadId: string, turnId: string, engine?: "codex" | "pi") {
     const scopeTurnId = turnId || "pending";
     const prefix = `${threadId || "local"}:${scopeTurnId}:`;
     const sourceItemId = item.itemId || (item.id.startsWith(prefix) ? item.id.slice(prefix.length) : item.id);
     const itemId = item.role === "user" ? "synthetic:user" : sourceItemId;
-    return { ...item, id: agentMessageId(threadId || "local", scopeTurnId, itemId), itemId, threadId, turnId };
+    return { ...item, id: agentMessageId(threadId || "local", scopeTurnId, itemId), itemId, threadId, turnId, ...(engine ? { engine } : {}) };
 }
 
 export function bindPendingTurnMessages(messages: AgentChatItem[], threadId: string, turnId: string) {
@@ -548,9 +549,9 @@ export function upsertAgentMessage(messages: AgentChatItem[], item: AgentChatIte
     return messages.map((message, itemIndex) => itemIndex === index ? next : message);
 }
 
-export function mergeAgentMessages(snapshot: AgentChatItem[], current: AgentChatItem[], threadId: string, liveTurnKeys: ReadonlySet<string>) {
+export function mergeAgentMessages(snapshot: AgentChatItem[], current: AgentChatItem[], threadId: string, liveTurnKeys: ReadonlySet<string>, engine?: "codex" | "pi") {
     let messages = [...snapshot];
-    current.filter((item) => item.threadId === threadId).forEach((item) => {
+    current.filter((item) => item.threadId === threadId && (!engine || item.engine === engine)).forEach((item) => {
         const live = Boolean(item.turnId && liveTurnKeys.has(`${threadId}\0${item.turnId}`));
         const index = messages.findIndex((message) => message.id === item.id);
         if (index < 0) {
@@ -565,10 +566,10 @@ export function mergeAgentMessages(snapshot: AgentChatItem[], current: AgentChat
     return messages;
 }
 
-export function normalizeHistoryMessages(messages: AgentChatItem[]) {
+export function normalizeHistoryMessages(messages: AgentChatItem[], engine?: "codex" | "pi") {
     return messages
         .filter((item) => (normalizeText(item.text) || item.role === "tool") && item.itemId && item.threadId && item.turnId)
-        .map(({ streamId: _streamId, ...item }) => scopeChatItem({ ...item, text: normalizeText(item.text) } as AgentChatItem, item.threadId!, item.turnId!));
+        .map(({ streamId: _streamId, ...item }) => scopeChatItem({ ...item, text: normalizeText(item.text) } as AgentChatItem, item.threadId!, item.turnId!, engine));
 }
 
 function mergeLocalMessageMetadata(current: AgentChatItem, incoming: AgentChatItem) {
