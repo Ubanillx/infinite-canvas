@@ -26,7 +26,7 @@ Every script under `scripts/` follows one rule: a run writes its data, logs, scr
 | `npm run dev` | Web and Canvas Agent share `INFINITE_CANVAS_DATA_DIR`; Web log is `.local/dev-server.jsonl` |
 | `node scripts/dev-agent-check.mjs --url http://127.0.0.1:3000 --codex` | Reuse the server to check connection, a real Codex reply, Pi refresh and engine recovery; artifacts go to `.local/agent-check-*/` |
 | `node scripts/dev-agent-check.mjs --url http://127.0.0.1:3000 --pi` | Check a real Pi provider reply and its recovery after refresh using the saved server channel |
-| `npm run dev:server` | Same server, started by `scripts/dev-run.mjs`, with a log scan on exit |
+| `npm run dev:server` | Starts only the managed web dev server (no Canvas Agent) through `scripts/dev-run.mjs`, with a log scan on exit |
 | `npm run dev:smoke` | Isolated server plus checks for workspaces, data isolation, revision conflicts and the SPA shell |
 | `npm run dev:smoke -- --url http://127.0.0.1:3000` | Reuse a running server instead of starting a new one |
 | `npm run dev:probe` | Isolated server plus Chromium visits to `/` and `/canvas`, with screenshots and `report.json` |

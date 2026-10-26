@@ -36,7 +36,7 @@ From the repository root, run `npm run dev` and open `http://127.0.0.1:3000`. Ac
 
 - `npm test` runs the web, Canvas Agent, and deployment unit suites.
 - `npm run test:e2e` starts a server on port 3100, creates a dedicated PostgreSQL database and RustFS bucket for the run, and deletes both afterwards, so development data is never read or modified. Run one suite at a time to avoid a port 3100 conflict. Install the browser once with `npx --prefix web playwright install chromium`.
-- `npm run test:e2e:ui` opens the Playwright UI runner; `npm run test:report` opens the latest HTML report. Failure traces, screenshots, browser diagnostics, server logs and test data stay under ignored `.local/e2e-*/` and `web/test-results/`.
+- `npm run test:e2e:ui` opens the Playwright UI runner; `npm run test:report` opens the report under `web/playwright-report` (each e2e run writes its own report to `.local/e2e-*/report/`). Failure traces, screenshots, browser diagnostics, server logs and test data stay under ignored `.local/e2e-*/` and `.local/e2e-*/test-results/`.
 - `npm run logs:check` scans the development server JSONL log and exits non-zero for likely errors; pass a log path to scan another run. Browser E2E also fails on console errors, uncaught exceptions, HTTP errors and non-cancelled failed requests.
 - `npm run doctor` checks the pinned Bun version, installed dependencies, Playwright CLI and local tooling.
 

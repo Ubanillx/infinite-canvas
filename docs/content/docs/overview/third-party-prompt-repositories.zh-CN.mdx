@@ -1,13 +1,39 @@
 ---
 title: 第三方提示词来源
-description: 当前内置的 7 个第三方提示词来源
+description: 自定义标准 JSON 提示词来源的格式和可用的公开仓库
 ---
 
 # 第三方提示词来源
 
-应用内置以下 7 个来源。提示词数据统一从 [Image Prompts](https://github.com/yukkcat/image-prompts) 的标准 JSON 读取，原项目地址用于查看来源内容。
+应用不再内置第三方提示词来源。新配置下的来源列表为空，需要在配置的「提示词来源」页自行添加标准 JSON 地址；已有服务器配置中的内置来源会被移除，自定义来源及其定时设置保留。
 
-| 来源 | 原项目 |
+## 拉取规则
+
+- 来源由服务端代理拉取（`/api/prompt-source/:id`），浏览器不直接访问外部地址。
+- 只接受 HTTPS 公网地址，拒绝私有地址、内网地址和重定向。
+- 响应根节点必须是数组，每项至少有非空 `title` 和 `prompt`，否则该条被忽略；整体不是数组时该次拉取失败。
+- 拉取失败时保留上一次成功缓存，并显示来源状态和最近成功时间。
+
+## 条目字段
+
+| 字段 | 说明 |
+| --- | --- |
+| `title` | 必填，提示词标题 |
+| `prompt` | 必填，提示词正文 |
+| `description` | 说明文案 |
+| `coverUrl` | 封面图，缺省时取第一张参考图 |
+| `referenceImageUrls` | 参考图 / 结果图数组，支持相对路径 |
+| `preview` | 预览内容 |
+| `tags` | 标签数组，用于筛选 |
+| `author` / `sourceUrl` | 作者与原始来源链接 |
+| `imageMode` / `imageModel` / `imageSize` / `imageCount` | 可选生成建议 |
+| `createdAt` / `updatedAt` | ISO 时间字符串 |
+
+## 可用的公开仓库
+
+[Image Prompts](https://github.com/yukkcat/image-prompts) 汇总了多个开源提示词项目的标准 JSON，可按需挑选具体文件地址自行添加。以下项目可用于查看来源内容：
+
+| 项目 | 地址 |
 | --- | --- |
 | Banana Prompt Quicker | https://glidea.github.io/banana-prompt-quicker/ |
 | DavidWu GPT Image 2 | https://github.com/davidwuw0811-boop/awesome-gpt-image2-prompts |
@@ -16,5 +42,3 @@ description: 当前内置的 7 个第三方提示词来源
 | Awesome GPT-4o | https://github.com/ImgEdify/Awesome-GPT4o-Image-Prompts |
 | YouMind GPT Image 2 | https://github.com/YouMind-OpenLab/awesome-gpt-image-2 |
 | YouMind Nano Banana Pro | https://github.com/YouMind-OpenLab/awesome-nano-banana-pro-prompts |
-
-每个内置来源都可独立启用和拉取。配置页还支持添加自定义标准 JSON 来源，以及按周期批量更新；拉取失败时继续使用该来源上一次成功缓存。

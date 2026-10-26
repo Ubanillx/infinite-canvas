@@ -11,6 +11,22 @@ description: Deploy Infinite Canvas with Render
 2. Sign in and connect GitHub as prompted.
 3. Confirm the deployment.
 
-When deployment finishes, open the assigned `.onrender.com` domain.
+`render.yaml` uses the Docker runtime to build the repository's `Dockerfile`, exposes port `3000`, and health-checks `/`. When deployment finishes, open the assigned `.onrender.com` domain to load the page shell.
 
-The default configuration uses Render's free Web Service. It sleeps after a period of inactivity and wakes on the next request. Application data is primarily stored in the browser, and prompt repositories are fetched by the frontend. The free tier is suitable for evaluation and demos; use Vercel or configure WebDAV for longer-term use.
+## It still needs external data services
+
+The application is not a static frontend: the container has to reach PostgreSQL and S3-compatible object storage. Without those variables the server falls back to local defaults (`127.0.0.1:5433` and `http://127.0.0.1:9010`), which do not exist inside a Render container. Configure:
+
+- `DATABASE_URL` pointing at a reachable PostgreSQL instance.
+- `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` pointing at S3-compatible storage.
+- `INFINITE_CANVAS_ALLOWED_HOSTS` when serving production traffic.
+
+## Free tier
+
+The default configuration uses Render's free Web Service:
+
+- It sleeps after a period of inactivity and wakes on the next request.
+- Free instances have no persistent disk, so `/data`, `/home/node/.infinite-canvas` and `/home/node/.codex` are lost on redeploy. Keep accounts and business data in external PostgreSQL and media in external object storage.
+- The free tier suits evaluation and demos, not long-term production data.
+
+For long-running deployments use a container host with persistent volumes; see [Docker Deployment](/docs/overview/docker).

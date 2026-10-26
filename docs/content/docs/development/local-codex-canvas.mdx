@@ -45,8 +45,10 @@ Writes are automatically confirmed by default. Switch the side panel to manual c
 
 ## Security boundary
 
-- Canvas Agent binds to `127.0.0.1` by default.
+- Canvas Agent binds to `127.0.0.1` by default and generates a connect token on startup.
+- Deployments reach it only through the same-origin `/api/canvas-agent` gateway, which reads the address and token from `~/.infinite-canvas/canvas-agent.json` and injects them server-side; manual connection with `#agentUrl` / `agentToken` remains available for local use.
 - Browser connections require the generated token and are bound to the first accepted origin.
+- The side panel can switch between Codex (via `codex app-server --stdio`) and Pi (which calls the configured text channels directly inside Canvas Agent); both share the same tool chain.
 - Codex does not directly access the DOM or own the canvas state.
 - The hosted website does not store the local Codex login, API keys, or local file permissions.
 - The browser remains responsible for executing writes, approvals, undo, and permission controls.

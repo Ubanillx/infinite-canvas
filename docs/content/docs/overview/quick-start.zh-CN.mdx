@@ -5,44 +5,45 @@ description: 用最少步骤把无限画布跑起来
 
 # 快速开始
 
-如果你只是想先把项目跑起来，优先部署或启动 `web/` 前端。
-
-## Vercel 部署
-
-在 Vercel 中导入仓库即可，根目录 `vercel.json` 会构建 `web/`。当前版本的 AI 请求由浏览器前台直连用户自己的 OpenAI 兼容地址，不需要额外配置服务端。
+无限画布不是纯静态前端：账号、工作区数据、媒体和 AI 渠道凭据都由服务端处理，数据层使用 PostgreSQL 与 S3 兼容对象存储（默认 RustFS）。启动前先准备这两项服务，否则登录、保存和生成都无法使用。
 
 ## 本地启动
 
 ```bash
 git clone git@github.com:basketikun/infinite-canvas.git
 cd infinite-canvas
-cd web
-bun install
-bun run dev
+npm install --global bun@1.3.13
+cd web && npm ci --legacy-peer-deps && cd ..
+cd canvas-agent && npm ci && cd ..
+docker compose -f docker-compose.middleware.yml up -d --wait
+npm run dev
 ```
 
 启动后访问：
 
 ```text
-http://localhost:3000
+http://127.0.0.1:3000
 ```
+
+中间件默认端口为 PostgreSQL `5433`、RustFS `9010`（控制台 `9011`），应用内置对应默认值，无需额外配置。`npm run dev` 会同时启动 Vite 与 Canvas Agent；只调前端时可以进入 `web/` 执行 `bun run dev`，但 `web/` 的开发服务器同样依赖中间件，并为浏览器提供同源 `/api/*` 接口。
 
 ## Docker 启动
 
-如果你需要基于当前源码构建镜像：
+如果希望用容器跑完整服务（Web + Canvas Agent + PostgreSQL + RustFS）：
 
 ```bash
-docker build -t infinite-canvas .
-docker run --rm -p 3000:3000 infinite-canvas
+docker compose -f docker-compose.local.yml up -d --build
 ```
+
+默认只绑定 `127.0.0.1:3000`。生产环境请通过 HTTPS 反向代理访问，详见 [Docker 部署](/zh-CN/docs/overview/docker)。
 
 ## 首次使用建议
 
-- 先打开右上角配置弹窗，填入自己的 `Base URL`、`API Key` 和模型名。
-- 如果需要提示词仓库内容，打开 `/prompts` 会由浏览器前端直连拉取并缓存到 IndexedDB。
-- 如果需要跨设备同步画布、素材和生成记录，可在配置弹窗中填写 WebDAV。
+- 先打开右上角配置弹窗，填入自己的 `Base URL`、`API Key` 和模型名；凭据保存在服务器，浏览器只持有“是否已配置”。
+- 提示词来源需要在配置中自行添加标准 JSON 地址，由服务端代理拉取，浏览器保留缓存。
+- WebDAV 只用于手动上传快照和选择快照导入，不做双向自动同步。
 
 ## 说明
 
-- 当前画布项目和“我的素材”主要保存在浏览器本地，WebDAV 同步需要用户自行配置。
-- AI API Key 保存在浏览器本地，并由前端直接请求 OpenAI 兼容接口。
+- 画布、素材和生成记录按工作区保存在服务器，浏览器保留本地缓存。
+- 静态托管（例如只把 `web/` 部署到 Vercel）无法提供 `/api/*`，只能看到页面外壳，不能登录、保存或生成；完整功能需要带服务端的部署方式。

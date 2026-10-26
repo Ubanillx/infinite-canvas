@@ -26,7 +26,7 @@ description: 可复用的日志、接口冒烟、浏览器探针和 E2E 工具
 | `npm run dev` | 启动 Web 和 Canvas Agent，共用 `INFINITE_CANVAS_DATA_DIR`，Web 日志 `.local/dev-server.jsonl` |
 | `node scripts/dev-agent-check.mjs --url http://127.0.0.1:3000 --codex` | 复用现有服务验证 Agent 连接、真实 Codex 回复、Pi 刷新与切回会话；截图和报告写入 `.local/agent-check-*/` |
 | `node scripts/dev-agent-check.mjs --url http://127.0.0.1:3000 --pi` | 使用已保存的服务端渠道验证真实 Pi 回复与刷新恢复 |
-| `npm run dev:server` | 同上，由 `scripts/dev-run.mjs` 受管启动，退出时自动扫描日志 |
+| `npm run dev:server` | 只启动受管的 Web 开发服务（不启动 Canvas Agent），由 `scripts/dev-run.mjs` 管理，退出时自动扫描日志 |
 | `npm run dev:smoke` | 起隔离服务并验证工作区接口、数据隔离、版本冲突和页面外壳 |
 | `npm run dev:smoke -- --url http://127.0.0.1:3000` | 不新起服务，直接打已经在跑的开发服务器 |
 | `npm run dev:probe` | 起隔离服务并用 Chromium 打开 `/`、`/canvas`，输出截图与 `report.json` |

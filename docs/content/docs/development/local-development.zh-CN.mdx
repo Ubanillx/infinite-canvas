@@ -1,11 +1,11 @@
 ---
 title: 本地开发
-description: 前端优先的本地开发方式
+description: 开启服务端能力的本地开发方式
 ---
 
 # 本地开发
 
-当前主应用以 `web/` 前端为主；AI 助手的 Codex/Pi 请求由同源服务端网关转发到本机 Canvas Agent，浏览器不持有 Agent 或渠道密钥。
+主应用在 `web/`，它的开发服务器同时提供工作区接口。AI 助手的 Codex/Pi 请求由同源服务端网关转发到本机 Canvas Agent，浏览器不持有 Agent 或渠道密钥。本地状态与日志都写在仓库忽略的 `.local/` 下，与正常用户数据隔离。
 
 ## 1. 启动中间件
 
@@ -17,23 +17,28 @@ docker compose -f docker-compose.middleware.yml up -d --wait
 
 默认端口为 PostgreSQL `5433`、RustFS `9010`（控制台 `9011`），刻意避开常见的 5432/9000。应用内置了对应的默认连接值，不需要额外配置即可启动；需要覆盖时参考 `deploy/middleware.env.example`。
 
-## 2. 启动前端和 Canvas Agent
+## 2. 准备依赖
 
-从仓库根目录执行 `npm run dev`；它会共用同一份 `INFINITE_CANVAS_DATA_DIR` 启动 Vite 和 Canvas Agent。只需 Agent 时执行 `npm run dev:agent`。
-
-前端默认访问：
-
-```text
-http://localhost:3000
+```bash
+npm install --global bun@1.3.13
+cd web && npm ci --legacy-peer-deps
+cd ../canvas-agent && npm ci
+npx --prefix web playwright install chromium
 ```
+
+完整测试还需要 Node.js 22 与 Python 3。`--legacy-peer-deps` 是因为当前 ProComponents beta 声明的是 Ant Design 5 peer，而应用使用 Ant Design 6。
+
+## 3. 启动前端和 Canvas Agent
+
+从仓库根目录执行 `npm run dev`，打开 `http://127.0.0.1:3000`。它会共用同一份 `INFINITE_CANVAS_DATA_DIR` 启动 Vite 和 Canvas Agent；只需 Agent 时执行 `npm run dev:agent`。服务端输出以 JSONL 追加到 `.local/dev-server.jsonl`。
 
 开发服务器的接口与中间件共用同一进程内的服务端逻辑：账号认证、工作区数据、媒体索引走 PostgreSQL，媒体对象走 RustFS。浏览器仍然只访问同源的 `/api/*`；Agent 网关会校验登录工作区成员身份，不暴露本机 Agent 端口。
 
-## 3. 配置模型
+## 4. 配置模型
 
-打开右上角配置弹窗，填写自己的 `Base URL`、`API Key` 和模型名。第三方提示词和 WebDAV 都由浏览器前端直连。
+打开右上角配置弹窗，填写自己的 `Base URL`、`API Key` 和模型名；凭据保存到服务器，浏览器只保留是否已配置的状态。提示词来源、远程媒体下载、AI 请求和 WebDAV 都经服务端同源代理，浏览器不直接访问外部地址。
 
-## 4. 启动文档站
+## 5. 启动文档站
 
 如果需要单独调整文档站，在 `docs` 目录执行：
 
@@ -41,14 +46,23 @@ http://localhost:3000
 bun run dev
 ```
 
-## 调试与测试
+## 测试与诊断
+
+- `npm test`：Web、Canvas Agent 和部署脚本的单元测试。
+- `npm run test:e2e`：在端口 3100 启动服务，为本次运行创建独立的 PostgreSQL database 和 RustFS bucket，结束后删除，不读写开发数据。同一时间只跑一次，避免端口冲突。
+- `npm run test:e2e:ui` 打开 Playwright UI；`npm run test:report` 打开 `web/playwright-report` 下的报告（e2e 每次运行生成的报告在 `.local/e2e-*/report/`）。失败截图、浏览器诊断、服务端日志和测试数据都在忽略的 `.local/e2e-*/` 与 `.local/e2e-*/test-results/` 下。
+- `npm run logs:check` 扫描开发服务 JSONL 日志，命中错误关键字时以非零码退出。
+- `npm run doctor` 检查 Bun 版本、依赖、Playwright 与本地工具链。
+
+这些脚本都不会请求真实 AI 供应商；生成能力仍需在应用内配置地址与凭据。
+
+## 调试工具
 
 接口冒烟、浏览器探针、截图、交互步骤和日志扫描都收在[开发调试与测试工具](/zh-CN/docs/development/debug-tooling)里，常用入口是 `npm run dev:smoke`、`npm run dev:probe` 和 `npm run logs`。
-
-端到端测试需要中间件已启动。`npm run test:e2e` 会为本次运行自动创建独立的 PostgreSQL database 和 RustFS bucket，测试结束后删除，不会读写开发数据；同一时间请只跑一次，避免端口 3100 冲突。
 
 ## 常见场景
 
 - 改画布、页面和交互：主要看 `web/`
-- 改提示词缓存：主要看 `web/src/services/api/prompts.ts`
+- 改提示词拉取与缓存：主要看 `web/src/services/api/prompts.ts` 与 `prompt-source-runtime.ts`
+- 改服务端接口与数据层：主要看 `web/vite.config.ts` 和 `web/src/server/`
 - 改文档站内容：主要看 `docs/content/docs/`

@@ -1,41 +1,266 @@
 ---
 title: Local Agent Integration Plan
-description: Plan for connecting Codex and Claude to the canvas through Canvas Agent and MCP
+description: Plan for connecting Codex, Pi, and Claude Code to the canvas through Canvas Agent and MCP
 ---
 
 # Local Agent Integration Plan
 
-## Goal
+This page plans how a user visiting the hosted canvas can connect coding agents running on their own machine (Codex, Pi, Claude Code) and let them operate the active canvas through conversations and tool calls.
 
-Allow locally authenticated coding agents to read and modify the active browser canvas without moving canvas data, credentials, or local permissions to a hosted backend.
+## Goals
 
-## Architecture
+- After opening the hosted canvas, the user can start a local service and connect the current canvas to it.
+- The user can operate the canvas from a Codex terminal through MCP.
+- The user can also chat with a local agent in the browser side panel.
+- The side panel shows plain messages, streaming output, tool calls, tool results, and errors.
+- The hosted service never stores local agent logins, API keys, or local file permissions.
 
-Canvas Agent is the single local bridge. The browser synchronizes structured canvas state to it over authenticated HTTP and SSE. Codex and future Claude adapters use MCP tools exposed by Canvas Agent. Browser-side writes remain structured, reviewable, and undoable.
+## Core decision
 
-The service is divided into agent adapters, canvas state and tool handling, HTTP/SSE transport, and MCP exposure. Codex is the first adapter through `codex app-server`; Claude should use the Claude Agent SDK rather than duplicating canvas logic.
+A browser page cannot start local processes and must not drive a local agent directly. Instead, the user runs a local `canvas-agent` service:
 
-## Tool design
+```txt
+hosted canvas page <-> local canvas-agent <-> Codex / Pi / Claude Code
+                            |
+                            +-> MCP server
+                            +-> canvas connection
+```
 
-Tools should cover state and selection reads, node creation and updates, connections, batch operations, viewport and selection changes, and text, image, or video generation. High-level tools convert to a small set of canvas operations before the browser applies them.
+`canvas-agent` is the local trust boundary: it starts or connects the agent, exposes MCP tools, keeps the canvas connection, and forwards side-panel events.
 
-## Side panel
+## Current layout
 
-The browser panel manages connection state, conversations, streaming events, model and reasoning settings, permissions, approvals, local Skills, diagnostics, and task cancellation. A turn is bound to its initiating `clientId` so focusing another browser tab cannot redirect its canvas operations.
+`canvas-agent/` is implemented with HTTP routes in `server/http.ts`, the MCP layer in `server/mcp.ts`, agent adapters in `agent/`, and canvas session and operations in `canvas/`:
 
-## Security
+```txt
+canvas-agent/
+  package.json
+  tsconfig.json
+  src/
+    index.ts
+    config.ts
+    server/
+      http.ts
+      mcp.ts
+    canvas/
+      session.ts
+      operations.ts
+      schemas.ts
+      tools.ts
+      types.ts
+    agent/
+      types.ts
+      codex.ts
+      codex-client.ts
+      codex-protocol.ts
+      codex-history.ts
+      claude.ts
+      pi/
+    skills/
+      store.ts
+    utils/
+      agent-runtime.ts
+      logger.ts
+```
 
-- Bind to localhost and require a generated connection token.
-- Pin the accepted browser origin.
-- Keep local agent login and file permissions out of the hosted site.
-- Make writes confirmable and undoable in the browser.
-- Never redirect an active turn to another tab when its initiating page disconnects.
+Why a separate package:
+
+- It is a local Node service, neither part of the hosted backend nor a pure frontend page.
+- It is published as `@basketikun/canvas-agent` and started through `npx`.
+- Codex, Pi Agent, and Claude SDK all integrate more naturally inside a local Node process.
+- HTTP routing uses `express`, the MCP layer uses the official `@modelcontextprotocol/sdk`, and tool inputs use `zod` (some tools describe schemas with `typebox`), avoiding hand-written protocols and loose JSON.
+- The request body limit is `30mb`, shared by image attachments and canvas snapshots.
+
+## Starting locally
+
+The published entry point is `npx`:
+
+```bash
+npx -y @basketikun/canvas-agent
+```
+
+Inside this repository:
+
+```bash
+cd canvas-agent
+npm install
+npm run build
+node dist/index.js
+```
+
+Startup output:
+
+```txt
+Infinite Canvas Agent
+Local URL: http://127.0.0.1:17371
+Connect token: xxxxxx
+```
+
+The side panel connects through the same-origin `/api/canvas-agent` gateway by default, or manually with `http://127.0.0.1:17371` plus the token.
+
+## Frontend requirements
+
+The frontend does not expose HTTP endpoints to the local service; the page connects outward to Canvas Agent. The MVP uses SSE for local events and HTTP POST to report canvas state and tool results:
+
+```txt
+page -> http://127.0.0.1:17371/events?token=xxx
+page -> http://127.0.0.1:17371/canvas/state?token=xxx
+page -> http://127.0.0.1:17371/canvas/result?token=xxx
+```
+
+The page provides a canvas agent control layer that calls existing stores and hooks instead of letting external callers touch React components:
+
+```ts
+canvasAgent.getState()
+canvasAgent.getSelection()
+canvasAgent.applyOps(ops)
+canvasAgent.focusNodes(ids)
+canvasAgent.exportSnapshot()
+```
+
+Required operation set:
+
+- `add_node`: create image, text, audio, video, and generation-configuration nodes.
+- `update_node`: change position, size, content, and configuration.
+- `delete_node`: remove a node.
+- `connect_nodes`: connect two nodes.
+- `set_viewport`: pan or zoom the viewport.
+- `select_nodes`: select nodes.
+
+Tool inputs use canvas business JSON, never simulated clicks or screen-coordinate automation.
+
+MCP state reads return a summary by default and never push full images, videos, audio, or long base64 payloads to the agent.
+
+## MCP tool design
+
+`canvas-agent` ships an MCP server so Codex CLI can connect:
+
+```txt
+Codex CLI <-> canvas-agent MCP <-> active browser canvas
+```
+
+First tools:
+
+- `canvas_get_state`: read a summary of nodes, edges, selection, and viewport.
+- `canvas_apply_ops`: apply batched canvas operations.
+- `canvas_get_selection`: read the current selection.
+- `canvas_export_snapshot`: export a snapshot so the agent understands the layout.
+- `canvas_create_text_node`: quick-create a text node.
+- `canvas_create_image_prompt_flow`: quick-create a prompt text node plus an image generation config node.
+
+Local Codex configuration:
+
+```bash
+codex mcp add infinite-canvas -- npx -y @basketikun/canvas-agent@latest mcp
+```
+
+For repository development, replace the path with an absolute local one:
+
+```bash
+codex mcp add infinite-canvas -- node /path/to/infinite-canvas/canvas-agent/dist/index.js mcp
+```
+
+The side panel uses a separate conversation channel. Canvas Agent launches the official `@openai/codex` CLI through `codex app-server --stdio`, reuses one thread, injects the `infinite-canvas` MCP configuration, and sets `default_tools_approval_mode` to `approve` so Codex's own MCP approval does not block the panel; whether writes need per-call approval is decided by the panel's confirm mode, which defaults to automatic.
+
+Side-panel image attachments travel over HTTP to the local Canvas Agent, which writes a temporary local file and passes it to Codex as an app-server `localImage` input. The input area warns about attachment size, and one request body is capped at 30 MB.
+
+## Side panel design
+
+After connecting, Canvas Agent selects the agent adapter:
+
+```txt
+Sidebar -> canvas-agent -> Codex app-server stdio
+Sidebar -> canvas-agent -> Pi engine (configured text channels)
+Sidebar -> canvas-agent -> Claude Code CLI / Claude Agent SDK
+```
+
+The panel prefers Codex app-server's native structured events and consumes only what it needs:
+
+```ts
+type AgentEvent =
+  | { type: "thread.started"; thread_id: string }
+  | { type: "turn.started" }
+  | { type: "item.started" | "item.updated" | "item.completed"; item: ThreadItem }
+  | { type: "turn.completed"; usage: Usage }
+  | { type: "turn.failed"; error: { message: string } };
+```
+
+A separate Claude adapter is planned; the engine selector currently offers Codex and Pi, where Pi calls the server-stored text channels from inside Canvas Agent.
+
+## Codex integration
+
+Prefer the official `@openai/codex` CLI through `codex app-server --stdio`.
+
+- Codex app-server emits `item/agentMessage/delta`; Canvas Agent maps it to `item.updated` so the panel streams a single message.
+- Image attachments use the app-server `localImage` input instead of a hand-written multimodal protocol.
+
+References:
+
+- https://github.com/openai/codex/tree/main/codex-rs/app-server
+- https://developers.openai.com/codex/codex-manual.md
+
+## Claude Code integration
+
+The MVP calls the local Claude Code CLI's streaming JSON output and lets `canvas-agent` normalize events and tool calls; upgrading to the Claude Agent SDK is a follow-up.
+
+To let Claude Code operate the canvas, give it the same MCP:
+
+```bash
+claude mcp add --scope user --transport stdio infinite-canvas -- npx -y @basketikun/canvas-agent@latest mcp
+```
+
+Canvas Agent allows `mcp__infinite-canvas__*` by default so print mode is not blocked by tool approval; write confirmation follows the panel's confirm mode.
+
+References:
+
+- https://docs.anthropic.com/en/docs/claude-code/sdk
+- https://code.claude.com/docs/en/agent-sdk/typescript
+
+## Security boundary
+
+- Canvas Agent binds to `127.0.0.1` only.
+- It generates a token at startup; page connections must carry it.
+- It accepts only allowed origins, defaulting to the canvas domain currently open.
+- Canvas writes run automatically by default; switch **Auto confirm** to **Manual confirm** in the side panel to show each pending tool call before it is applied, and keep the last tool operation undoable.
+- Agent logins, API keys, and local file paths never leave the machine.
+- The hosted page stores only the Canvas Agent address and preferences, never local secrets.
 
 ## Delivery stages
 
-1. Expose canvas state and operations to local Codex through MCP.
-2. Add the browser Codex panel with streaming conversations and history.
-3. Add a Claude Agent SDK adapter using the same canvas tools.
-4. Improve approvals, diagnostics, multi-tab behavior, Skills, and recovery.
+### Stage 1: Codex operates the canvas from a terminal
 
-The MVP is complete when an agent can connect to the active canvas, read state and selection, apply visible node operations, start a generation workflow, return structured errors, and remain isolated across tabs.
+1. Add the `canvas-agent/` npm package.
+2. Expose SSE/HTTP so the page can connect and register the active canvas.
+3. Add the frontend `canvasAgent` control layer.
+4. Ship the MCP server inside Canvas Agent.
+5. Let Codex call `canvas_get_state` and `canvas_apply_ops` through MCP.
+
+### Stage 2: Browser side panel connects to Codex
+
+1. Add the local agent side panel.
+2. Connect Codex through `codex app-server --stdio`, reuse one thread, inject the `infinite-canvas` MCP, and render structured events.
+3. Keep only key Codex events in the runtime log to avoid flooding it with streaming updates.
+4. Show messages, tool calls, tool results, errors, and attachment size warnings.
+
+### Stage 3: Claude Code
+
+1. Add the Claude Code CLI adapter.
+2. Normalize Claude Code messages and tool-call events.
+3. Add an agent type selector to the panel.
+
+Current status: the Claude Code CLI adapter exists (`agent/claude.ts`) but has not been upgraded to the Claude Agent SDK adapter; the panel engine selector offers Codex and Pi.
+
+### Stage 4: Polish
+
+1. Add local connection status, reconnect, and token refresh.
+2. Improve tool approval, undo, and queued tool calls.
+3. Add common canvas action templates.
+4. Publish npm installation docs for users.
+
+## MVP acceptance
+
+- After running `npx -y @basketikun/canvas-agent@latest`, the hosted canvas shows a connected state.
+- Codex CLI can create text nodes, move nodes, and connect nodes.
+- The side panel sends a message to local Codex or Pi and streams the reply with structured events.
+- The panel shows one `canvas_apply_ops` tool call and its result.
+- After Canvas Agent disconnects, the page reports a clear local connection failure and never redirects the turn to another tab.
