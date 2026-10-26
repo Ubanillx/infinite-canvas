@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { CodexAppClient } from "./codex-client.js";
+import { CodexAppClient, codexRuntimeConfig } from "./codex-client.js";
 import { assertDraftHasNoSensitiveValues, canvasSkillSource } from "./codex.js";
 
 type TestClient = {
@@ -18,6 +18,108 @@ type TestClient = {
 };
 
 const emptyEventHistory = { record: () => Promise.resolve(), recordTurn: () => Promise.resolve() };
+
+test("Canvas Codex 为本地 HTTP 代理选择 HTTP 流并仅在 Windows 关闭 shell 快照", () => {
+    assert.deepEqual(codexRuntimeConfig({ openai_base_url: "http://127.0.0.1:3425/backend-api/codex" }, "win32"), {
+        "features.shell_snapshot": false,
+        model_provider: "infinite_canvas_http",
+        "model_providers.infinite_canvas_http.supports_websockets": false,
+        "model_providers.infinite_canvas_http": { name: "OpenAI", base_url: "http://127.0.0.1:3425/backend-api/codex", wire_api: "responses", requires_openai_auth: true, supports_websockets: false },
+    });
+    assert.deepEqual(codexRuntimeConfig({ openai_base_url: "http://127.0.0.1:3425/backend-api/codex", model_providers: { infinite_canvas_http: { base_url: "http://127.0.0.1:3425/v1", experimental_bearer_token: "magpie" } } }, "win32"), {
+        "features.shell_snapshot": false,
+        model_provider: "infinite_canvas_http",
+        "model_providers.infinite_canvas_http.supports_websockets": false,
+    });
+    assert.deepEqual(codexRuntimeConfig({ model_provider: "gateway", model_providers: { gateway: { base_url: "http://[::1]:3000/v1" } } }, "linux"), {
+        "model_providers.gateway.supports_websockets": false,
+    });
+    assert.deepEqual(codexRuntimeConfig({ openai_base_url: "https://api.openai.com/v1" }, "linux"), {});
+    assert.deepEqual(codexRuntimeConfig({ model_provider: "remote", openai_base_url: "http://localhost:3425", model_providers: { remote: { base_url: "https://example.com/v1" } } }, "linux"), {});
+    assert.deepEqual(codexRuntimeConfig({ openai_base_url: "invalid" }, "win32"), { "features.shell_snapshot": false });
+});
+
+test("新建、恢复与 Skill 草稿使用同一份运行时修复且保留画布 MCP", async () => {
+    const writes: Array<Record<string, unknown>> = [];
+    const child = { stdin: { write: (line: string) => (writes.push(JSON.parse(line)), true) } };
+    const client = Reflect.construct(CodexAppClient, [child, () => undefined, emptyEventHistory]) as CodexAppClient;
+    const runtimeConfig = codexRuntimeConfig({ openai_base_url: "http://localhost:3425" }, "win32");
+    Object.assign(client, { runtimeConfig });
+    for (const start of [() => client.startThread("D:\\site"), () => client.resumeThread("thread-1", "D:\\site"), () => client.startSkillDraftThread("D:\\site"), () => client.forkSkillDraftThread("thread-1", "D:\\site")]) {
+        const pending = start();
+        const request = writes.at(-1)!;
+        const config = (request.params as { config: Record<string, unknown> }).config;
+        assert.equal(config["features.shell_snapshot"], false);
+        assert.equal(config.model_provider, "infinite_canvas_http");
+        assert.equal(config["model_providers.infinite_canvas_http.supports_websockets"], false);
+        assert.equal(Object.hasOwn(config, "model_providers.openai.supports_websockets"), false);
+        const draft = Boolean((request.params as Record<string, unknown>).ephemeral);
+        assert.equal(Object.hasOwn(config.mcp_servers as object, "infinite-canvas"), !draft);
+        (client as unknown as TestClient).handle({ id: request.id, result: { thread: { id: "thread-1" } } });
+        await pending;
+    }
+});
+
+test("分页线程通过持久化分页读取全部轮次，不调用已加载线程不支持的全量读取", async () => {
+    const writes: Array<Record<string, unknown>> = [];
+    const client = Reflect.construct(CodexAppClient, [{ stdin: { write: (line: string) => (writes.push(JSON.parse(line)), true) } }, () => undefined, emptyEventHistory]) as CodexAppClient;
+    const handler = client as unknown as TestClient;
+    const pending = client.readThread("thread-1");
+    assert.deepEqual(writes[0].params, { threadId: "thread-1", includeTurns: false });
+    handler.handle({ id: writes[0].id, result: { thread: { id: "thread-1", historyMode: "paginated", turns: [] } } });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(writes[1], { id: 2, method: "thread/turns/list", params: { threadId: "thread-1", sortDirection: "asc", itemsView: "full" } });
+    handler.handle({ id: writes[1].id, result: { data: [{ id: "turn-1", items: [{ id: "reply-1", type: "agentMessage", text: "first" }] }], nextCursor: "next" } });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal((writes[2].params as Record<string, unknown>).cursor, "next");
+    handler.handle({ id: writes[2].id, result: { data: [{ id: "turn-2" }], nextCursor: null } });
+    const result = await pending;
+    assert.deepEqual(result.thread.turns?.map((turn) => turn.id), ["turn-1", "turn-2"]);
+    assert.equal((result.thread.turns?.[0].items as Array<Record<string, unknown>>)[0].text, "first");
+});
+
+test("旧版线程仍读取原始历史，元数据读取不加载轮次", async () => {
+    const writes: Array<Record<string, unknown>> = [];
+    const client = Reflect.construct(CodexAppClient, [{ stdin: { write: (line: string) => (writes.push(JSON.parse(line)), true) } }, () => undefined, emptyEventHistory]) as CodexAppClient;
+    const handler = client as unknown as TestClient;
+    const pending = client.readThread("thread-1");
+    handler.handle({ id: writes[0].id, result: { thread: { id: "thread-1", historyMode: "legacy" } } });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(writes[1].params, { threadId: "thread-1", includeTurns: true });
+    handler.handle({ id: writes[1].id, result: { thread: { id: "thread-1", turns: [{ id: "old-turn" }] } } });
+    assert.equal((await pending).thread.turns?.[0].id, "old-turn");
+    const metadata = client.readThread("thread-1", false);
+    handler.handle({ id: writes[2].id, result: { thread: { id: "thread-1" } } });
+    await metadata;
+    assert.equal(writes.length, 3);
+});
+
+test("分页游标重复或后续页失败时拒绝返回截断的历史", async () => {
+    for (const repeated of [true, false]) {
+        const writes: Array<Record<string, unknown>> = [];
+        const client = Reflect.construct(CodexAppClient, [{ stdin: { write: (line: string) => (writes.push(JSON.parse(line)), true) } }, () => undefined, emptyEventHistory]) as CodexAppClient;
+        const handler = client as unknown as TestClient;
+        const pending = client.readThread("thread-1");
+        const rejected = assert.rejects(pending, repeated ? /游标重复/ : /read failed/);
+        handler.handle({ id: writes[0].id, result: { thread: { id: "thread-1", historyMode: "paginated" } } });
+        await new Promise((resolve) => setImmediate(resolve));
+        handler.handle({ id: writes[1].id, result: { data: [{ id: "turn-1" }], nextCursor: "next" } });
+        await new Promise((resolve) => setImmediate(resolve));
+        handler.handle(repeated ? { id: writes[2].id, result: { data: [], nextCursor: "next" } } : { id: writes[2].id, error: { message: "read failed" } });
+        await rejected;
+    }
+});
+
+test("尚未发送消息的分页线程允许读取空历史", async () => {
+    const writes: Array<Record<string, unknown>> = [];
+    const client = Reflect.construct(CodexAppClient, [{ stdin: { write: (line: string) => (writes.push(JSON.parse(line)), true) } }, () => undefined, emptyEventHistory]) as CodexAppClient;
+    const handler = client as unknown as TestClient;
+    const pending = client.readThread("thread-1");
+    handler.handle({ id: writes[0].id, result: { thread: { id: "thread-1", historyMode: "paginated" } } });
+    await new Promise((resolve) => setImmediate(resolve));
+    handler.handle({ id: writes[1].id, error: { message: "thread thread-1 is not materialized yet; thread/turns/list is unavailable before first user message" } });
+    assert.deepEqual((await pending).thread.turns, []);
+});
 
 test("审批只在 app-server 确认 resolved 后清除", () => {
     const writes: Array<Record<string, unknown>> = [];

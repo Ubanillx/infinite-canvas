@@ -55,9 +55,14 @@ type ThreadOptions = {
     cwd?: string;
     developerInstructions?: string;
     ephemeral?: boolean;
+    excludeTurns?: boolean;
 };
 
 type CodexRequestSpec = {
+    "config/read": {
+        params: { includeLayers: boolean };
+        result: { config: JsonRecord };
+    };
     initialize: {
         params: {
             clientInfo: { name: string; title: string; version: string };
@@ -91,6 +96,10 @@ type CodexRequestSpec = {
     "thread/read": {
         params: { threadId: string; includeTurns: boolean };
         result: { thread: CodexThread };
+    };
+    "thread/turns/list": {
+        params: { threadId: string; cursor?: string; sortDirection: "asc"; itemsView: "full" };
+        result: { data: CodexTurn[]; nextCursor?: string | null };
     };
     "thread/archive": {
         params: { threadId: string };

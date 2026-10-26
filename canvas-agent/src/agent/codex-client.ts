@@ -61,6 +61,7 @@ export class CodexAppClient {
     private preheatingThreadIds = new Set<string>();
     private failing = false;
     private failureMessage = "";
+    private runtimeConfig: JsonRecord = {};
 
     /** 保存 app-server 子进程和事件出口。 */
     private constructor(private child: ChildProcess, private emit: AgentEmit, private eventHistory: Pick<CodexEventHistory, "record" | "recordTurn"> = codexEventHistory) {}
@@ -107,6 +108,9 @@ export class CodexAppClient {
         });
         await client.request("initialize", { clientInfo: { name: "canvas-agent", title: "Infinite Canvas Agent", version: VERSION }, capabilities: { experimentalApi: true, requestAttestation: false } });
         client.notify("initialized");
+        const { config } = await client.request("config/read", { includeLayers: false });
+        client.runtimeConfig = codexRuntimeConfig(config);
+        logger.debug("Codex runtime overrides selected", { keys: Object.keys(client.runtimeConfig) });
         return client;
     }
 
@@ -115,7 +119,8 @@ export class CodexAppClient {
         if (preheat) this.pendingPreheatThreadStarts += 1;
         let threadId = "";
         try {
-            const { thread } = await this.request("thread/start", { ...threadSettings(permissionMode), ...(cwd ? { cwd } : {}), threadSource: "user" });
+            const settings = threadSettings(permissionMode);
+            const { thread } = await this.request("thread/start", { ...settings, config: { ...settings.config, ...this.runtimeConfig }, ...(cwd ? { cwd } : {}), threadSource: "user" });
             if (!thread.id) throw new Error("Codex app-server 没有返回 thread id");
             threadId = thread.id;
             if (preheat) {
@@ -131,12 +136,14 @@ export class CodexAppClient {
 
     /** 创建不会持久化或向网页广播的草稿线程。 */
     async startSkillDraftThread(cwd: string) {
-        return await this.startSilentThread("thread/start", { ...skillDraftThreadSettings(cwd), threadSource: "user" });
+        const settings = skillDraftThreadSettings(cwd);
+        return await this.startSilentThread("thread/start", { ...settings, config: { ...settings.config, ...this.runtimeConfig }, threadSource: "user" });
     }
 
     /** 从指定对话派生不会持久化或向网页广播的草稿线程。 */
     async forkSkillDraftThread(threadId: string, cwd: string) {
-        return await this.startSilentThread("thread/fork", { ...skillDraftThreadSettings(cwd), threadId, threadSource: "user" });
+        const settings = skillDraftThreadSettings(cwd);
+        return await this.startSilentThread("thread/fork", { ...settings, config: { ...settings.config, ...this.runtimeConfig }, threadId, threadSource: "user", excludeTurns: true });
     }
 
     /** 恢复已有 Codex 线程。 */
@@ -144,7 +151,8 @@ export class CodexAppClient {
         if (preheat) this.pendingPreheatThreadStarts += 1;
         try {
             if (preheat) this.preheatingThreadIds.add(threadId);
-            const { thread } = await this.request("thread/resume", { threadId, ...threadSettings(permissionMode), ...(cwd ? { cwd } : {}) });
+            const settings = threadSettings(permissionMode);
+            const { thread } = await this.request("thread/resume", { threadId, ...settings, config: { ...settings.config, ...this.runtimeConfig }, ...(cwd ? { cwd } : {}), excludeTurns: true });
             if (!thread.id) throw new Error("Codex app-server 没有返回 thread id");
             if (preheat) await this.completeMcpPreheat(thread.id);
             return thread;
@@ -166,8 +174,30 @@ export class CodexAppClient {
     }
 
     /** 读取指定 Codex 线程。 */
-    readThread(threadId: string, includeTurns = true) {
-        return this.request("thread/read", { threadId, includeTurns });
+    async readThread(threadId: string, includeTurns = true) {
+        const result = await this.request("thread/read", { threadId, includeTurns: false });
+        if (!includeTurns) return result;
+        if (result.thread.historyMode !== "paginated") return this.request("thread/read", { threadId, includeTurns: true });
+        // Loaded paginated threads must use the durable history API, not live-store hydration.
+        const turns: NonNullable<typeof result.thread.turns> = [];
+        const cursors = new Set<string>();
+        let cursor: string | undefined;
+        do {
+            let page: CodexRequestResult<"thread/turns/list">;
+            try {
+                page = await this.request("thread/turns/list", { threadId, ...(cursor ? { cursor } : {}), sortDirection: "asc", itemsView: "full" });
+            } catch (error) {
+                // A newly preheated paginated thread has no durable turn list until its first user message.
+                // Treat that specific state as an empty history; all other paging errors remain fatal.
+                if (!turns.length && !cursor && /not materialized yet.*thread\/turns\/list/i.test(error instanceof Error ? error.message : String(error))) return { ...result, thread: { ...result.thread, turns: [] } };
+                throw error;
+            }
+            turns.push(...page.data);
+            cursor = page.nextCursor || undefined;
+            if (cursor && cursors.has(cursor)) throw new Error("Codex 历史分页游标重复，已停止读取以避免丢失或重复历史");
+            if (cursor) cursors.add(cursor);
+        } while (cursor);
+        return { ...result, thread: { ...result.thread, turns } };
     }
 
     /** 归档指定 Codex 线程。 */
@@ -791,6 +821,33 @@ function canvasAgentMcpCommand() {
     const entry = path.resolve(current || fileURLToPath(new URL("../index.js", import.meta.url)));
     const tsx = path.join(path.dirname(entry), "..", "node_modules", "tsx", "dist", "cli.mjs");
     return entry.endsWith(".ts") ? { command: process.execPath, args: [tsx, entry, "mcp"] } : { command: process.execPath, args: [entry, "mcp"] };
+}
+
+/** 只覆盖 Canvas Agent 的会话配置，不写用户全局配置。 */
+export function codexRuntimeConfig(config: JsonRecord, platform = process.platform): JsonRecord {
+    const overrides: JsonRecord = platform === "win32" ? { "features.shell_snapshot": false } : {};
+    const provider = typeof config.model_provider === "string" ? config.model_provider : "openai";
+    const providers = field(config, "model_providers");
+    const baseUrl = field(field(providers, provider), "base_url") || (provider === "openai" ? config.openai_base_url : undefined);
+    if (typeof baseUrl !== "string") return overrides;
+    try {
+        const url = new URL(baseUrl);
+        if (url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
+            if (provider === "openai") {
+                // Codex reserves the built-in provider ID. Reuse the user's existing local
+                // provider when present so its bearer/header settings survive this override.
+                overrides.model_provider = "infinite_canvas_http";
+                const localProvider = field(providers, "infinite_canvas_http");
+                overrides["model_providers.infinite_canvas_http.supports_websockets"] = false;
+                if (!localProvider || typeof localProvider !== "object") {
+                    overrides["model_providers.infinite_canvas_http"] = { name: "OpenAI", base_url: baseUrl, wire_api: "responses", requires_openai_auth: true, supports_websockets: false };
+                }
+            } else {
+                overrides[`model_providers.${provider}.supports_websockets`] = false;
+            }
+        }
+    } catch { /* Invalid provider configuration is still reported by Codex itself. */ }
+    return overrides;
 }
 
 /** 生成 Codex app-server 使用的 MCP 配置。 */
