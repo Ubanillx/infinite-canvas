@@ -42,7 +42,7 @@ export function startHttpServer() {
     const initialRuntime: WorkspaceRuntime = {
         id: "site",
         workspace: initialWorkspace,
-        session: new CanvasSession(initialWorkspace.activeThreadId || ""),
+        session: new CanvasSession(initialWorkspace.activeThreadId || "", initialWorkspace.engine),
         skillStore: new SkillStore(initialWorkspace.workspacePath),
         draftThreadStart: null,
         skillDraftRunning: false,
@@ -57,7 +57,7 @@ export function startHttpServer() {
         const runtime: WorkspaceRuntime = {
             id,
             workspace,
-            session: new CanvasSession(workspace.activeThreadId || ""),
+            session: new CanvasSession(workspace.engine === "pi" ? workspace.activeThreadId || "" : "", workspace.engine),
             skillStore: new SkillStore(workspace.workspacePath),
             draftThreadStart: null,
             skillDraftRunning: false,
@@ -121,9 +121,11 @@ export function startHttpServer() {
     /** 保存并广播当前站点工作空间的活跃线程。 */
     const setActiveThread = (activeThreadId: string, payload: Record<string, unknown> = {}, preserveConversation = false) => {
         const runtime = currentRuntime();
+        const engine = session.conversationStateSnapshot.engine;
+        const patch = { activeThreadId: activeThreadId || undefined, engine, activeThreads: { ...runtime.workspace.activeThreads, [engine]: activeThreadId } };
         const workspace = runtime.id === "site"
-            ? updateSiteWorkspace(config, { activeThreadId: activeThreadId || undefined })
-            : updateRequestWorkspace(config, runtime.id, { activeThreadId: activeThreadId || undefined });
+            ? updateSiteWorkspace(config, patch)
+            : updateRequestWorkspace(config, runtime.id, patch);
         runtime.workspace = workspace;
         if (!preserveConversation) session.activateConversation(activeThreadId, String(payload.sourceClientId || "") || undefined);
         if (!session.codexBusy && session.codexThreadId !== activeThreadId) session.setCodexState({ threadId: activeThreadId, turnId: "" });
@@ -333,6 +335,44 @@ export function startHttpServer() {
         const result = await listCodexThreads(emit, { cwd: workspace.workspacePath, searchTerm: String(req.query.searchTerm || "") });
         res.json({ ok: true, workspace, conversation: session.conversationStateSnapshot, ...result });
     }));
+    app.post("/agent/:engine/prepare", codexMutation(async (req, res) => {
+        const engine = routeParam(req.params.engine);
+        if (engine !== "codex" && engine !== "pi") return res.status(400).json({ ok: false, error: "不支持的引擎" });
+        const workspace = requestWorkspace(config, req);
+        const clientId = String(req.body?.clientId || "");
+        const current = session.conversationStateSnapshot;
+        if (current.engine === engine && current.threadId && ["ready", "warning", "running"].includes(current.status)) {
+            return res.json({ ok: true, workspace, conversation: current });
+        }
+        const threadId = workspace.activeThreads?.[engine] || "";
+        session.beginConversation({ engine, threadId, sourceClientId: clientId });
+        try {
+            if (engine === "pi") {
+                const store = new PiThreadStore(workspace.workspacePath);
+                const thread = threadId ? await store.read(threadId) : await store.create();
+                if (!thread) throw new Error("找不到该 Pi 会话，请新建会话");
+                session.completePiConversation(thread.id);
+                setActiveThread(thread.id, { sourceClientId: clientId }, true);
+            } else if (threadId) {
+                try {
+                    await prepareExistingThread(threadId, clientId, permissionMode(req.body?.permissionMode), workspace);
+                    setActiveThread(threadId, { sourceClientId: clientId }, true);
+                } catch (error) {
+                    if (!isRecoverableThreadError(error)) throw error;
+                    session.beginConversation({ sourceClientId: clientId });
+                    setActiveThread("", { draftThread: true, sourceClientId: clientId }, true);
+                    await prepareDraftThread(clientId, permissionMode(req.body?.permissionMode), workspace);
+                }
+            } else {
+                setActiveThread("", { draftThread: true, sourceClientId: clientId }, true);
+                await prepareDraftThread(clientId, permissionMode(req.body?.permissionMode), workspace);
+            }
+            res.json({ ok: true, workspace: requestWorkspace(config, req), conversation: session.conversationStateSnapshot });
+        } catch (error) {
+            failPreparedConversation(error, threadId, clientId);
+            throw error;
+        }
+    }));
     app.post("/agent/codex/threads/new", codexMutation(async (req, res) => {
         const clientId = String(req.body?.clientId || "");
         session.beginConversation({ sourceClientId: clientId });
@@ -378,7 +418,7 @@ export function startHttpServer() {
         res.json({ ok: true, workspace: nextWorkspace, conversation: session.conversationStateSnapshot });
     }));
     app.get("/agent/pi/models", route(async (_req, res) => {
-        res.json({ ok: true, data: piModelOptions(await readPiChannels()) });
+        res.json({ ok: true, data: piModelOptions(await readPiChannels(true)) });
     }));
     app.get("/agent/pi/skills", route(async (req, res) => {
         const workspace = requestWorkspace(config, req);
@@ -406,8 +446,8 @@ export function startHttpServer() {
         const clientId = String(req.body?.clientId || "");
         session.bindClient(clientId);
         const thread = await new PiThreadStore(workspace.workspacePath).create();
-        setActiveThread(thread.id, { emptyThread: true, sourceClientId: clientId }, true);
         session.completePiConversation(thread.id);
+        setActiveThread(thread.id, { emptyThread: true, sourceClientId: clientId }, true);
         res.json({ ok: true, workspace: requestWorkspace(config, req), conversation: session.conversationStateSnapshot, thread: { id: thread.id, preview: "", name: null, cwd: workspace.workspacePath, status: "idle", createdAt: thread.createdAt, updatedAt: thread.updatedAt }, messages: [] });
     }));
     app.post("/agent/pi/threads/:threadId/resume", piMutation(async (req, res) => {
@@ -417,8 +457,8 @@ export function startHttpServer() {
         const detail = await readPiThread(workspace.workspacePath, threadId);
         if (!detail) return res.status(404).json({ ok: false, error: "找不到该 Pi 会话" });
         session.bindClient(clientId);
-        setActiveThread(threadId, { sourceClientId: clientId }, true);
         session.completePiConversation(threadId);
+        setActiveThread(threadId, { sourceClientId: clientId }, true);
         res.json({ ok: true, workspace: requestWorkspace(config, req), conversation: session.conversationStateSnapshot, ...detail });
     }));
     app.post("/agent/pi/threads/:threadId/delete", piMutation(async (req, res) => {
@@ -440,7 +480,7 @@ export function startHttpServer() {
         const requestedThreadId = String(req.body?.threadId || "");
         const activeThreadId = workspace.activeThreadId || "";
         const conversation = session.conversationStateSnapshot;
-        if (requestedThreadId !== activeThreadId || conversation.threadId !== activeThreadId) {
+        if (conversation.engine !== "pi" || requestedThreadId !== activeThreadId || conversation.threadId !== activeThreadId) {
             return res.status(409).json({ ok: false, code: "CONVERSATION_STALE", error: "当前会话已切换，已同步最新状态，请确认后重试", state: conversation });
         }
         if (!activeThreadId || !["ready", "warning"].includes(conversation.status)) {
@@ -528,7 +568,7 @@ export function startHttpServer() {
         const conversation = session.conversationStateSnapshot;
         const requestedConversationId = String(req.body?.conversationId || "");
         const expectedRevision = Number(req.body?.expectedRevision || 0);
-        if (requestedThreadId !== activeThreadId || conversation.threadId !== activeThreadId || (requestedConversationId && requestedConversationId !== conversation.conversationId) || (expectedRevision && expectedRevision !== conversation.revision)) {
+        if (conversation.engine !== "codex" || requestedThreadId !== activeThreadId || conversation.threadId !== activeThreadId || (requestedConversationId && requestedConversationId !== conversation.conversationId) || (expectedRevision && expectedRevision !== conversation.revision)) {
             return res.status(409).json({ ok: false, code: "CONVERSATION_STALE", error: "当前会话已切换，已同步最新状态，请确认后重试", state: conversation });
         }
         if (!activeThreadId || !["ready", "warning"].includes(conversation.status)) {
@@ -680,7 +720,7 @@ export function startHttpServer() {
         if (logger.enabled) console.log(`Debug log: ${logger.filePath}`);
         logger.info("Canvas Agent started", { url: config.url, workspace: ensureSiteWorkspace(config).workspacePath, debugLog: logger.filePath });
         const activeThreadId = initialWorkspace.activeThreadId || "";
-        if (activeThreadId && session.beginCodexMutation()) {
+        if (activeThreadId && initialWorkspace.engine !== "pi" && session.beginCodexMutation()) {
             void prepareExistingThread(activeThreadId).catch(async (error) => {
                 if (!isRecoverableThreadError(error)) return failPreparedConversation(error, activeThreadId);
                 session.beginConversation();

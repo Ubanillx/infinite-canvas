@@ -150,7 +150,10 @@ default_tools_approval_mode = "approve"
 
 面板标题栏可以在 **Codex** 和 **Pi** 两个引擎之间切换，Codex 链路完全保留。Pi 引擎基于 `@earendil-works/pi-agent-core`，在 Canvas Agent 进程内直接调用服务器配置里的文本渠道，不需要 Codex 登录、本机 MCP 或 app-server。
 
-- 模型列表来自服务器配置 `config.json` 中的文本模型；`apiFormat` 为 `openai`、`ark`、`gemini` 的渠道可用，`custom`（自定义脚本）渠道不参与。
+OpenAI 兼容渠道自动读取 `/models`，优先按上游的逐模型协议能力选择 Responses 或 Chat Completions；没有协议元数据时由 Pi 内置模型目录和模型 ID 推断。Gemini 渠道使用原生协议；模型与 API Key 从服务端配置读取，浏览器仅获取可选模型和密钥是否已配置的状态。
+
+- 保存渠道地址与密钥后，Pi 自动发现该密钥可用的对话模型，无需在渠道里逐个添加；已配置的文本模型保留，图片、视频、音频等模型不进入助手。连接、切换到 Pi 或保存渠道时重新读取列表，发送时复用服务端发现结果；发现失败时保留同一渠道的已有结果和手动模型。
+- 精确模型 ID 优先复用 Pi 内置目录的输入类型、推理能力、上下文窗口、输出上限与兼容参数；上游提供的参数和显式模型覆盖优先。未知型号保留原有 128000 上下文 / 8192 输出默认值，不猜测具体容量。非推理模型不显示思考程度选择器。
 - 全部 34 个画布工具的 zod 入参通过 `zod-to-json-schema` 转成 JSON Schema 后注册给 Pi，`execute` 仍调用同一套 `CanvasSession.callTool`，因此浏览器确认、超时、多标签页归属和附件链路完全复用。
 - 会话按工作区保存在 `<workspace>/.infinite-canvas/pi-threads/`，未知版本或损坏文件会被拒绝读取而不是覆盖。
 - Pi 引擎暂不支持 Codex 沙箱权限和内置生图，相关入口在 Pi 模式下隐藏。

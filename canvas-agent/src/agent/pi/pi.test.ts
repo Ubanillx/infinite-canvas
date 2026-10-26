@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createServer } from "node:http";
+import { once } from "node:events";
 import test, { after } from "node:test";
 
 import { zodToJsonSchema } from "zod-to-json-schema";
@@ -11,7 +13,9 @@ import { toolDescriptions, toolInputSchemas, toolNames } from "../../canvas/sche
 import { createReadSkillTool, loadPiSkills, piSkillSummaries, resolveExplicitSkill, setPiSkillEnabled, skillsFingerprint, skillsPromptBlock } from "./skills.js";
 import { piToolSchema } from "./tools.js";
 import { PiThreadStore, readPiThread, settledTurnIds, threadMessages } from "./store.js";
-import { piModelOptions, readPiChannels } from "./model.js";
+import { piModelOptions, readPiChannels, resolvePiModel, type PiChannel } from "./model.js";
+import { interruptPiTurn, releasePiRuntime, runPiTurn } from "./engine.js";
+import { CanvasSession } from "../../canvas/session.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -123,6 +127,207 @@ test("兼容渠道才会进入 pi 模型列表", async () => {
         assert.equal(options[0].displayName, "m1（开放）");
     } finally {
         process.env.INFINITE_CANVAS_DATA_DIR = previous;
+    }
+});
+
+test("Pi 从密钥自动发现模型并优先使用上游协议能力", async () => {
+    const dir = await temporaryWorkspace();
+    const previous = process.env.INFINITE_CANVAS_DATA_DIR;
+    process.env.INFINITE_CANVAS_DATA_DIR = dir;
+    let unavailable = false;
+    let requests = 0;
+    const server = createServer((req, res) => {
+        requests++;
+        assert.equal(req.url, "/v1/models");
+        assert.equal(req.headers.authorization, "Bearer discovery-test");
+        res.setHeader("Content-Type", "application/json");
+        if (unavailable) {
+            res.statusCode = 503;
+            return res.end(JSON.stringify({ error: { message: "discovery unavailable" } }));
+        }
+        res.end(JSON.stringify({ data: [
+            { id: "deepseek-v4-flash", supported_endpoint_types: ["openai", "openai-response"], context_length: 262144, max_output_tokens: 32768 },
+            { id: "gpt-6.1-sol", supported_endpoint_types: ["openai"] },
+            { id: "qwen3.8-max", supported_endpoint_types: ["openai"] },
+            { id: "gpt-image-2", supported_endpoint_types: ["image-generation", "openai"] },
+            { id: "text-embedding-3-small" },
+        ] }));
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    try {
+        await fs.writeFile(path.join(dir, "config.json"), JSON.stringify({ config: { channels: [{ id: "discovery", name: "Discovery", baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`, apiKey: "discovery-test", apiFormat: "openai", models: [] }] } }));
+        const channels = await readPiChannels(true);
+        assert.equal(channels.length, 1, "只有密钥和地址的渠道也应自动发现模型");
+        assert.deepEqual(piModelOptions(channels).map((item) => item.model), ["discovery::deepseek-v4-flash", "discovery::gpt-6.1-sol", "discovery::qwen3.8-max"]);
+        const responses = resolvePiModel(channels, "discovery::deepseek-v4-flash").model;
+        assert.equal(responses.api, "openai-responses");
+        assert.equal(responses.contextWindow, 262144);
+        assert.equal(responses.maxTokens, 32768);
+        assert.equal(resolvePiModel(channels, "discovery::gpt-6.1-sol").model.api, "openai-completions");
+        assert.equal(resolvePiModel(channels, "discovery::qwen3.8-max").model.api, "openai-completions");
+        assert.equal(requests, 1);
+        assert.deepEqual(piModelOptions(await readPiChannels()), piModelOptions(channels));
+        assert.equal(requests, 1, "发送时复用发现结果，不重复请求模型目录");
+        unavailable = true;
+        assert.deepEqual(piModelOptions(await readPiChannels(true)), piModelOptions(channels), "目录失败保留同一渠道缓存");
+        assert.equal(requests, 2);
+    } finally {
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        if (previous === undefined) delete process.env.INFINITE_CANVAS_DATA_DIR;
+        else process.env.INFINITE_CANVAS_DATA_DIR = previous;
+    }
+});
+
+test("Pi 复用内置模型参数、尊重显式覆盖并推断未知型号协议", () => {
+    const channels: PiChannel[] = [{ id: "auto", name: "Auto", baseUrl: "https://example.com/v1", apiKey: "test", apiFormat: "openai", models: [
+        { name: "gpt-4", capability: "text" },
+        { name: "gpt-6.1-sol", capability: "text" },
+        { name: "qwen3.8-max", capability: "text" },
+        { name: "deepseek-v4-pro", capability: "text", apiFormat: "openai-completions", endpointTypes: ["openai-response"], contextWindow: 100000, maxTokens: 5000, reasoning: false },
+    ] }];
+    const known = resolvePiModel(channels, "auto::gpt-4").model;
+    assert.equal(known.reasoning, false);
+    assert.deepEqual(known.input, ["text"]);
+    assert.equal(known.contextWindow, 8192);
+    assert.equal(known.maxTokens, 8192);
+    assert.deepEqual(piModelOptions(channels)[0].supportedReasoningEfforts, [{ reasoningEffort: "none" }]);
+    const gpt = resolvePiModel(channels, "auto::gpt-6.1-sol").model;
+    assert.equal(gpt.api, "openai-responses");
+    assert.equal(gpt.reasoning, true);
+    assert.equal(resolvePiModel(channels, "auto::qwen3.8-max").model.api, "openai-completions");
+    const overridden = resolvePiModel(channels, "auto::deepseek-v4-pro").model;
+    assert.equal(overridden.api, "openai-completions");
+    assert.equal(overridden.contextWindow, 100000);
+    assert.equal(overridden.maxTokens, 5000);
+    assert.equal(overridden.reasoning, false);
+});
+
+test("Pi Chat Completions 适配器覆盖成功、工具往返、上游错误、中断和配置缺失", async (t) => {
+    const dataDir = await temporaryWorkspace();
+    const previous = process.env.INFINITE_CANVAS_DATA_DIR;
+    process.env.INFINITE_CANVAS_DATA_DIR = dataDir;
+    let mode = "success";
+    let requests: Array<Record<string, any>> = [];
+    let cwd = "";
+    const server = createServer(async (req, res) => {
+        let body = "";
+        for await (const chunk of req) body += chunk;
+        const input = JSON.parse(body);
+        requests.push(input);
+        if (mode === "error") {
+            res.writeHead(401, { "content-type": "application/json" });
+            return res.end(JSON.stringify({ error: { message: "test credential rejected", type: "invalid_api_key" } }));
+        }
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        const chunk = (delta: unknown, finish_reason: string | null = null) => res.write(`data: ${JSON.stringify({ id: "test", object: "chat.completion.chunk", created: 1, model: "test-model", choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
+        chunk({ role: "assistant" });
+        if (mode === "abort") {
+            chunk({ content: "partial" });
+            setImmediate(() => interruptPiTurn(cwd));
+            return;
+        }
+        if (mode === "tool" && !input.messages.some((message: any) => message.role === "tool")) {
+            chunk({ tool_calls: [{ index: 0, id: "skill-call", type: "function", function: { name: "read_skill", arguments: '{"name":"alpha-skill"}' } }] });
+            chunk({}, "tool_calls");
+        } else {
+            chunk({ content: "PI_OK" });
+            chunk({}, "stop");
+        }
+        res.end("data: [DONE]\n\n");
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = (server.address() as { port: number }).port;
+    const config = { config: { channels: [{ id: "test", name: "Test", baseUrl: `http://127.0.0.1:${port}`, apiKey: "test-key", apiFormat: "ark", models: [{ name: "test-model", capability: "text" }] }] } };
+    try {
+        await fs.writeFile(path.join(dataDir, "config.json"), JSON.stringify(config));
+        assert.throws(() => resolvePiModel(config.config.channels as any, "test::missing"), /不可用/);
+        for (const scenario of ["success", "tool", "error", "abort", "missing"] as const) {
+            await t.test(scenario, async () => {
+                cwd = await skillWorkspace();
+                const store = new PiThreadStore(cwd);
+                const thread = await store.create();
+                const events: Array<Record<string, any>> = [];
+                let boundTurn = "";
+                mode = scenario;
+                requests = [];
+                if (scenario === "missing") await fs.writeFile(path.join(dataDir, "config.json"), "{}");
+                await runPiTurn("Reply PI_OK", (_type, payload) => events.push(payload as Record<string, any>), [], {
+                    cwd, session: new CanvasSession(), threadId: thread.id, onTurn: (id) => { boundTurn = id; },
+                });
+                const expected = scenario === "error" || scenario === "missing" ? "failed" : scenario === "abort" ? "interrupted" : "completed";
+                assert.ok(boundTurn);
+                assert.equal(events.find((event) => event.type === "turn.completed")?.status, expected);
+                const stored = await store.read(thread.id);
+                assert.equal(stored?.turns[0].status, expected);
+                assert.equal(stored?.turns[0].turnId, boundTurn);
+                if (expected === "failed") assert.ok(stored?.turns[0].messages.some((item) => item.role === "error"));
+                if (scenario === "success" || scenario === "tool") assert.ok(stored?.turns[0].messages.some((item) => item.text === "PI_OK"));
+                if (scenario === "success") assert.ok(JSON.stringify(requests[0].messages).includes("你是 Pi"), "Pi 的真实请求应携带引擎身份");
+                if (scenario === "tool") {
+                    assert.equal(requests.length, 2);
+                    assert.ok(events.some((event) => event.item?.tool === "read_skill" && event.item.status === "completed"));
+                }
+                releasePiRuntime(cwd, thread.id);
+            });
+        }
+    } finally {
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        if (previous === undefined) delete process.env.INFINITE_CANVAS_DATA_DIR;
+        else process.env.INFINITE_CANVAS_DATA_DIR = previous;
+    }
+});
+
+test("Pi OpenAI 使用 Responses 完成流式回复与工具往返", async () => {
+    const dataDir = await temporaryWorkspace();
+    const previous = process.env.INFINITE_CANVAS_DATA_DIR;
+    process.env.INFINITE_CANVAS_DATA_DIR = dataDir;
+    const requests: Array<{ url: string; body: Record<string, any> }> = [];
+    const server = createServer(async (req, res) => {
+        let body = "";
+        for await (const chunk of req) body += chunk;
+        const input = JSON.parse(body);
+        requests.push({ url: req.url || "", body: input });
+        const tool = !input.input.some((item: any) => item.type === "function_call_output");
+        const item = tool
+            ? { id: "fc_skill", type: "function_call", call_id: "skill-call", name: "read_skill", arguments: '{"name":"alpha-skill"}', status: "completed" }
+            : { id: "msg_reply", type: "message", role: "assistant", content: [{ type: "output_text", text: "PI_RESPONSES_OK", annotations: [] }], status: "completed" };
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        const event = (type: string, data: Record<string, unknown>) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
+        event("response.created", { response: { id: `resp_${requests.length}`, status: "in_progress" } });
+        event("response.output_item.added", { output_index: 0, item: { ...item, arguments: "", content: [] } });
+        if (!tool) event("response.output_text.delta", { output_index: 0, content_index: 0, delta: "PI_RESPONSES_OK" });
+        event("response.output_item.done", { output_index: 0, item });
+        event("response.completed", { response: { id: `resp_${requests.length}`, status: "completed", output: [item], usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } } });
+        res.end();
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = (server.address() as { port: number }).port;
+    const cwd = await skillWorkspace();
+    const store = new PiThreadStore(cwd);
+    const thread = await store.create();
+    try {
+        const channels = [{ id: "responses", name: "Responses", baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "test-key", apiFormat: "openai", models: [{ name: "test-model", capability: "text", apiFormat: "openai-responses" }] }];
+        await fs.writeFile(path.join(dataDir, "config.json"), JSON.stringify({ config: { channels } }));
+        assert.equal(resolvePiModel(channels, "responses::test-model").model.api, "openai-responses");
+        const events: Array<Record<string, any>> = [];
+        await runPiTurn("Read alpha-skill, then reply PI_RESPONSES_OK", (_type, payload) => events.push(payload as Record<string, any>), [], { cwd, session: new CanvasSession(), threadId: thread.id });
+        assert.equal(events.find((event) => event.type === "turn.completed")?.status, "completed");
+        assert.equal(requests.length, 2);
+        assert.ok(requests.every((request) => request.url === "/v1/responses" && request.body.stream === true && !request.body.messages));
+        assert.ok(events.some((event) => event.item?.tool === "read_skill" && event.item.status === "completed"));
+        assert.ok(events.some((event) => event.type === "usage.updated" && event.usage?.input_tokens === 10 && event.usage?.output_tokens === 5));
+        assert.ok((await store.read(thread.id))?.turns[0].messages.some((item) => item.text === "PI_RESPONSES_OK"));
+    } finally {
+        releasePiRuntime(cwd, thread.id);
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        if (previous === undefined) delete process.env.INFINITE_CANVAS_DATA_DIR;
+        else process.env.INFINITE_CANVAS_DATA_DIR = previous;
     }
 });
 

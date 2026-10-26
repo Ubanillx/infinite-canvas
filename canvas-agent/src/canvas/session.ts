@@ -14,6 +14,7 @@ type ReplayEvent = { type: string; payload: Record<string, unknown> };
 export type CodexState = { busy: boolean; threadId: string; turnId: string };
 export type McpStartupState = "starting" | "ready" | "failed" | "cancelled";
 export type ConversationState = {
+    engine: "codex" | "pi";
     revision: number;
     conversationId: string;
     threadId: string;
@@ -23,7 +24,7 @@ export type ConversationState = {
     error?: string;
 };
 type McpInventoryItem = { name: string; authStatus?: string };
-export const AGENT_PROTOCOL_VERSION = 6;
+export const AGENT_PROTOCOL_VERSION = 7;
 
 const SITE_TOOLS = new Set<ToolName>([
     "site_navigate",
@@ -57,8 +58,9 @@ export class CanvasSession {
     private conversationInventoryComplete = false;
     private preparedConversationThreadId = "";
 
-    constructor(activeThreadId = "") {
+    constructor(activeThreadId = "", engine: "codex" | "pi" = "codex") {
         this.conversationState = {
+            engine,
             revision: 1,
             conversationId: activeThreadId || crypto.randomUUID(),
             threadId: activeThreadId,
@@ -102,10 +104,11 @@ export class CanvasSession {
     }
 
     /** 原子开始一次新建或恢复对话流程。 */
-    beginConversation(options: { threadId?: string; conversationId?: string; sourceClientId?: string } = {}) {
+    beginConversation(options: { threadId?: string; conversationId?: string; sourceClientId?: string; engine?: "codex" | "pi" } = {}) {
         this.conversationInventoryComplete = false;
         this.preparedConversationThreadId = "";
         return this.updateConversation({
+            engine: options.engine || "codex",
             conversationId: options.conversationId || options.threadId || crypto.randomUUID(),
             threadId: options.threadId || "",
             status: "preparing",
@@ -160,7 +163,7 @@ export class CanvasSession {
     completePiConversation(threadId: string) {
         this.conversationInventoryComplete = true;
         this.preparedConversationThreadId = threadId;
-        return this.updateConversation({ threadId, status: threadId ? "ready" : "idle", mcpStatuses: {}, error: undefined });
+        return this.updateConversation({ engine: "pi", conversationId: threadId || crypto.randomUUID(), threadId, status: threadId ? "ready" : "idle", mcpStatuses: {}, error: undefined });
     }
 
     /** 将创建线程或读取 MCP 清单的失败保存为不可发送状态。 */

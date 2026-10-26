@@ -221,9 +221,9 @@ test("new clients receive the current Codex state and later updates", (t) => {
     t.after(() => client.close());
 
     const hello = client.event("hello");
-    assert.equal(field(hello, "protocolVersion"), 6);
+    assert.equal(field(hello, "protocolVersion"), 7);
     assert.deepEqual(field(hello, "workspace"), { activeThreadId: "thread-2" });
-    assert.deepEqual(field(hello, "conversation"), { revision: 1, conversationId: "thread-2", threadId: "thread-2", status: "ready", mcpStatuses: {} });
+    assert.deepEqual(field(hello, "conversation"), { engine: "codex", revision: 1, conversationId: "thread-2", threadId: "thread-2", status: "ready", mcpStatuses: {} });
     assert.deepEqual(field(hello, "codex"), { busy: true, threadId: "thread-2", turnId: "turn-1" });
     assert.deepEqual(field(hello, "pendingApprovals"), [{ requestId: "approval-1", threadId: "thread-2" }]);
 
@@ -253,6 +253,20 @@ test("对话 revision 单调递增且 MCP 全部进入终态前保持 preparing"
     assert.equal(ready.status, "ready");
     assert.equal(ready.threadId, "thread-1");
     revisions.slice(1).forEach((revision, index) => assert.ok(revision > revisions[index]));
+});
+
+test("Pi 会话与 Codex 预热状态按引擎归属", () => {
+    const session = new CanvasSession();
+    session.beginConversation({ engine: "pi" });
+    const pi = session.completePiConversation("pi-thread");
+    assert.equal(pi.engine, "pi");
+    assert.equal(pi.conversationId, "pi-thread");
+    assert.equal(pi.status, "ready");
+    const codex = session.beginConversation({ threadId: "codex-thread" });
+    assert.equal(codex.engine, "codex");
+    assert.equal(codex.status, "preparing");
+    assert.deepEqual(codex.mcpStatuses, {});
+    assert.equal(new CanvasSession("pi-thread", "pi").conversationStateSnapshot.engine, "pi");
 });
 
 test("可选 MCP 失败进入 warning，画布 MCP 失败进入 failed", () => {

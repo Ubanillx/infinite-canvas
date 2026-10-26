@@ -13,6 +13,9 @@ import { createReadSkillTool, loadPiSkills, resolveExplicitSkill, skillsFingerpr
 import { PiThreadStore, type PiDisplayMessage, type PiStoredTurn } from "./store.js";
 import { buildPiTools } from "./tools.js";
 
+// Pi shares Canvas tools with Codex, but it must identify the engine the user selected.
+const PI_AGENT_PROMPT = `你是 Pi，引擎名称是 Pi。回答“你是谁”时请明确说明自己是 Pi，不要自称 Codex。\n\n${AGENT_PROMPT}`;
+
 export type PiRunOptions = {
     threadId?: string;
     cwd: string;
@@ -59,41 +62,63 @@ async function runPiTurnNow(prompt: string, emit: AgentEmit, attachments: AgentA
     const turn: PiStoredTurn = { turnId, userText: options.messageText || prompt, startedAt: Date.now(), status: "running", messages: display };
     const store = new PiThreadStore(options.cwd);
     let runtime: PiRuntime | undefined;
+    let threadId = options.threadId || "";
     try {
         options.onStart?.();
+        if (threadId) {
+            options.onThread?.(threadId);
+            options.onTurn?.(turnId);
+        }
         runtime = await ensureRuntime(emit, options, store);
-        options.onThread?.(runtime.threadId);
-        options.onTurn?.(turnId);
+        if (!threadId) {
+            threadId = runtime.threadId;
+            options.onThread?.(threadId);
+            options.onTurn?.(turnId);
+        }
         // 和 Codex 引擎一致：生命周期事件统一包在 agent_event 里，前端只订阅这一个通道。
         emit("agent_event", { agent: "pi", type: "turn.started", thread_id: runtime.threadId, turn_id: turnId });
 
         const owner = runtime;
         const seq = { assistant: 0 };
+        let terminalError: Error | undefined;
         const skills = await loadPiSkills(options.cwd).then((result) => result.skills);
         // 用户点名的 Skill 无条件加载，等价于 Codex 的 {type:"skill"} 输入。
         const explicit = options.skill ? await resolveExplicitSkill(options.cwd, options.skill) : "";
-        const unsubscribe = owner.agent.subscribe((event) => handleAgentEvent(event, { emit, threadId: owner.threadId, turnId, display, seq }));
+        const unsubscribe = owner.agent.subscribe((event) => {
+            if (event.type === "message_end" && event.message.role === "assistant") {
+                const message = event.message as AssistantMessage;
+                if (message.stopReason === "error" || message.stopReason === "aborted") {
+                    terminalError = new Error(message.errorMessage || "Pi 请求失败");
+                    if (message.stopReason === "aborted") terminalError.name = "AbortError";
+                }
+            }
+            handleAgentEvent(event, { emit, threadId: owner.threadId, turnId, display, seq });
+        });
         try {
             owner.agent.state.tools = [...buildPiTools(options.session), createReadSkillTool(skills)];
             await owner.agent.prompt(promptMessage(explicit ? `${explicit}\n\n---\n\n${prompt}` : prompt, attachments));
             await owner.agent.waitForIdle();
+            if (terminalError) throw terminalError;
         } finally {
             unsubscribe();
         }
         turn.status = "completed";
-        emit("agent_event", { agent: "pi", type: "turn.completed", thread_id: owner.threadId, turn_id: turnId, status: "completed", usage: null });
     } catch (error) {
         const message = errorMessage(error);
         turn.status = interrupted(error) ? "interrupted" : "failed";
+        turn.error = message;
         if (turn.status === "failed") {
             logger.error("Pi turn failed", error);
             display.push({ itemId: "synthetic:error", turnId, role: "error", title: "任务失败", text: message });
-            emit("agent_event", { agent: "pi", type: "error", message, thread_id: runtime?.threadId, turn_id: turnId });
+            emit("agent_event", { agent: "pi", type: "error", message, thread_id: threadId, turn_id: turnId });
         }
-        emit("agent_event", { agent: "pi", type: "turn.completed", thread_id: runtime?.threadId, turn_id: turnId, status: turn.status, ...(turn.status === "failed" ? { error: { message } } : {}), usage: null });
     } finally {
         turn.finishedAt = Date.now();
-        if (runtime) await store.saveTurn(runtime.threadId, turn, runtime.agent.state.messages).catch((error) => logger.warn("Failed to save pi turn", { error: errorMessage(error) }));
+        if (threadId) {
+            const transcript = runtime?.agent.state.messages || (await store.read(threadId))?.transcript;
+            if (transcript) await store.saveTurn(threadId, turn, transcript).catch((error) => logger.warn("Failed to save pi turn", { error: errorMessage(error) }));
+        }
+        emit("agent_event", { agent: "pi", type: "turn.completed", thread_id: threadId, turn_id: turnId, status: turn.status, ...(turn.status === "failed" ? { error: { message: turn.error } } : {}), usage: null });
         options.onFinish?.();
     }
 }
@@ -163,12 +188,12 @@ async function ensureRuntime(emit: AgentEmit, options: PiRunOptions, store: PiTh
     if (existing) {
         existing.agent.state.model = resolved.model as Model<any>;
         existing.agent.streamFunction = (model, context, streamOptions) => streamFor(model, context, { ...streamOptions, apiKey: resolved.apiKey });
-        existing.agent.state.thinkingLevel = thinkingLevel(options.effort);
+        existing.agent.state.thinkingLevel = thinkingLevel(options.effort, resolved.model);
         return existing;
     }
     const stored = options.threadId ? await store.read(threadId) : await store.create(threadId);
     const agent = new Agent({
-        initialState: { systemPrompt: `${AGENT_PROMPT}${skillsPromptBlock(skills)}`, model: resolved.model, tools: [], thinkingLevel: thinkingLevel(options.effort) },
+        initialState: { systemPrompt: `${PI_AGENT_PROMPT}${skillsPromptBlock(skills)}`, model: resolved.model, tools: [], thinkingLevel: thinkingLevel(options.effort, resolved.model) },
         streamFn: (model, context, streamOptions) => streamFor(model, context, { ...streamOptions, apiKey: resolved.apiKey }),
         toolExecution: "sequential",
         identity: { attribution: null },
@@ -186,8 +211,9 @@ function promptMessage(prompt: string, attachments: AgentAttachment[]): AgentMes
     return { role: "user", content: images.length ? [{ type: "text", text: prompt }, ...images] : prompt, timestamp: Date.now() } as AgentMessage;
 }
 
-function thinkingLevel(effort?: string) {
-    return effort === "low" || effort === "high" ? effort : "medium";
+function thinkingLevel(effort: string | undefined, model: Model<any>) {
+    if (!model.reasoning || effort === "none") return "off";
+    return effort === "minimal" || effort === "low" || effort === "high" || effort === "xhigh" || effort === "max" ? effort : "medium";
 }
 
 function assistantItemId(turnId: string, index: number) {
@@ -228,6 +254,7 @@ function imagesOf(attachments: AgentAttachment[]) {
 }
 
 function interrupted(error: unknown) {
+    if (error instanceof Error && error.name === "AbortError") return true;
     const text = errorMessage(error).toLowerCase();
     return text.includes("abort") || text.includes("cancel");
 }
