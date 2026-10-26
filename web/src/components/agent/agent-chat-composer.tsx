@@ -124,7 +124,7 @@ function AgentModelControls({ models, model, reasoningEffort, onModelChange, onR
                             <span className="hidden min-w-0 flex-1 truncate text-left @min-[660px]:inline">{modelLabel(current)}</span>
                             <ChevronUp className="hidden size-3 opacity-50 @min-[660px]:block" />
                         </SelectTrigger>
-                        <SelectContent data-canvas-no-zoom position="popper" side="top" align="start" sideOffset={6} className="z-[1200] w-64 rounded-xl border border-border/70 bg-popover p-1 shadow-xl">
+                        <SelectContent hideScrollButtons data-canvas-no-zoom position="popper" side="top" align="start" sideOffset={6} className="z-[1200] w-64 rounded-xl border border-border/70 bg-popover p-1 shadow-xl">
                             {models.map((item) => <SelectItem key={item.model} value={item.model}>{modelLabel(item)}</SelectItem>)}
                         </SelectContent>
                     </Select>
