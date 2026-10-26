@@ -17,10 +17,33 @@ const diagnostics = attachDiagnostics(page);
 const report = { checks: [], failures: [] };
 const record = (check) => { report.checks.push(check); console.log(`ok: ${check}`); };
 try {
+    if (process.argv.includes("--runtime-logs")) await context.addInitScript(() => {
+        window.agentRuntimeLogs = [];
+        const Source = window.EventSource;
+        window.EventSource = class extends Source {
+            constructor(...args) {
+                super(...args);
+                this.addEventListener("agent_log", (event) => {
+                    try {
+                        const payload = JSON.parse(event.data);
+                        const entry = JSON.parse(payload.text);
+                        window.agentRuntimeLogs.push({ level: entry.level, target: entry.target, message: entry.fields?.message });
+                    } catch { /* Only collect structured runtime diagnostics, never raw payloads. */ }
+                });
+            }
+        };
+    });
     const accountResponse = await context.request.post("/api/auth/register", { data: { username: `qa-agent-${randomUUID()}`, password: randomUUID() } });
     assert.equal(accountResponse.status(), 201);
     const account = await accountResponse.json();
     const workspace = account.workspaces[0];
+    const canvasId = process.argv.includes("--canvas-tools") ? `qa-agent-${randomUUID()}` : "";
+    if (canvasId) {
+        const now = new Date().toISOString();
+        const project = { id: canvasId, title: "Agent 日志验收", folderId: null, createdAt: now, updatedAt: now, nodes: [], connections: [], chatSessions: [], activeChatId: null, backgroundMode: "lines", showImageInfo: false, viewport: { x: 0, y: 0, k: 1 } };
+        const seeded = await context.request.put("/api/data/canvas", { headers: { "x-infinite-canvas-workspace": workspace.id }, data: { revision: 0, payload: { state: { projects: [project], folders: [], deletedProjects: [] }, version: 0 } } });
+        assert.equal(seeded.status(), 200);
+    }
     await context.addInitScript((workspace) => {
         localStorage.setItem("infinite-canvas:active-workspace", JSON.stringify(workspace));
         if (!localStorage.getItem("canvas-agent-engine")) localStorage.setItem("canvas-agent-engine", "codex");
@@ -31,7 +54,7 @@ try {
     assert.equal((await context.request.get("/api/canvas-agent/agent/pi/models", { headers: { "x-infinite-canvas-workspace": randomUUID() } })).status(), 403);
     record("gateway denies anonymous and non-member workspaces");
     const firstPreparation = prepareFor("codex");
-    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.goto(canvasId ? `/canvas/${canvasId}` : "/", { waitUntil: "domcontentloaded" });
     await page.getByRole("button").filter({ hasText: "AI助手" }).first().click();
     const codex = await firstPreparation;
     await page.locator('[role="textbox"][contenteditable="true"]').waitFor({ timeout: 120000 });
@@ -46,8 +69,26 @@ try {
         await composer.press("Enter");
         await page.getByText("CODEX_OK", { exact: true }).waitFor({ timeout: 120000 });
         record("Codex real provider turn replies CODEX_OK");
+        if (canvasId) {
+            await composer.fill("请使用 infinite-canvas 的画布工具读取当前画布，然后创建且只创建一个文本节点，标题和内容都为 LOG_CANVAS_OK。不要使用命令行或文件工具，不要修改其他节点，完成后回复 CANVAS_TOOL_OK。");
+            await composer.press("Enter");
+            await page.locator(".agent-streamdown").filter({ hasText: "CANVAS_TOOL_OK" }).waitFor({ timeout: 120000 });
+            await page.locator("[data-node-id]").filter({ hasText: "LOG_CANVAS_OK" }).first().waitFor({ timeout: 120000 });
+            const saved = await context.request.get("/api/data/canvas", { headers: { "x-infinite-canvas-workspace": workspace.id } });
+            assert.equal(saved.status(), 200);
+            const project = (await saved.json()).payload.state.projects.find((item) => item.id === canvasId);
+            assert.equal(project.nodes.filter((item) => item.title === "LOG_CANVAS_OK").length, 1);
+            record("Codex reads the real canvas, creates one text node and persists it server-side");
+        }
     }
     await page.screenshot({ path: resolve(runDir, "codex.png") });
+    if (process.argv.includes("--runtime-logs")) {
+        const logs = await page.evaluate(() => window.agentRuntimeLogs);
+        report.runtimeLogs = logs;
+        const serious = logs.filter((entry) => entry.level === "ERROR" || /models cache|renew cache TTL|unknown feature key|ignoring hooks|failed to connect to websocket|Shell snapshot not supported|list_turns is not supported/i.test(entry.message || ""));
+        assert.deepEqual(serious, [], "Codex must not emit schema, transport or unsupported-shell diagnostics");
+        record("Codex runtime has no model-cache, hook-schema, transport or unsupported-shell diagnostics");
+    }
     const piModels = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/canvas-agent/agent/pi/models");
     const piPreparation = prepareFor("pi");
     await page.getByRole("button", { name: /切换 Agent 引擎.*Codex/ }).click();
@@ -131,6 +172,13 @@ try {
     assert.equal(await page.getByText("PI_OK", { exact: true }).count(), 0);
     assert.equal(await page.getByText("PI_RESPONSES_OK", { exact: true }).count(), 0);
     record("Pi replies do not leak into restored Codex history");
+    if (process.argv.includes("--codex")) {
+        await page.getByText("CODEX_OK", { exact: true }).waitFor({ timeout: 120000 });
+        const history = await context.request.get(`/api/canvas-agent/agent/codex/threads/${codex.threadId}`, { headers: { "x-infinite-canvas-workspace": workspace.id } });
+        assert.equal(history.status(), 200);
+        assert.ok((await history.json()).messages.some((item) => item.role === "assistant" && item.text === "CODEX_OK"));
+        record("Codex persisted history loads without HTTP 500 after engine switching");
+    }
     diagnostics.assertClean();
 } catch (error) {
     report.failures.push(error.message);

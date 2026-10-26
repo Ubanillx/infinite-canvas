@@ -5,7 +5,7 @@ import { test, expect } from "./auth";
 import type { CanvasProject } from "../src/stores/canvas/use-canvas-store";
 import { CanvasNodeType } from "../src/types/canvas";
 
-const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64");
+const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=", "base64");
 const imageKey = "image:template_fixture";
 const coverKey = "image:cover_fixture";
 const chatKey = "image:chat_fixture";
@@ -14,7 +14,7 @@ test.afterEach(async ({ page }) => {
     // Stop viewport timers, then let the existing autosave debounce finish before disposal.
     await navigate(page, "/canvas");
     await page.waitForTimeout(750);
-    await page.waitForLoadState("networkidle");
+    await expect(page.getByRole("heading", { name: /^(我的画布|My Canvases)$/ })).toBeVisible();
 });
 
 function project(id: string, media = false): CanvasProject {
@@ -61,17 +61,205 @@ async function seed(request: APIRequestContext, page: Page) {
 }
 
 async function openInsert(page: Page) {
-    await page.getByRole("button", { name: "打开画布菜单", exact: true }).click();
-    await page.getByRole("menuitem", { name: "插入当前画布", exact: true }).click();
+    await canvasMenu(page, "插入当前画布");
     const dialog = page.getByRole("dialog");
     await dialog.getByRole("button", { name: "使用此模板", exact: true }).click();
     return dialog;
 }
 
 async function canvasMenu(page: Page, name: string) {
-    await page.getByRole("button", { name: "打开画布菜单", exact: true }).click();
+    const templateAction = ["整张画布另存为新模板", "选区保存为模板", "更新已有模板", "插入当前画布"].includes(name);
+    await page.getByRole("button", { name: templateAction ? "模板操作" : "打开画布菜单", exact: true }).click();
     await page.getByRole("menuitem", { name: new RegExp(`^${name}`) }).click();
 }
+
+test("template actions and canvas menu stay reachable with both panel states and languages", async ({ page, request }) => {
+    await seed(request, page);
+    for (const english of [false, true]) {
+        if (english) await page.getByRole("button", { name: "切换到 English", exact: true }).click();
+        for (const expanded of [false, true]) {
+            if (expanded) await page.getByRole("button", { name: english ? "Expand panel" : "展开面板", exact: true }).click();
+            await page.getByRole("button", { name: english ? "Open canvas menu" : "打开画布菜单", exact: true }).click();
+            await expect(page.getByRole("menuitem", { name: english ? "New canvas" : "新建画布", exact: true })).toBeVisible();
+            await page.getByRole("button", { name: english ? "Open canvas menu" : "打开画布菜单", exact: true }).click();
+            await expect(page.getByRole("menuitem", { name: english ? "New canvas" : "新建画布", exact: true })).not.toBeVisible();
+            await page.getByRole("button", { name: english ? "Template actions" : "模板操作", exact: true }).click();
+            await expect(page.getByRole("menuitem", { name: english ? "Save canvas as new template" : "整张画布另存为新模板", exact: true })).toBeVisible();
+            await page.getByRole("button", { name: english ? "Template actions" : "模板操作", exact: true }).click();
+            await expect(page.getByRole("menuitem", { name: english ? "Save canvas as new template" : "整张画布另存为新模板", exact: true })).not.toBeVisible();
+            if (expanded) {
+                await page.getByRole("button", { name: english ? "Assets" : "资产", exact: true }).click();
+                await page.getByRole("button", { name: english ? "Canvas" : "画布", exact: true }).click();
+                await page.screenshot({ path: test.info().outputPath(english ? "toolbar-expanded-en.png" : "toolbar-expanded-zh.png") });
+            }
+        }
+        await page.getByRole("button", { name: english ? "Collapse panel" : "收起面板", exact: true }).click();
+    }
+});
+
+test("template save failure preserves drafts and retries one durable media snapshot", async ({ page, request }) => {
+    const { headers, read } = await seed(request, page);
+    await navigate(page, "/canvas/delayed");
+    await expect(page.locator('[data-node-id="delayed-node"]').first()).toBeVisible();
+    const before = await read("delayed");
+    const readTemplates = async () => (await (await request.get("/api/data/canvas-templates", { headers })).json()).payload.templates;
+    let fail = true;
+    let writes = 0;
+    let generations = 0;
+    page.on("request", (request) => { if (/\/api\/ai\//.test(request.url()) && request.method() === "POST") generations += 1; });
+    await page.route("**/api/data/canvas-templates", async (route) => {
+        if (route.request().method() === "PUT") {
+            writes += 1;
+            if (fail) return route.fulfill({ status: 503, json: { error: "Template save temporarily unavailable" } });
+        }
+        await route.continue();
+    });
+    await canvasMenu(page, "整张画布另存为新模板");
+    const dialog = page.getByRole("dialog", { name: "保存为模板", exact: true });
+    const name = dialog.getByRole("textbox", { name: /模板名称/ });
+    const description = dialog.getByRole("textbox", { name: /描述/ });
+    const save = dialog.getByRole("button", { name: "保存模板", exact: true });
+    await name.fill(" ");
+    await save.click();
+    await expect(dialog).toContainText("请输入模板名称");
+    expect(writes).toBe(0);
+    await name.fill("Retry snapshot");
+    await description.fill("Draft survives a failed server write");
+    await save.click();
+    await expect(dialog.getByRole("alert")).toContainText("Template save temporarily unavailable");
+    await expect(name).toHaveValue("Retry snapshot");
+    await expect(description).toHaveValue("Draft survives a failed server write");
+    expect((await readTemplates()).filter((item: { title: string }) => item.title === "Retry snapshot")).toHaveLength(0);
+    fail = false;
+    await save.click();
+    await expect(dialog).not.toBeVisible();
+    const saved = (await readTemplates()).filter((item: { title: string }) => item.title === "Retry snapshot");
+    expect(saved).toHaveLength(1);
+    expect(writes).toBe(2);
+    expect(saved[0].content.nodes[0].metadata.storageKey).not.toBe(imageKey);
+    expect(saved[0].content.chatSessions).toBeUndefined();
+    const media = await request.get(`/api/media/blob/${encodeURIComponent(saved[0].content.nodes[0].metadata.storageKey)}`, { headers });
+    expect(await media.body()).toEqual(png);
+    const source = await read("delayed");
+    // Hydration resolves content to a browser URL; graph geometry and durable media stay unchanged.
+    expect(source.nodes).toMatchObject(before.nodes.map(({ metadata, ...node }) => ({ ...node, metadata: { storageKey: metadata!.storageKey } })));
+    expect(await (await request.get(`/api/media/blob/${encodeURIComponent(imageKey)}`, { headers })).body()).toEqual(png);
+    expect(generations).toBe(0);
+    await navigate(page, "/templates");
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Retry snapshot", exact: true })).toBeVisible();
+});
+
+test("template save reports corrupt image media and retries after repair", async ({ page, request }) => {
+    const { headers } = await seed(request, page);
+    expect((await request.put(`/api/media/blob/${encodeURIComponent(imageKey)}`, { headers: { ...headers, "content-type": "image/png" }, data: Buffer.from("corrupt image") })).ok()).toBeTruthy();
+    await navigate(page, "/canvas/delayed");
+    await expect(page.locator('[data-node-id="delayed-node"]').first()).toBeVisible();
+    await canvasMenu(page, "整张画布另存为新模板");
+    const dialog = page.getByRole("dialog", { name: "保存为模板", exact: true });
+    await dialog.getByRole("textbox", { name: /模板名称/ }).fill("Repaired snapshot");
+    await dialog.getByRole("button", { name: "保存模板", exact: true }).click();
+    await expect(dialog.getByRole("alert")).toContainText("图片素材无法读取");
+    const readTemplates = async () => (await (await request.get("/api/data/canvas-templates", { headers })).json()).payload.templates;
+    expect((await readTemplates()).some((item: { title: string }) => item.title === "Repaired snapshot")).toBe(false);
+    expect((await request.put(`/api/media/blob/${encodeURIComponent(imageKey)}`, { headers: { ...headers, "content-type": "image/png" }, data: png })).ok()).toBeTruthy();
+    await dialog.getByRole("button", { name: "保存模板", exact: true }).click();
+    await expect(dialog).not.toBeVisible();
+    expect((await readTemplates()).filter((item: { title: string }) => item.title === "Repaired snapshot")).toHaveLength(1);
+});
+
+test("template preview renders static media and configuration without executing nodes", async ({ page, request }) => {
+    const { headers, template } = await seed(request, page);
+    const sample = await page.evaluate(() => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 480; canvas.height = 360;
+        const ctx = canvas.getContext("2d")!;
+        ctx.fillStyle = "#e8e3d8"; ctx.fillRect(0, 0, 480, 360);
+        ctx.fillStyle = "#d1c8b6"; ctx.beginPath(); ctx.ellipse(250, 300, 115, 18, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = "#ab604b"; ctx.beginPath(); ctx.roundRect(180, 90, 130, 210, 22); ctx.fill();
+        ctx.fillStyle = "#444a3b"; ctx.fillRect(208, 60, 74, 38);
+        ctx.fillStyle = "#f1ece3"; ctx.fillRect(191, 155, 108, 90);
+        ctx.fillStyle = "#46483b"; ctx.font = "16px sans-serif"; ctx.fillText("STUDIO", 211, 185); ctx.font = "10px sans-serif"; ctx.fillText("SUMMER OBJECTS", 202, 208);
+        ctx.font = "13px sans-serif"; ctx.fillText("A simple everyday ritual.", 26, 32);
+        return canvas.toDataURL("image/png").split(",")[1];
+    });
+    expect((await request.put(`/api/media/blob/${encodeURIComponent(imageKey)}`, { headers: { ...headers, "content-type": "image/png" }, data: Buffer.from(sample, "base64") })).ok()).toBeTruthy();
+    await page.evaluate(async () => { const path = "/src/stores/use-theme-store.ts"; const { useThemeStore } = await import(path); useThemeStore.getState().setTheme("light"); });
+    const node = (id: string, type: CanvasNodeType | string, x: number, y: number, width: number, height: number, metadata = {}) => ({ id, title: id, type, position: { x, y }, width, height, metadata: { ...metadata, groupId: "Preview group" } });
+    template.content.nodes = [
+        { ...node("Preview group", CanvasNodeType.Group, 0, 0, 1000, 650), metadata: {} },
+        node("Product photo", CanvasNodeType.Image, 40, 60, 280, 200, { content: imageKey, storageKey: imageKey }),
+        node("Product brief", CanvasNodeType.Text, 390, 60, 260, 180, { content: "Create a summer poster with a clear product headline." }),
+        node("Poster configuration", CanvasNodeType.Config, 390, 320, 470, 240, { generationMode: "image", composerContent: "Generate a poster using the product photo", model: "default::gpt-image-2", size: "1:1", count: 3 }),
+        node("Preview video", CanvasNodeType.Video, 40, 340, 280, 140, { content: "video:preview-not-requested" }),
+        node("Preview audio", CanvasNodeType.Audio, 40, 510, 280, 110, { content: "audio:preview-not-requested" }),
+        node("Preview plugin", "test:preview-plugin", 710, 60, 240, 180, { content: "<script>window.previewPluginExecuted=true</script>" }),
+    ];
+    template.content.connections = [{ id: "photo-config", fromNodeId: "Product photo", toNodeId: "Poster configuration" }, { id: "brief-config", fromNodeId: "Product brief", toNodeId: "Poster configuration" }];
+    expect((await request.put("/api/data/canvas-templates", { headers, data: { revision: 1, payload: { version: 1, templates: [template] } } })).ok()).toBeTruthy();
+    const prohibited: string[] = [];
+    page.on("request", (request) => { if (/preview-not-requested|\/api\/ai\//.test(request.url())) prohibited.push(request.url()); });
+    await navigate(page, "/templates");
+    await page.getByRole("button", { name: "预览模板「Restore template」", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Restore template", exact: true });
+    const image = dialog.getByRole("img", { name: "Product photo", exact: true });
+    await expect(image).toHaveJSProperty("naturalWidth", 480);
+    expect(await image.getAttribute("src")).toContain(`workspaceId=${headers["x-infinite-canvas-workspace"]}`);
+    await expect(dialog.getByRole("button", { name: "Poster configuration", exact: true })).toContainText("gpt-image-2");
+    await expect(dialog.getByRole("button", { name: "Product brief", exact: true })).toContainText("summer poster");
+    expect(await dialog.locator("iframe, video, audio").count()).toBe(0);
+    expect(await page.evaluate(() => Boolean((window as unknown as { previewPluginExecuted?: boolean }).previewPluginExecuted))).toBe(false);
+    await dialog.getByRole("button", { name: "Product brief", exact: true }).click();
+    await expect(dialog.getByRole("region", { name: "节点详情" })).toContainText("summer poster");
+    const scene = dialog.locator("svg[data-template-preview-scene]");
+    const before = await scene.boundingBox();
+    await dialog.getByRole("button", { name: "缩小预览", exact: true }).click();
+    const after = await scene.boundingBox();
+    expect(after!.width).toBeLessThan(before!.width);
+    await dialog.getByRole("button", { name: "重置预览缩放", exact: true }).click();
+    await page.screenshot({ path: test.info().outputPath("template-preview-light.png") });
+    await page.evaluate(async () => { const path = "/src/stores/use-theme-store.ts"; const { useThemeStore } = await import(path); useThemeStore.getState().setTheme("dark"); });
+    await page.screenshot({ path: test.info().outputPath("template-preview-dark.png") });
+    expect(prohibited).toEqual([]);
+});
+
+test("template preview large static graph preserves node elements during navigation", async ({ page, request }) => {
+    const { headers, template } = await seed(request, page);
+    template.content.nodes = Array.from({ length: 360 }, (_, index) => ({
+        ...project(`Preview node ${index}`).nodes[0],
+        position: { x: (index % 20) * 290, y: Math.floor(index / 20) * 230 },
+        metadata: { content: `Preview text ${index}` },
+    }));
+    template.content.connections = template.content.nodes.slice(1).map((node, index) => ({ id: `preview-edge-${index}`, fromNodeId: template.content.nodes[index].id, toNodeId: node.id }));
+    expect((await request.put("/api/data/canvas-templates", { headers, data: { revision: 1, payload: { version: 1, templates: [template] } } })).ok()).toBeTruthy();
+    await navigate(page, "/templates");
+    const open = page.getByRole("button", { name: "预览模板「Restore template」", exact: true });
+    await expect(open).toBeVisible();
+    const started = await page.evaluate(() => performance.now());
+    await open.click();
+    const dialog = page.getByRole("dialog", { name: "Restore template", exact: true });
+    const nodes = dialog.getByRole("button", { name: /^Preview node / });
+    await expect(nodes).toHaveCount(360);
+    const rendered = await page.evaluate(() => performance.now());
+    await nodes.first().evaluate((element) => {
+        const state = window as unknown as { previewNode: Element; previewMutations: number; previewObserver: MutationObserver };
+        state.previewNode = element;
+        state.previewMutations = 0;
+        state.previewObserver = new MutationObserver((records) => { state.previewMutations += records.length; });
+        state.previewObserver.observe(element.closest("svg")!, { childList: true, characterData: true, subtree: true });
+    });
+    const zoomStarted = await page.evaluate(() => performance.now());
+    await dialog.getByRole("button", { name: "放大预览", exact: true }).click();
+    await dialog.getByRole("button", { name: "缩小预览", exact: true }).click();
+    const zoomFinished = await page.evaluate(() => performance.now());
+    expect(await nodes.first().evaluate((element) => element === (window as unknown as { previewNode: Element }).previewNode)).toBe(true);
+    expect(await page.evaluate(() => (window as unknown as { previewMutations: number }).previewMutations)).toBe(0);
+    await nodes.first().focus();
+    await nodes.first().press("Enter");
+    await expect(dialog.getByRole("region", { name: "节点详情" })).toContainText("Preview text 0");
+    await page.screenshot({ path: test.info().outputPath("large-preview.png") });
+    await test.info().attach("preview-performance.json", { body: JSON.stringify({ nodes: 360, edges: 359, openMs: rendered - started, zoomPairMs: zoomFinished - zoomStarted }), contentType: "application/json" });
+});
 
 test("V2 inserts independent modules twice and supports one-step undo and redo", async ({ page, request }) => {
     const { read, headers } = await seed(request, page);
@@ -128,12 +316,12 @@ test("V2 saving selected groups and explicit content updates never modify source
     await canvasMenu(page, "选区保存为模板");
     const dialog = page.getByRole("dialog", { name: "保存为模板", exact: true });
     await expect(dialog).toBeVisible();
-    await expect(dialog).toContainText("将保存 2 个节点");
-    await dialog.getByText("定义待填写输入", { exact: true }).click();
+    await expect(dialog).toContainText("2 个节点");
+    await dialog.getByRole("button", { name: /使用时填写/ }).click();
     await dialog.getByRole("checkbox", { name: "Module text", exact: true }).check();
     await dialog.getByRole("textbox", { name: "输入名称", exact: true }).fill("Required brief");
     await dialog.getByRole("textbox", { name: /模板名称/ }).fill("Selection snapshot");
-    await dialog.getByRole("button", { name: /^保\s*存$/ }).click();
+    await dialog.getByRole("button", { name: "保存模板", exact: true }).click();
     await expect(dialog).not.toBeVisible();
     const readTemplates = async () => (await (await request.get("/api/data/canvas-templates", { headers })).json()).payload.templates;
     const saved = (await readTemplates()).find((item: { title: string }) => item.title === "Selection snapshot");
@@ -144,9 +332,9 @@ test("V2 saving selected groups and explicit content updates never modify source
     const before = await read("source");
     await canvasMenu(page, "更新已有模板");
     const update = page.getByRole("dialog", { name: "更新已有模板", exact: true });
-    await update.getByRole("combobox", { name: "要更新的模板" }).selectOption("template");
-    await update.getByRole("button", { name: /^保\s*存$/ }).click();
-    await expect(update.getByRole("alert")).toContainText("确认替换");
+    await update.getByRole("combobox", { name: "要更新的模板" }).click();
+    await page.locator(".ant-select-dropdown:visible").getByText("Restore template", { exact: true }).click();
+    await expect(update.getByRole("button", { name: "更新模板", exact: true })).toBeDisabled();
     expect((await readTemplates()).find((item: { id: string }) => item.id === "template").content.nodes).toHaveLength(1);
     await update.getByRole("checkbox", { name: "我已核对范围，确认替换所选模板" }).check();
     await page.screenshot({ path: test.info().outputPath("update-confirmation.png") });
@@ -155,11 +343,11 @@ test("V2 saving selected groups and explicit content updates never modify source
         if (failUpdate && route.request().method() === "PUT") return route.fulfill({ status: 503, json: { error: "Template update temporarily unavailable" } });
         await route.continue();
     });
-    await update.getByRole("button", { name: /^保\s*存$/ }).click();
+    await update.getByRole("button", { name: "更新模板", exact: true }).click();
     await expect(update.getByRole("alert")).toContainText("Template update temporarily unavailable");
     expect((await readTemplates()).find((item: { id: string }) => item.id === "template").content.nodes).toHaveLength(1);
     failUpdate = false;
-    await update.getByRole("button", { name: /^保\s*存$/ }).click();
+    await update.getByRole("button", { name: "更新模板", exact: true }).click();
     await expect(update).not.toBeVisible();
     const updated = (await readTemplates()).find((item: { id: string }) => item.id === "template");
     expect(updated.content.nodes).toHaveLength(3);
@@ -255,8 +443,9 @@ test("V2 obsolete insertion does not modify the old or current canvas", async ({
         await expect.poll(() => requested).toBe(true);
         await navigate(page, "/canvas/latest");
         await expect(page.locator('[data-node-id="latest-node"]').first()).toBeVisible();
+        const copied = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith("/copy"));
         release();
-        await page.waitForLoadState("networkidle");
+        await copied;
         await page.waitForTimeout(750);
         expect((await read("source")).nodes.map((node) => node.id)).toEqual(["source-node"]);
         expect((await read("latest")).nodes.map((node) => node.id)).toEqual(["latest-node"]);
@@ -322,7 +511,7 @@ test("failed template hydration preserves saved content and can be retried witho
         await route.continue();
     });
     const id = await createFromTemplate(page);
-    await expect(page.getByRole("alert")).toContainText("媒体读取失败");
+    await expect(page.getByRole("alert").filter({ hasText: "媒体读取失败" })).toBeVisible();
     await page.waitForTimeout(750);
     const saved = await read(id);
     expect(saved.nodes.map((node) => node.title)).toEqual(["template"]);
