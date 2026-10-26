@@ -66,8 +66,25 @@ try {
     if (discovered.length) {
         await page.getByRole("combobox", { name: /选择模型/ }).click();
         assert.deepEqual(await page.getByRole("option").allTextContents(), discovered.map((item) => item.model.slice(item.model.indexOf("::") + 2)));
+        assert.equal(await page.locator('[data-slot="select-scroll-up-button"], [data-slot="select-scroll-down-button"]').count(), 0);
+        const viewport = page.locator("[data-radix-select-viewport]");
+        const overflows = await viewport.evaluate((element) => element.scrollHeight > element.clientHeight);
+        if (overflows) {
+            await viewport.hover();
+            await page.mouse.wheel(0, 300);
+            await page.waitForFunction(() => document.querySelector("[data-radix-select-viewport]")?.scrollTop > 0);
+        }
+        await page.keyboard.press("End");
+        await page.waitForFunction(() => {
+            const options = document.querySelectorAll('[role="option"]');
+            return options[options.length - 1]?.hasAttribute("data-highlighted");
+        });
+        await page.keyboard.press("Home");
+        await page.waitForFunction(() => document.querySelector('[role="option"]')?.hasAttribute("data-highlighted"));
+        await page.screenshot({ path: resolve(runDir, "pi-model-list.png") });
         await page.keyboard.press("Escape");
         record("Pi model list shows only model names without channel or protocol suffixes");
+        record("model list omits scroll arrows while keeping wheel and keyboard navigation");
     }
     if (process.argv.includes("--pi")) {
         assert.ok(discovered.length > 1, "Pi should discover models beyond the manually configured model");
