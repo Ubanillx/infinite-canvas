@@ -37,6 +37,7 @@ import { CanvasNodeUpscaleDialog, type CanvasImageUpscaleParams } from "@/compon
 import { buildNodeGenerationContext, buildNodeGenerationInputs, buildNodeResponseMessages, hydrateNodeGenerationContext, type NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
 import { CanvasNodeHoverToolbar, CanvasNodeInfoModal } from "@/components/canvas/canvas-node-hover-toolbar";
 import { CanvasSelectionToolbar } from "@/components/canvas/canvas-selection-toolbar";
+import { CanvasReversePromptDialog } from "@/components/canvas/canvas-reverse-prompt-dialog";
 import { InfiniteCanvas } from "@/components/canvas/infinite-canvas";
 import { Minimap } from "@/components/canvas/canvas-mini-map";
 import { CanvasNode } from "@/components/canvas/canvas-node";
@@ -80,6 +81,7 @@ import { CanvasTopBar } from "@/components/canvas/canvas-top-bar";
 import { CanvasCreateProjectDialog } from "@/components/canvas/canvas-create-project-dialog";
 import { CanvasTemplateInsertDialog } from "@/components/canvas/canvas-template-insert-dialog";
 import { positionTemplateContent } from "@/lib/canvas/canvas-template";
+import { createReversePromptWorkflow, type CanvasReversePromptOptions } from "@/lib/canvas/canvas-reverse-prompt";
 import { copyCanvasTemplateContent, requireTemplateWorkspace } from "@/services/canvas-templates";
 import { getActiveWorkspace } from "@/lib/workspace";
 import type { CanvasTemplateContent } from "@/types/canvas-template";
@@ -282,6 +284,7 @@ function InfiniteCanvasPage() {
     const [upscaleNodeId, setUpscaleNodeId] = useState<string | null>(null);
     const [superResolveNodeId, setSuperResolveNodeId] = useState<string | null>(null);
     const [angleNodeId, setAngleNodeId] = useState<string | null>(null);
+    const [reversePromptNodeIds, setReversePromptNodeIds] = useState<string[] | null>(null);
     const [previewNodeId, setPreviewNodeId] = useState<string | null>(null);
     const [hoverPreviewNodeId, setHoverPreviewNodeId] = useState<string | null>(null);
     const [previewImageId, setPreviewImageId] = useState<string | null>(null);
@@ -1994,43 +1997,50 @@ function InfiniteCanvasPage() {
         [addAsset, message, t],
     );
 
-    const createImageReversePromptNodes = useCallback(
+    const openImageReversePrompt = useCallback(
         (node: CanvasNodeData) => {
             if (node.type !== CanvasNodeType.Image || !node.metadata?.content) {
                 message.warning(t("canvas.projectPage.emptyReverse"));
                 return;
             }
 
-            const gap = 96;
-            const textSpec = NODE_DEFAULT_SIZE[CanvasNodeType.Text];
-            const configSpec = NODE_DEFAULT_SIZE[CanvasNodeType.Config];
-            const centerY = node.position.y + node.height / 2;
-            const textNode = {
-                ...createCanvasNode(CanvasNodeType.Text, { x: node.position.x + node.width + gap + textSpec.width / 2, y: centerY }, { content: t("canvas.projectPage.reversePreset"), prompt: t("canvas.projectPage.reversePreset"), status: NODE_STATUS_SUCCESS, fontSize: 14 }),
-                title: t("canvas.projectPage.reverseTitle"),
-            };
-            const configNode = {
-                ...createCanvasNode(
-                    CanvasNodeType.Config,
-                    { x: textNode.position.x + textNode.width + gap + configSpec.width / 2, y: centerY },
-                    {
-                        generationMode: "text",
-                        model: effectiveConfig.textModel || effectiveConfig.model || defaultConfig.textModel,
-                        count: 1,
-                        composerContent: t("canvas.reverseComposer", { imageId: node.id, textId: textNode.id }),
-                    },
-                ),
-                title: t("canvas.projectPage.reverseConfigTitle"),
-            };
+            setReversePromptNodeIds([node.id]);
+        },
+        [message, t],
+    );
 
-            setNodes((prev) => [...prev, textNode, configNode]);
-            setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: node.id, toNodeId: configNode.id }, { id: nanoid(), fromNodeId: textNode.id, toNodeId: configNode.id }]);
+    const openSelectedImageReversePrompt = useCallback(() => {
+        setReversePromptNodeIds(nodesRef.current.filter((node) => selectedNodeIdsRef.current.has(node.id) && node.type === CanvasNodeType.Image && node.metadata?.content).map((node) => node.id));
+    }, []);
+
+    const createImageReversePromptNodes = useCallback(
+        (options: CanvasReversePromptOptions) => {
+            const workflow = createReversePromptWorkflow(nodesRef.current, options);
+            if (!workflow) {
+                message.warning(t("canvas.reversePrompt.referencesMissing"));
+                return;
+            }
+            const { configNode } = workflow;
+            if (options.generate && !isAiConfigReady(buildGenerationConfig(effectiveConfig, configNode, "text"), options.model)) {
+                openConfigDialog(true);
+                return;
+            }
+
+            const nextNodes = [...nodesRef.current, ...workflow.nodes];
+            const nextConnections = [...connectionsRef.current, ...workflow.connections];
+            nodesRef.current = nextNodes;
+            connectionsRef.current = nextConnections;
+            setNodes(nextNodes);
+            setConnections(nextConnections);
             setSelectedNodeIds(new Set([configNode.id]));
             setSelectedConnectionId(null);
             setDialogNodeId(configNode.id);
             setContextMenu(null);
+            setReversePromptNodeIds(null);
+            requestAnimationFrame(() => focusNodeRef.current(configNode.id));
+            if (options.generate) void generateNodeRef.current?.(configNode.id, "text", configNode.metadata!.composerContent!);
         },
-        [effectiveConfig.model, effectiveConfig.textModel, message, t],
+        [effectiveConfig, isAiConfigReady, message, openConfigDialog, t],
     );
 
     const cropImageNode = useCallback(async (node: CanvasNodeData, crop: CanvasImageCropRect) => {
@@ -2475,25 +2485,17 @@ function InfiniteCanvasPage() {
             const runController = startGenerationRequest(nodeId, nodeId, nodeId);
             const sourceTextContent = sourceNode?.type === CanvasNodeType.Text ? sourceNode.metadata?.content?.trim() || "" : "";
             const editingTextNode = mode === "text" && Boolean(sourceTextContent);
-            const generationContext = await hydrateNodeGenerationContext(
-                buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, editingTextNode ? t("canvas.projectPage.editTextPrompt", { source: sourceTextContent, prompt }) : prompt),
-            );
-            const effectivePrompt = generationContext.prompt.trim();
-            if (runController.signal.aborted) {
-                finishGenerationRequest(nodeId, runController);
-                setRunningNodeId(null);
-                return;
-            }
             const markSourceStatus = sourceNode?.type !== CanvasNodeType.Image && !editingTextNode;
-            if (!effectivePrompt && (mode === "text" || mode === "audio")) {
-                finishGenerationRequest(nodeId, runController);
-                setRunningNodeId(null);
-                return;
-            }
             let pendingChildIds: string[] = [];
-            if (markSourceStatus) setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, ...(node.type === CanvasNodeType.Config ? {} : { prompt }), status: NODE_STATUS_LOADING, errorDetails: undefined } } : node)));
 
             try {
+                const generationContext = await hydrateNodeGenerationContext(
+                    buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, editingTextNode ? t("canvas.projectPage.editTextPrompt", { source: sourceTextContent, prompt }) : prompt),
+                );
+                const effectivePrompt = generationContext.prompt.trim();
+                if (runController.signal.aborted || (!effectivePrompt && (mode === "text" || mode === "audio"))) return;
+                if (markSourceStatus) setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, ...(node.type === CanvasNodeType.Config ? {} : { prompt }), status: NODE_STATUS_LOADING, errorDetails: undefined } } : node)));
+
                 if (mode === "image") {
                     const count = getGenerationCount(generationConfig.count);
                     const isConfigNode = sourceNode?.type === CanvasNodeType.Config;
@@ -2895,28 +2897,28 @@ function InfiniteCanvasPage() {
                 return;
             }
 
-            const context = hasSavedImageMetadata ? null : await hydrateNodeGenerationContext(buildNodeGenerationContext(sourceNode.id, nodesRef.current, connectionsRef.current, sourceNode.metadata?.prompt || node.metadata?.prompt || ""));
-            const prompt = (savedImageMetadata?.prompt || context?.prompt || "").trim();
-            if (!prompt) {
-                message.warning(t("canvas.projectPage.retryPromptMissing"));
-                return;
-            }
-            const generationType = savedImageMetadata?.generationType;
-            const useReferenceImages = generationType ? generationType === "edit" : Boolean(context?.referenceImages.length);
-            const retryReferenceImages =
-                hasSavedImageMetadata && savedImageMetadata ? await resolveMetadataReferences(savedImageMetadata) : useReferenceImages ? (context?.referenceImages.length ? context.referenceImages : sourceNodeReferenceImages(sourceNode)) : [];
-            if (useReferenceImages && !retryReferenceImages) {
-                message.error(t("canvas.projectPage.referenceMissing"));
-                setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: item.metadata?.content ? NODE_STATUS_SUCCESS : NODE_STATUS_ERROR, errorDetails: item.metadata?.content ? undefined : t("canvas.projectPage.referenceMissing"), images: item.metadata?.images?.map((image) => (image.id === imageId ? { ...image, status: NODE_STATUS_ERROR, errorDetails: t("canvas.projectPage.referenceMissing") } : image)) } } : item)));
-                return;
-            }
-            const retryImages = retryReferenceImages || [];
-
             setRunningNodeId(node.id);
-            setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined, images: item.metadata?.images?.map((image) => (image.id === imageId ? { ...image, status: NODE_STATUS_LOADING, errorDetails: undefined } : image)) } } : item)));
             const controller = startGenerationRequest(node.id, sourceNode.id, node.id);
-
             try {
+                const context = hasSavedImageMetadata ? null : await hydrateNodeGenerationContext(buildNodeGenerationContext(sourceNode.id, nodesRef.current, connectionsRef.current, sourceNode.metadata?.composerContent || sourceNode.metadata?.prompt || node.metadata?.prompt || ""));
+                const prompt = (savedImageMetadata?.prompt || context?.prompt || "").trim();
+                if (!prompt) {
+                    message.warning(t("canvas.projectPage.retryPromptMissing"));
+                    return;
+                }
+                const generationType = savedImageMetadata?.generationType;
+                const useReferenceImages = generationType ? generationType === "edit" : Boolean(context?.referenceImages.length);
+                const retryReferenceImages =
+                    hasSavedImageMetadata && savedImageMetadata ? await resolveMetadataReferences(savedImageMetadata) : useReferenceImages ? (context?.referenceImages.length ? context.referenceImages : sourceNodeReferenceImages(sourceNode)) : [];
+                if (controller.signal.aborted) return;
+                if (useReferenceImages && !retryReferenceImages) {
+                    message.error(t("canvas.projectPage.referenceMissing"));
+                    setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: item.metadata?.content ? NODE_STATUS_SUCCESS : NODE_STATUS_ERROR, errorDetails: item.metadata?.content ? undefined : t("canvas.projectPage.referenceMissing"), images: item.metadata?.images?.map((image) => (image.id === imageId ? { ...image, status: NODE_STATUS_ERROR, errorDetails: t("canvas.projectPage.referenceMissing") } : image)) } } : item)));
+                    return;
+                }
+                const retryImages = retryReferenceImages || [];
+                setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined, images: item.metadata?.images?.map((image) => (image.id === imageId ? { ...image, status: NODE_STATUS_LOADING, errorDetails: undefined } : image)) } } : item)));
+
                 if (node.type === CanvasNodeType.Text) {
                     if (!context) return;
                     let streamed = "";
@@ -3305,6 +3307,7 @@ function InfiniteCanvasPage() {
     const bottomToolbar = useMemo(() => (
         <CanvasToolbar
             selectedCount={selectedNodeIds.size}
+            compact={size.width < 768}
             canvasTool={canvasTool}
             onFocusSelected={focusSelectedNode}
             canUndo={historyState.canUndo}
@@ -3326,8 +3329,9 @@ function InfiniteCanvasPage() {
             onCanvasToolChange={setCanvasTool}
             onBackgroundModeChange={setBackgroundMode}
             onShowImageInfoChange={setShowImageInfo}
+            onReversePrompt={openSelectedImageReversePrompt}
         />
-    ), [selectedNodeIds.size, canvasTool, focusSelectedNode, historyState.canUndo, historyState.canRedo, backgroundMode, showImageInfo, createNode, undoCanvas, redoCanvas, handleUploadRequest, deleteNodes]);
+    ), [selectedNodeIds.size, size.width, canvasTool, focusSelectedNode, historyState.canUndo, historyState.canRedo, backgroundMode, showImageInfo, createNode, undoCanvas, redoCanvas, handleUploadRequest, deleteNodes, openSelectedImageReversePrompt]);
 
     const visibleToolbarNode = isNodeDragging || isNodeResizing || nodeImageSettingsOpen || Boolean(referencePickerNodeId) || expandedBatchNodeIds.has(toolbarNode?.id || "") ? null : toolbarNode;
     const toolbarScale = visibleToolbarNode && getNodeDefinition(visibleToolbarNode.type)?.toolbar ? viewport.k : 1;
@@ -3352,13 +3356,13 @@ function InfiniteCanvasPage() {
             onSuperResolve={(node) => setSuperResolveNodeId(node.id)}
             onAngle={(node) => setAngleNodeId(node.id)}
             onViewImage={handleNodeViewImage}
-            onReversePrompt={createImageReversePromptNodes}
+            onReversePrompt={openImageReversePrompt}
             onRetry={(node) => void handleRetryNode(node)}
             onToggleFreeResize={(node) => toggleNodeFreeResize(node.id)}
             onDelete={(node) => deleteNodes(new Set([node.id]))}
             onUngroup={(node) => ungroupSelection(new Set([node.id]))}
         />
-    ), [visibleToolbarNode, toolbarScale, nodeRegistryVersion, buildNodeToolbarItems, keepNodeToolbar, hideNodeToolbar, handleFontSizeChange, generateImageFromTextNode, handleUploadRequest, downloadNodeImage, saveNodeAsset, handleNodeViewImage, createImageReversePromptNodes, handleRetryNode, toggleNodeFreeResize, deleteNodes, ungroupSelection]);
+    ), [visibleToolbarNode, toolbarScale, nodeRegistryVersion, buildNodeToolbarItems, keepNodeToolbar, hideNodeToolbar, handleFontSizeChange, generateImageFromTextNode, handleUploadRequest, downloadNodeImage, saveNodeAsset, handleNodeViewImage, openImageReversePrompt, handleRetryNode, toggleNodeFreeResize, deleteNodes, ungroupSelection]);
 
     if (projectLoadError) return <div className="flex h-full flex-col items-center justify-center gap-4 bg-background p-6 text-foreground">
         <div role="alert" className="max-w-lg text-center"><p>{t("canvas.projectPage.loadFailed")}</p><p className="mt-2 text-sm text-muted-foreground">{projectLoadError.message}</p></div>
@@ -3509,11 +3513,12 @@ function InfiniteCanvasPage() {
                     <CanvasSelectionToolbar
                         nodes={selectedNodes}
                         viewport={viewport}
-                        showToolbar={!isNodeDragging && !isNodeResizing}
+                        showToolbar={size.width >= 320 && !isNodeDragging && !isNodeResizing}
                         canGroup={canGroupSelection}
                         canUngroup={canUngroupSelection}
                         onGroup={groupSelection}
                         onUngroup={ungroupSelection}
+                        onReversePrompt={openSelectedImageReversePrompt}
                     />
                 ) : null}
 
@@ -3559,6 +3564,7 @@ function InfiniteCanvasPage() {
                 <CanvasCreateProjectDialog open={createProjectOpen} initialTemplateId={createTemplateId} onCancel={() => setCreateProjectOpen(false)} onCreated={(id) => { setCreateProjectOpen(false); navigate(`/canvas/${id}`); }} />
                 {insertTemplateOpen ? <CanvasTemplateInsertDialog onClose={() => setInsertTemplateOpen(false)} onInsert={insertTemplate} onCreate={(id) => { setInsertTemplateOpen(false); setCreateTemplateId(id); setCreateProjectOpen(true); }} /> : null}
                 <CanvasTemplateEditorDialog source={templateSource} onClose={() => setTemplateSource(null)} />
+                {reversePromptNodeIds ? <CanvasReversePromptDialog nodes={resourceNodes} initialNodeIds={reversePromptNodeIds} onClose={() => setReversePromptNodeIds(null)} onConfirm={createImageReversePromptNodes} /> : null}
 
                 {cropNode?.metadata?.content ? <CanvasNodeCropDialog dataUrl={cropNode.metadata.content} open={Boolean(cropNode)} onClose={() => setCropNodeId(null)} onConfirm={(crop) => void cropImageNode(cropNode!, crop)} /> : null}
 
