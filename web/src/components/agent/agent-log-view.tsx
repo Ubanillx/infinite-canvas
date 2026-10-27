@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button, Segmented, Tooltip } from "antd";
+import { Button, Tooltip } from "antd";
 import copyToClipboard from "copy-to-clipboard";
-import { CheckCircle2, ChevronDown, CircleAlert, CircleDot, Copy, Trash2, TriangleAlert } from "lucide-react";
+import { CheckCircle2, ChevronDown, CircleAlert, CircleDot, Copy, FileText, Search, Trash2, TriangleAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import i18n from "@/i18n";
@@ -108,99 +108,66 @@ export function AgentLogView({
     };
     const connectionLabel = t(context.connected ? "agent.events.online" : context.enabled ? "agent.events.connecting" : "agent.events.disabled");
     return (
-        <div className="min-h-0 flex-1 overflow-hidden px-4 py-3">
-            <div className="flex h-full min-h-0 flex-col gap-3">
+        <div className="flex min-h-0 flex-1 flex-col" style={{ color: theme.node.text }}>
+            <header className="shrink-0 px-6 pb-5 pt-6">
                 <div className="flex items-center justify-between gap-3">
-                    <div className="text-base font-semibold leading-6">{t("agent.logs.title")}</div>
-                    <Segmented
-                        size="small"
-                        value={mode}
-                        onChange={(value) => setMode(value as "text" | "json")}
-                        options={[
-                            { label: t("agent.logs.diagnostics"), value: "text" },
-                            { label: t("agent.logs.rawJson"), value: "json" },
-                        ]}
-                    />
+                    <h2 className="!m-0 text-base font-medium tracking-tight">{t("agent.logs.title")}</h2>
+                    <LogActions logs={logs} lastError={lastError} onClear={onClear} onCopy={(value, tip) => void copy(value, tip)} context={context} />
                 </div>
-
-                <div className="border-y py-2.5" style={{ borderColor: theme.node.stroke }}>
-                    <div className="flex items-start gap-2.5">
-                        <span className={`mt-1.5 size-2 shrink-0 rounded-full ${context.connected ? "bg-emerald-500" : context.enabled ? "bg-amber-500" : "bg-current opacity-30"}`} />
-                        <div className="min-w-0 flex-1">
-                            <div className="flex min-w-0 items-center gap-2 text-sm">
-                                <span className="font-medium">{connectionLabel}</span>
-                                <span className="truncate" style={{ color: theme.node.muted }}>
-                                    {context.activity}
-                                </span>
-                            </div>
-                            <div className="mt-0.5 truncate font-mono text-[11px] leading-4" style={{ color: theme.node.faint }} title={context.endpoint}>
-                                {context.endpoint}
-                            </div>
-                        </div>
-                        <div className="shrink-0 text-right text-[11px] leading-4" style={{ color: theme.node.muted }}>
-                            <div>{t("agent.logs.messages", { count: context.messages })}</div>
-                            <div>{context.pendingTool ? t("agent.logs.tool", { tool: context.pendingTool }) : t("agent.logs.noPendingTool")}</div>
-                        </div>
+                <p className="!mb-0 !mt-1.5 text-xs leading-5" style={{ color: theme.node.muted }}>{t("agent.logs.description")}</p>
+            </header>
+            <div className="mx-6 shrink-0 border-t" style={{ borderColor: theme.node.stroke }}>
+                <details className="group py-3 text-xs" style={{ color: theme.node.muted }}>
+                    <summary className="!flex cursor-pointer list-none items-center gap-2 rounded-sm leading-5 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 [&::-webkit-details-marker]:hidden">
+                        <span className={`size-1.5 shrink-0 rounded-full ${context.connected ? "bg-emerald-500" : context.enabled ? "bg-amber-500" : "bg-current opacity-40"}`} />
+                        <span className="shrink-0">{connectionLabel}</span>
+                        <span className="min-w-0 flex-1 truncate" title={context.activity}>{context.activity}</span>
+                        <ChevronDown className="size-3.5 shrink-0 transition-transform group-open:rotate-180" strokeWidth={1.6} />
+                    </summary>
+                    <div className="mt-3 space-y-1.5 pl-3.5 text-[11px] leading-5">
+                        <div className="break-all font-mono">{context.endpoint}</div>
+                        <div>{t("agent.logs.messages", { count: context.messages })}</div>
+                        <div className="break-words">{context.pendingTool ? t("agent.logs.tool", { tool: context.pendingTool }) : t("agent.logs.noPendingTool")}</div>
                     </div>
+                </details>
+                <div className="flex items-center gap-4 border-b" style={{ borderColor: theme.node.stroke }} role="group" aria-label={t("agent.logs.displayMode")}>
+                    {(["text", "json"] as const).map((value) => (
+                        <button key={value} type="button" aria-pressed={mode === value} className="relative h-9 text-xs focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-2" style={{ color: mode === value ? theme.node.text : theme.node.muted }} onClick={() => setMode(value)}>
+                            {t(value === "text" ? "agent.logs.diagnostics" : "agent.logs.rawJson")}
+                            {mode === value ? <span aria-hidden="true" className="absolute inset-x-0 bottom-0 h-px bg-current" /> : null}
+                        </button>
+                    ))}
                 </div>
-
-                {mode === "text" ? (
-                    <>
-                        <div className="flex items-center justify-between gap-2">
-                            <Segmented
-                                size="small"
-                                value={filter}
-                                onChange={(value) => setFilter(value as LogFilter)}
-                                options={[
-                                    { label: t("agent.logs.all", { count: counts.all }), value: "all" },
-                                    { label: t("agent.logs.errors", { count: counts.error }), value: "error" },
-                                    { label: t("agent.logs.warnings", { count: counts.warning }), value: "warning" },
-                                    { label: t("agent.logs.info", { count: counts.info }), value: "info" },
-                                ]}
-                            />
-                            <LogActions logs={logs} lastError={lastError} onClear={onClear} onCopy={(value, tip) => void copy(value, tip)} context={context} />
-                        </div>
-                        <div className="relative min-h-0 flex-1">
-                            <div ref={listRef} tabIndex={0} aria-label={t("agent.logs.list")} className="thin-scrollbar h-full overflow-y-auto border-y focus-visible:outline-none" style={{ borderColor: theme.node.stroke }} onScroll={updateScrollState}>
-                                {visibleLogs.map((item, index) => (
-                                    <LogRow key={item.id} item={item} theme={theme} onToggle={index === visibleLogs.length - 1 ? handleLastLogToggle : undefined} />
-                                ))}
-                                {!visibleLogs.length ? (
-                                    <div className="px-3 py-10 text-center text-sm" style={{ color: theme.node.muted }}>
-                                        {t(logs.length ? "agent.logs.noFiltered" : "agent.logs.empty")}
-                                    </div>
-                                ) : null}
-                            </div>
-                            {showScrollToBottom ? (
-                                <AgentScrollToBottom
-                                    theme={theme}
-                                    title={newLogCount ? t("agent.logs.new", { count: newLogCount }) : t("agent.logs.latest")}
-                                    ariaLabel={newLogCount ? t("agent.logs.newLabel", { count: newLogCount }) : t("agent.logs.latest")}
-                                    className="!bottom-52"
-                                    onClick={() => scrollToBottom()}
-                                />
+            </div>
+            {mode === "text" ? (
+                <>
+                    <div className="mx-6 flex shrink-0 flex-wrap items-center gap-1 py-3" role="group" aria-label={t("agent.logs.filter")}>
+                        {(["all", "error", "warning", "info"] as const).map((value) => (
+                            <button key={value} type="button" aria-pressed={filter === value} className="h-8 rounded-md px-2 text-[11px] tabular-nums transition-colors hover:bg-black/5 focus-visible:outline focus-visible:outline-1 dark:hover:bg-white/10" style={{ backgroundColor: filter === value ? theme.toolbar.activeBg : undefined, color: filter === value ? theme.node.text : theme.node.muted }} onClick={() => setFilter(value)}>
+                                {t(`agent.logs.${value === "error" ? "errors" : value === "warning" ? "warnings" : value}`, { count: counts[value] })}
+                            </button>
+                        ))}
+                    </div>
+                    <div className="relative min-h-0 flex-1">
+                        <div ref={listRef} tabIndex={0} aria-label={t("agent.logs.list")} className="thin-scrollbar h-full space-y-1 overflow-y-auto px-3 pb-4 focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1" onScroll={updateScrollState}>
+                            {visibleLogs.map((item, index) => <LogRow key={item.id} item={item} theme={theme} onToggle={index === visibleLogs.length - 1 ? handleLastLogToggle : undefined} />)}
+                            {!visibleLogs.length ? (
+                                <div className="mx-auto flex max-w-64 flex-col items-center px-3 pt-[clamp(48px,12vh,120px)] text-center" role="status">
+                                    {logs.length ? <Search className="size-8" strokeWidth={1.3} style={{ color: theme.node.faint }} /> : <FileText className="size-8" strokeWidth={1.3} style={{ color: theme.node.faint }} />}
+                                    <div className="mt-5 text-sm font-medium">{t(logs.length ? "agent.logs.noFiltered" : "agent.logs.empty")}</div>
+                                    <div className="mt-2 text-xs leading-6" style={{ color: theme.node.muted }}>{t(logs.length ? "agent.logs.filterHint" : "agent.logs.emptyHint")}</div>
+                                </div>
                             ) : null}
                         </div>
-                    </>
-                ) : (
-                    <>
-                        <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs" style={{ color: theme.node.muted }}>
-                                {t("agent.logs.fullData", { count: logs.length })}
-                            </span>
-                            <LogActions logs={logs} lastError={lastError} onClear={onClear} onCopy={(value, tip) => void copy(value, tip)} context={context} />
-                        </div>
-                        <textarea
-                            ref={textareaRef}
-                            readOnly
-                            value={content}
-                            className="thin-scrollbar min-h-0 flex-1 resize-none rounded-md border bg-transparent p-3 font-mono text-xs leading-5 outline-none"
-                            style={{ borderColor: theme.node.stroke, color: theme.node.text }}
-                            onFocus={(event) => event.currentTarget.select()}
-                        />
-                    </>
-                )}
-            </div>
+                        {showScrollToBottom ? <AgentScrollToBottom theme={theme} title={newLogCount ? t("agent.logs.new", { count: newLogCount }) : t("agent.logs.latest")} ariaLabel={newLogCount ? t("agent.logs.newLabel", { count: newLogCount }) : t("agent.logs.latest")} onClick={() => scrollToBottom()} /> : null}
+                    </div>
+                </>
+            ) : (
+                <div className="flex min-h-0 flex-1 flex-col px-6 pb-4">
+                    <div className="py-3 text-[11px]" style={{ color: theme.node.muted }}>{t("agent.logs.fullData", { count: logs.length })}</div>
+                    <textarea ref={textareaRef} aria-label={t("agent.logs.rawJson")} readOnly value={content} className="thin-scrollbar min-h-0 flex-1 resize-none rounded-md border bg-transparent p-3 font-mono text-[11px] leading-5 focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1" style={{ borderColor: theme.node.stroke, color: theme.node.text }} onFocus={(event) => event.currentTarget.select()} />
+                </div>
+            )}
         </div>
     );
 }
@@ -209,14 +176,14 @@ function LogActions({ logs, lastError, context, onClear, onCopy }: { logs: Agent
     const { t } = useTranslation();
     return (
         <div className="flex shrink-0 items-center gap-0.5">
-            <Tooltip title={t("agent.logs.copyAll")}>
-                <Button type="text" size="small" shape="circle" aria-label={t("agent.logs.copyAll")} icon={<Copy className="size-3.5" />} onClick={() => onCopy()} />
+            <Tooltip title={t("agent.logs.copyAll")} trigger={["hover", "focus"]}>
+                <Button type="text" className="!h-8 !w-8 !min-w-8" aria-label={t("agent.logs.copyAll")} icon={<Copy className="size-4" strokeWidth={1.6} />} onClick={() => onCopy()} />
             </Tooltip>
-            <Tooltip title={t("agent.logs.copyLastError")}>
-                <Button type="text" size="small" shape="circle" aria-label={t("agent.logs.copyLastError")} disabled={!lastError} icon={<CircleAlert className="size-3.5" />} onClick={() => lastError && onCopy(formatLogText([lastError], context), t("agent.logs.lastErrorCopied"))} />
+            <Tooltip title={t("agent.logs.copyLastError")} trigger={["hover", "focus"]}>
+                <Button type="text" className="!h-8 !w-8 !min-w-8" aria-label={t("agent.logs.copyLastError")} disabled={!lastError} icon={<CircleAlert className="size-4" strokeWidth={1.6} />} onClick={() => lastError && onCopy(formatLogText([lastError], context), t("agent.logs.lastErrorCopied"))} />
             </Tooltip>
-            <Tooltip title={t("agent.logs.clear")}>
-                <Button danger type="text" size="small" shape="circle" aria-label={t("agent.logs.clear")} disabled={!logs.length} icon={<Trash2 className="size-3.5" />} onClick={onClear} />
+            <Tooltip title={t("agent.logs.clear")} trigger={["hover", "focus"]}>
+                <Button danger type="text" className="!h-8 !w-8 !min-w-8" aria-label={t("agent.logs.clear")} disabled={!logs.length} icon={<Trash2 className="size-4" strokeWidth={1.6} />} onClick={onClear} />
             </Tooltip>
         </div>
     );
@@ -227,16 +194,13 @@ function LogRow({ item, theme, onToggle }: { item: DisplayLog; theme: (typeof ca
     const tone = item.level === "error" ? "text-red-600 dark:text-red-400" : item.level === "warning" ? "text-amber-600 dark:text-amber-400" : item.success ? "text-emerald-600 dark:text-emerald-400" : "";
     const Icon = item.level === "error" ? CircleAlert : item.level === "warning" ? TriangleAlert : item.success ? CheckCircle2 : CircleDot;
     return (
-        <details className="group border-b last:border-b-0" style={{ borderColor: theme.node.stroke }} onToggle={(event) => onToggle?.(event.currentTarget.open)}>
-            <summary className="cursor-pointer list-none px-1 py-2.5 transition hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-current/20 dark:hover:bg-white/10 [&::-webkit-details-marker]:hidden">
-                <div className="flex items-start gap-2.5">
-                    <Icon className={`mt-0.5 size-4 shrink-0 ${tone}`} style={tone ? undefined : { color: theme.node.muted }} />
+        <details className="group" onToggle={(event) => onToggle?.(event.currentTarget.open)}>
+            <summary className="cursor-pointer list-none rounded-lg px-3 py-3 transition-colors hover:bg-black/5 focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1 dark:hover:bg-white/10 [&::-webkit-details-marker]:hidden">
+                <div className="flex items-start gap-3">
+                    <Icon className={`mt-0.5 size-4 shrink-0 ${tone}`} strokeWidth={1.6} style={tone ? undefined : { color: theme.node.muted }} />
                     <div className="min-w-0 flex-1">
                         <div className="flex min-w-0 items-center gap-2">
-                            <span className="shrink-0 font-mono text-[10px] leading-5" style={{ color: theme.node.faint }}>
-                                {item.time}
-                            </span>
-                            <span className="truncate text-sm font-medium leading-5">{item.title}</span>
+                            <span className="min-w-0 flex-1 truncate text-[13px] font-medium leading-5" title={item.title}>{item.title}</span>
                             {item.count > 1 ? (
                                 <span className="shrink-0 text-[10px] leading-4" style={{ color: theme.node.muted }}>
                                     {t("agent.logs.repeated", { count: item.count })}
@@ -248,11 +212,12 @@ function LogRow({ item, theme, onToggle }: { item: DisplayLog; theme: (typeof ca
                                 {item.displayText}
                             </div>
                         ) : null}
+                        <div className="mt-1 text-[10px] leading-4 tabular-nums" style={{ color: theme.node.muted }}>{item.time}</div>
                     </div>
-                    <ChevronDown className="mt-1 size-3.5 shrink-0 transition-transform group-open:rotate-180" style={{ color: theme.node.faint }} />
+                    <ChevronDown className="mt-1 size-3.5 shrink-0 transition-transform group-open:rotate-180" strokeWidth={1.6} style={{ color: theme.node.muted }} />
                 </div>
             </summary>
-            <div className="pb-3 pl-[34px] pr-2">
+            <div className="pb-3 pl-10 pr-3">
                 <div className="mb-1 text-[10px] font-medium" style={{ color: theme.node.faint }}>
                     {t("agent.logs.details")}
                 </div>

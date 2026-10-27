@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { App, Button, Collapse, Dropdown, Form, Input, Modal, Select, Switch, Tooltip } from "antd";
 import type { MenuProps } from "antd";
-import { Check, ChevronDown, CircleAlert, FilePenLine, LoaderCircle, LockKeyhole, MessageSquareText, Plus, RefreshCw, Search, Sparkles, Trash2, Workflow } from "lucide-react";
+import { ArrowUpRight, Check, ChevronDown, CircleAlert, FilePenLine, LayoutGrid, LoaderCircle, LockKeyhole, MessageSquareText, Plus, RefreshCw, Search, Trash2, Unplug, Workflow } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -84,8 +84,8 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
         setCreateMenuOpen(false);
         setBusySkill("");
         setErrorsOpen(false);
-        form.resetFields();
-    }, [connected, form]);
+        if (editor) form.resetFields();
+    }, [connected, editor, form]);
     const useSkill = (skill: AgentSkillSummary) => {
         selectSkill(skill);
         setAgentState({ activeTab: "chat" });
@@ -230,7 +230,7 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
         items: [
             {
                 key: "conversation",
-                icon: <MessageSquareText className="size-4" />,
+                icon: <MessageSquareText className="size-4" strokeWidth={1.6} />,
                 disabled: codexBusy || !hasConversation,
                 label: (
                     <div className="py-0.5">
@@ -241,7 +241,7 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
             },
             {
                 key: "canvas",
-                icon: <Workflow className="size-4" />,
+                icon: <Workflow className="size-4" strokeWidth={1.6} />,
                 disabled: codexBusy || !hasCanvas,
                 label: (
                     <div className="py-0.5">
@@ -253,7 +253,7 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
             { type: "divider" as const },
             {
                 key: "manual",
-                icon: <FilePenLine className="size-4" />,
+                icon: <FilePenLine className="size-4" strokeWidth={1.6} />,
                 label: (
                     <div className="py-0.5">
                         <div className="text-sm">{t("agent.skillManager.blankCreate")}</div>
@@ -272,33 +272,30 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
     };
 
     return (
-        <div className="flex min-h-0 flex-1 flex-col">
-            <div className="shrink-0 border-b px-4 py-3" style={{ borderColor: theme.node.stroke }}>
+        <div className="flex min-h-0 flex-1 flex-col" style={{ color: theme.node.text }}>
+            <header className="shrink-0 px-6 pb-5 pt-6">
                 <div className="flex items-center justify-between gap-3">
-                    <div>
-                        <div className="text-sm font-semibold">{t("agent.skillManager.localSkills")}</div>
-                        <div className="mt-0.5 text-xs" style={{ color: theme.node.muted }}>{t(piEngine ? "agent.panel.piSkillsHint" : "agent.skillManager.localDescription")}</div>
-                    </div>
-                    <div className="flex items-center gap-1">
-                        <Tooltip title={t("agent.skillManager.reload")}>
-                            <Button type="text" shape="circle" className="!h-8 !w-8 !min-w-8" aria-label={t("agent.skillManager.reloadSkill")} disabled={!connected || loading} icon={<RefreshCw className={`size-4 ${loading ? "animate-spin" : ""}`} />} onClick={() => void refresh()} />
+                    <h2 className="!m-0 text-base font-medium tracking-tight">{t("agent.panel.skills")}</h2>
+                    <div className="flex shrink-0 items-center gap-1">
+                        <Tooltip title={t("agent.skillManager.reload")} trigger={["hover", "focus"]}>
+                            <Button type="text" className="!h-8 !w-8 !min-w-8" style={{ color: theme.node.muted }} aria-label={t("agent.skillManager.reloadSkill")} disabled={!connected || loading} icon={<RefreshCw className={`size-4 ${loading ? "motion-safe:animate-spin" : ""}`} strokeWidth={1.6} />} onClick={() => void refresh()} />
                         </Tooltip>
                         {piEngine ? null : (
                             <Dropdown trigger={["click"]} placement="bottomRight" open={createMenuOpen} onOpenChange={setCreateMenuOpen} disabled={!connected || !clientId || Boolean(generatingSource)} menu={createMenu}>
-                                <Button type="text" className="!h-8 !px-2" aria-haspopup="menu" aria-expanded={createMenuOpen} disabled={!connected || !clientId} loading={Boolean(generatingSource)} icon={<Plus className="size-4" />}>
-                                    {t("agent.skillManager.createSkill")} <ChevronDown className="size-3.5 opacity-60" />
+                                <Button type="text" className="!h-8 !gap-1.5 !px-2 !text-xs" aria-haspopup="menu" aria-expanded={createMenuOpen} disabled={!connected || !clientId} loading={Boolean(generatingSource)} icon={<Plus className="size-4" strokeWidth={1.6} />}>
+                                    {t("agent.skillManager.createSkill")} <ChevronDown className="size-3.5 opacity-60" strokeWidth={1.6} />
                                 </Button>
                             </Dropdown>
                         )}
                     </div>
                 </div>
-                <div className="mt-3 flex gap-2">
-                    <Input aria-label={t("agent.skills.search")} className="app-search-input min-w-0 flex-1" allowClear disabled={!connected} value={query} onChange={(event) => setQuery(event.target.value)} prefix={<Search className="size-3.5" />} placeholder={t("agent.skills.search")} />
+                <p className="!mb-0 !mt-1.5 text-xs leading-5" style={{ color: theme.node.muted }}>{t(piEngine ? "agent.panel.piSkillsHint" : "agent.skillManager.localDescription")}</p>
+                <div className="mt-5 flex items-center gap-2">
+                    <Input aria-label={t("agent.skills.search")} className="app-search-input !h-9 min-w-0 flex-1 !text-xs" allowClear disabled={!connected} value={query} onChange={(event) => setQuery(event.target.value)} prefix={<Search className="size-3.5" strokeWidth={1.6} style={{ color: theme.node.muted }} />} placeholder={t("agent.skills.search")} />
                     <Select<ScopeFilter>
-                        size="small"
                         variant="borderless"
                         aria-label={t("agent.skillManager.filterBySource")}
-                        className="w-28 shrink-0"
+                        className="!h-9 w-28 shrink-0 !text-xs"
                         disabled={!connected}
                         value={scope}
                         onChange={setScope}
@@ -306,43 +303,46 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
                     />
                 </div>
                 {errors.length ? (
-                    <Button danger type="text" size="small" className="!mt-1 !h-7 !px-1 text-xs" icon={<CircleAlert className="size-3.5" />} onClick={() => setErrorsOpen(true)}>{t("agent.skillManager.loadErrors", { count: errors.length })}</Button>
+                    <Button danger type="text" size="small" className="!mt-2 !h-8 !max-w-full !px-1 !text-xs" icon={<CircleAlert className="size-3.5" strokeWidth={1.6} />} onClick={() => setErrorsOpen(true)}>{t("agent.skillManager.loadErrors", { count: errors.length })}</Button>
                 ) : null}
-            </div>
-            <div className="thin-scrollbar min-h-0 flex-1 overflow-y-auto px-4">
+            </header>
+            <div className="thin-scrollbar min-h-0 flex-1 overflow-y-auto px-3 pb-4" aria-busy={loading}>
                 {loading && !loaded ? (
-                    <div className="flex h-40 items-center justify-center gap-2 text-sm" style={{ color: theme.node.muted }}><LoaderCircle className="size-4 animate-spin" />{t("agent.skills.loading")}</div>
+                    <div className="flex flex-col items-center px-3 pt-[clamp(48px,12vh,120px)] text-center" role="status">
+                        <LoaderCircle className="size-8 motion-safe:animate-spin" strokeWidth={1.3} style={{ color: theme.node.faint }} />
+                        <div className="mt-5 text-sm font-medium">{t("agent.skills.loading")}</div>
+                    </div>
                 ) : filteredSkills.length ? (
-                    <div className="divide-y" style={{ borderColor: theme.node.stroke }}>
+                    <div className="space-y-1">
                         {filteredSkills.map((skill) => {
                             const selected = selectedSkill?.name === skill.name && selectedSkill.path === skill.path;
                             const busy = busySkill === skill.path;
                             return (
-                                <div key={`${skill.name}:${skill.path}`} className={`py-3 transition-opacity ${skill.enabled ? "" : "opacity-55"}`} style={{ borderColor: theme.node.stroke }}>
+                                <div key={`${skill.name}:${skill.path}`} className={`rounded-lg px-3 py-3 transition-colors hover:bg-black/5 dark:hover:bg-white/10 ${skill.enabled ? "" : "opacity-60"}`} style={{ backgroundColor: selected ? theme.toolbar.activeBg : undefined }}>
                                     <div className="flex items-start gap-3">
-                                        <Sparkles className="mt-0.5 size-4 shrink-0" style={{ color: selected ? theme.node.text : theme.node.muted }} />
+                                        <LayoutGrid className="mt-0.5 size-4 shrink-0" strokeWidth={1.6} style={{ color: theme.node.muted }} />
                                         <div className="min-w-0 flex-1">
                                             <div className="flex min-w-0 items-center gap-2">
-                                                <span className="truncate text-sm font-medium">{skill.interface?.displayName || skill.name}</span>
-                                                {!skill.managed ? <Tooltip title={t("agent.skillManager.externalReadonly")}><LockKeyhole className="size-3.5 shrink-0" style={{ color: theme.node.faint }} /></Tooltip> : null}
+                                                <span className="truncate text-[13px] font-medium leading-5" title={skill.interface?.displayName || skill.name}>{skill.interface?.displayName || skill.name}</span>
+                                                {!skill.managed ? <Tooltip title={t("agent.skillManager.externalReadonly")} trigger={["hover", "focus"]}><span tabIndex={0} aria-label={t("agent.skillManager.externalReadonly")} className="shrink-0 rounded-sm focus-visible:outline focus-visible:outline-1"><LockKeyhole className="size-3.5" strokeWidth={1.6} style={{ color: theme.node.muted }} /></span></Tooltip> : null}
                                             </div>
                                             <div className="mt-1 line-clamp-2 text-xs leading-5" style={{ color: theme.node.muted }}>{skill.interface?.shortDescription || skill.shortDescription || skill.description || t("agent.skillManager.noDescription")}</div>
-                                            <Tooltip title={skill.path}>
-                                                <div className="mt-1.5 truncate text-[11px]" style={{ color: theme.node.faint }}>{t(`agent.skillManager.scopes.${skill.scope}`)} · {skill.name}</div>
+                                            <Tooltip title={<span className="break-all">{skill.path}</span>} trigger={["hover", "focus"]}>
+                                                <div tabIndex={0} aria-label={skill.path} className="mt-1.5 truncate rounded-sm text-[11px] leading-4 focus-visible:outline focus-visible:outline-1" style={{ color: theme.node.muted }}>{t(`agent.skillManager.scopes.${skill.scope}`)} · {skill.name}</div>
                                             </Tooltip>
                                         </div>
                                     </div>
-                                    <div className="mt-2 flex items-center justify-between gap-2 pl-7">
-                                        <label className="inline-flex items-center gap-2 text-xs" style={{ color: theme.node.muted }}>
-                                            <Switch size="small" checked={skill.enabled} loading={busy} disabled={!connected || Boolean(busySkill) || Boolean(generatingSource)} onChange={(enabled) => void toggleEnabled(skill, enabled)} />
+                                    <div className="mt-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 pl-7">
+                                        <label className="inline-flex items-center gap-2 text-[11px]" style={{ color: theme.node.muted }}>
+                                            <Switch size="small" aria-label={t("agent.skillManager.toggleNamed", { name: skill.interface?.displayName || skill.name })} checked={skill.enabled} loading={busy} disabled={!connected || Boolean(busySkill) || Boolean(generatingSource)} onChange={(enabled) => void toggleEnabled(skill, enabled)} />
                                             {t(skill.enabled ? "agent.skillManager.enabled" : "agent.skillManager.disabled")}
                                         </label>
                                         <div className="flex items-center gap-0.5">
-                                            <Button type="text" size="small" disabled={!connected || !skill.enabled || Boolean(busySkill)} icon={selected ? <Check className="size-3.5" /> : <Sparkles className="size-3.5" />} onClick={() => useSkill(skill)}>{t(selected ? "agent.skillManager.selected" : "agent.skillManager.use")}</Button>
+                                            <Button type="text" size="small" className="!h-8 !px-2 !text-xs" disabled={!connected || !skill.enabled || Boolean(busySkill)} icon={selected ? <Check className="size-3.5" strokeWidth={1.6} /> : <ArrowUpRight className="size-3.5" strokeWidth={1.6} />} onClick={() => useSkill(skill)}>{t(selected ? "agent.skillManager.selected" : "agent.skillManager.use")}</Button>
                                             {skill.managed && !piEngine ? (
                                                 <>
-                                                    <Tooltip title={t("common.edit")}><Button type="text" shape="circle" size="small" aria-label={t("agent.skillManager.editNamed", { name: skill.interface?.displayName || skill.name })} disabled={!connected || Boolean(busySkill) || Boolean(generatingSource)} icon={<FilePenLine className="size-3.5" />} onClick={() => void openEdit(skill)} /></Tooltip>
-                                                    <Tooltip title={t("common.delete")}><Button danger type="text" shape="circle" size="small" aria-label={t("agent.skillManager.deleteNamed", { name: skill.interface?.displayName || skill.name })} disabled={!connected || Boolean(busySkill) || Boolean(generatingSource)} icon={<Trash2 className="size-3.5" />} onClick={() => confirmDelete(skill)} /></Tooltip>
+                                                    <Tooltip title={t("common.edit")} trigger={["hover", "focus"]}><Button type="text" className="!h-8 !w-8 !min-w-8" style={{ color: theme.node.muted }} aria-label={t("agent.skillManager.editNamed", { name: skill.interface?.displayName || skill.name })} disabled={!connected || Boolean(busySkill) || Boolean(generatingSource)} icon={<FilePenLine className="size-3.5" strokeWidth={1.6} />} onClick={() => void openEdit(skill)} /></Tooltip>
+                                                    <Tooltip title={t("common.delete")} trigger={["hover", "focus"]}><Button danger type="text" className="!h-8 !w-8 !min-w-8" aria-label={t("agent.skillManager.deleteNamed", { name: skill.interface?.displayName || skill.name })} disabled={!connected || Boolean(busySkill) || Boolean(generatingSource)} icon={<Trash2 className="size-3.5" strokeWidth={1.6} />} onClick={() => confirmDelete(skill)} /></Tooltip>
                                                 </>
                                             ) : null}
                                         </div>
@@ -352,10 +352,10 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
                         })}
                     </div>
                 ) : (
-                    <div className="flex h-48 flex-col items-center justify-center text-center">
-                        <Sparkles className="size-5" style={{ color: theme.node.faint }} />
-                        <div className="mt-3 text-sm font-medium">{t(!connected ? "agent.skillManager.connectToView" : skills.length ? "agent.skillManager.noMatch" : "agent.skillManager.none")}</div>
-                        <div className="mt-1 text-xs" style={{ color: theme.node.muted }}>{t(!connected ? "agent.skillManager.connectDescription" : skills.length ? "agent.skillManager.tryAnotherFilter" : "agent.skillManager.createOrInstall")}</div>
+                    <div className="mx-auto flex max-w-64 flex-col items-center px-3 pt-[clamp(48px,12vh,120px)] text-center" role="status">
+                        {!connected ? <Unplug className="size-8" strokeWidth={1.3} style={{ color: theme.node.faint }} /> : skills.length ? <Search className="size-8" strokeWidth={1.3} style={{ color: theme.node.faint }} /> : <LayoutGrid className="size-8" strokeWidth={1.3} style={{ color: theme.node.faint }} />}
+                        <div className="mt-5 text-sm font-medium">{t(!connected ? "agent.skillManager.connectToView" : skills.length ? "agent.skillManager.noMatch" : "agent.skillManager.none")}</div>
+                        <div className="mt-2 text-xs leading-6" style={{ color: theme.node.muted }}>{t(!connected ? "agent.skillManager.connectDescription" : skills.length ? "agent.skillManager.tryAnotherFilter" : piEngine ? "agent.skillManager.installAndReload" : "agent.skillManager.createOrInstall")}</div>
                     </div>
                 )}
             </div>

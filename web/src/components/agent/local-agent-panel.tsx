@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { App, Button, Tooltip } from "antd";
 import dayjs from "dayjs";
-import { Bot, History, MessageSquare, PanelRightClose, PlugZap, Plus, Sparkles, Terminal } from "lucide-react";
+import { FileText, History, LayoutGrid, MessageSquare, PanelRightClose, Settings2, SquarePen } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import i18n from "@/i18n";
@@ -19,13 +19,14 @@ import { getServerConfigSaveStatus, subscribeServerConfigSaveStatus } from "@/se
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useAgentSkillStore } from "@/stores/use-agent-skill-store";
 import { useShallow } from "zustand/react/shallow";
-import { useAgentStore, type AgentAttachment, type AgentBootstrapStatus, type AgentCanvasContext, type AgentCanvasReference, type AgentChatItem, type AgentConversationState, type AgentEngine, type AgentModel, type AgentPendingApproval, type AgentPendingToolCall, type AgentPermissionMode, type AgentReasoningEffort, type AgentThreadSummary } from "@/stores/use-agent-store";
+import { useAgentStore, type AgentAttachment, type AgentBootstrapStatus, type AgentCanvasContext, type AgentCanvasReference, type AgentChatItem, type AgentConversationState, type AgentEngine, type AgentFileAttachment, type AgentImageAttachment, type AgentModel, type AgentPendingApproval, type AgentPendingToolCall, type AgentPermissionMode, type AgentQueuedMessage, type AgentReasoningEffort, type AgentThreadSummary } from "@/stores/use-agent-store";
 import { type CanvasAgentOp, type CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import { isSiteTool, runSiteTool } from "@/lib/agent/agent-site-tools";
-import { acknowledgeCodexHistory, activateAgentClient, AgentApiError, createPiThread, deletePiThread, discoverAgentConfig, fetchAgentJson, fetchPiModels, fetchPiThread, fetchPiThreads, interruptCodexTurn, interruptPiTurn, postCodexApproval, postState, postToolResult, resumePiThread } from "@/services/api/canvas-agent";
+import { acknowledgeCodexHistory, activateAgentClient, AgentApiError, createPiThread, deleteAgentFile, deletePiThread, discoverAgentConfig, fetchAgentFile, fetchAgentJson, fetchPiModels, fetchPiThread, fetchPiThreads, interruptCodexTurn, interruptPiTurn, postCodexApproval, postState, postToolResult, resumePiThread, uploadAgentFile } from "@/services/api/canvas-agent";
 import { workspaceHeaders } from "@/lib/workspace";
 import { AgentChatTimeline, AgentTaskProgress, AgentUsageBar } from "./agent-chat";
 import { AgentChatComposer } from "./agent-chat-composer";
+import type { AgentChatPromptInputRef } from "./agent-chat-prompt-input";
 import { AgentConnectView } from "./agent-connect-view";
 import {
     activityDeltaFallback,
@@ -71,15 +72,18 @@ import { AgentPanelTabs } from "./agent-panel-tabs";
 import { AgentSkillsView } from "./agent-skills-view";
 
 const MAX_ATTACHMENTS = 6;
+const MAX_FILE_ATTACHMENTS = 10;
+const MAX_FILE_BYTES = 100 * 1024 * 1024;
 const MAX_ATTACHMENT_PAYLOAD_BYTES = 28 * 1024 * 1024;
 const MESSAGE_PREVIEW_LONG_EDGE = 192;
 const MESSAGE_PREVIEW_MAX_LENGTH = 500_000;
 const DEFAULT_AGENT_URL = "http://127.0.0.1:17371";
-const AGENT_PROTOCOL_VERSION = 7;
+const AGENT_PROTOCOL_VERSION = 8;
 const HISTORY_RETRY_DELAYS_MS = [0, 150, 350, 700, 1200];
 // 会话初始化（含 MCP 预热）超过该时间仍无进展时，提示用户查看日志而不是无限等待。
 const AGENT_INIT_TIMEOUT_MS = 60_000;
 const AGENT_REASONING_EFFORTS = new Set<AgentReasoningEffort>(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+const INTERRUPT_WAIT_TIMEOUT_MS = 10_000;
 const rt = (key: string, options?: Record<string, unknown>) => i18n.t(`agent.runtime.${key}`, options);
 
 type AgentWorkspace = { workspacePath: string; activeThreadId?: string };
@@ -139,7 +143,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     // canvasContext is intentionally excluded because project updates it every frame during dragging and resizing.
     // The panel uses it only for ref synchronization and debounced postState calls, never during rendering.
     // Subscribing here would rerender the panel every frame and amplify the #185 crash, so it is observed imperatively below.
-    const { width, url, token, connected, enabled, prompt, attachments, sending, waiting, tokenUsage, eventLogs, threads, activeThreadId, workspacePath, loadingThreads, activeTab, engine, confirmTools, permissionMode, models, model, reasoningEffort, activity, conversation, connectError, pendingTool, pendingApprovals } = useAgentStore(
+    const { width, url, token, connected, enabled, prompt, attachments, sending, waiting, queue, tokenUsage, eventLogs, threads, activeThreadId, workspacePath, loadingThreads, activeTab, engine, confirmTools, permissionMode, models, model, reasoningEffort, activity, conversation, connectError, pendingTool, pendingApprovals } = useAgentStore(
         useShallow((state) => ({
             width: state.width,
             url: state.url,
@@ -150,6 +154,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             attachments: state.attachments,
             sending: state.sending,
             waiting: state.waiting,
+            queue: state.queue,
             tokenUsage: state.tokenUsage,
             eventLogs: state.eventLogs,
             threads: state.threads,
@@ -171,8 +176,10 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         })),
     );
     const setAgentState = useAgentStore((state) => state.setAgentState);
-    const conversationReady = conversation.status === "ready" || conversation.status === "warning";
     const conversationBusy = conversation.status === "preparing" || conversation.status === "running";
+    // 运行中也允许继续输入和排队，因此 running 不算禁用；preparing 等真正不可发送的状态才禁用。
+    const conversationSendable = conversation.status === "ready" || conversation.status === "warning" || conversation.status === "running";
+    const composerDisabled = !connected || !conversationSendable || loadingThreads || (engine === "pi" && !models.length);
     // 会话长时间停在 preparing/idle 时给出可见提示，避免只显示「MCP 初始化中」让人一直等。
     const [initStalled, setInitStalled] = useState(false);
     const [modelsRevision, setModelsRevision] = useState(0);
@@ -211,6 +218,19 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     const liveTurnKeysRef = useRef(new Set<string>());
     const threadOperationRef = useRef(0);
     const threadOperationSequenceRef = useRef(0);
+    const promptInputRef = useRef<AgentChatPromptInputRef>(null);
+    const dispatchRef = useRef<(message: AgentQueuedMessage) => Promise<void>>(async () => undefined);
+    const drainQueueRef = useRef<() => void>(() => undefined);
+    /** 用户主动停止后暂停自动排队，直到下一次手动发送。 */
+    const queuePausedRef = useRef(false);
+    /** 正在排空队列，避免同一帧重复发出队首消息。 */
+    const drainInFlightRef = useRef(false);
+    const focusNewConversationRef = useRef("");
+    useEffect(() => {
+        if (!focusNewConversationRef.current || composerDisabled || sending || waiting || activeTab !== "chat") return;
+        if (focusNewConversationRef.current === conversation.conversationId) promptInputRef.current?.focus();
+        focusNewConversationRef.current = "";
+    }, [activeTab, composerDisabled, conversation.conversationId, sending, waiting]);
     const endpoint = useMemo(() => url.trim().replace(/\/$/, ""), [url]);
     const urlAgentAutoConnect = searchParams.has("agentUrl") && searchParams.has("agentToken");
     useEffect(() => {
@@ -288,12 +308,16 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                 : threadChanged ? threadMessagesRef.current.get(nextThreadId) || []
                     : current.messages;
         pendingToolRef.current = null;
+        // 切换会话或新建后队列清空，暂停标记也要一起复位，否则新会话无法自动排空。
+        if (threadChanged || emptyThread) queuePausedRef.current = false;
         setAgentState({
             activeThreadId: nextThreadId,
             activeTurnId: threadChanged || emptyThread ? "" : current.activeTurnId,
             messages,
             tokenUsage: threadChanged || emptyThread ? null : current.tokenUsage,
             pendingTool: null,
+            // 队列属于某个会话，切换会话或新建后不能再自动发出旧消息。
+            ...(threadChanged || emptyThread ? { queue: [] } : {}),
             pendingApprovals: threadChanged || emptyThread ? [] : current.pendingApprovals,
         });
         return loadThreadsSequenceRef.current;
@@ -688,12 +712,13 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         };
     }, [connected, endpoint, token]);
     const sendPrompt = async () => {
-        const text = prompt.trim();
-        const files = attachments;
+        // 以 store 为准读取当前输入，避免 await 之后使用过期的闭包值。
+        const snapshot = useAgentStore.getState();
+        const text = snapshot.prompt.trim();
+        const files = snapshot.attachments;
         const skillState = useAgentSkillStore.getState();
         const selectedSkill = skillState.selectedSkill;
-        const selectedSkillRevision = skillState.selectionRevision;
-        const currentState = useAgentStore.getState();
+        const currentState = snapshot;
         const canvasNodeIds = new Set(currentState.canvasContext?.snapshot.nodes.map((node) => node.id) || []);
         const canvasReferences = currentState.canvasReferences.filter((item) => canvasNodeIds.has(item.nodeId));
         if (canvasReferences.length !== currentState.canvasReferences.length) {
@@ -701,44 +726,69 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             message.warning(rt(canvasReferences.length ? "someCanvasReferencesMissing" : "canvasReferencesMissing"));
         }
         const requestPrompt = promptWithCanvasReferences(promptWithAttachments(text, files), canvasReferences);
-        if (!currentState.connected || !requestPrompt || currentState.sending || currentState.waiting || currentState.loadingThreads || !["ready", "warning"].includes(currentState.conversation.status)) return;
-        let referenceImages: AgentAttachment[] = [];
+        // 运行中允许排队：turn 进行时会话状态是 running，不能只认 ready/warning。
+        const queueing = currentState.sending || currentState.waiting;
+        const canSendNow = ["ready", "warning"].includes(currentState.conversation.status);
+        if (!currentState.connected || !requestPrompt || currentState.loadingThreads) return;
+        if (!canSendNow && !queueing) return;
+        let referenceImages: AgentImageAttachment[] = [];
         if (canvasReferences.some((item) => item.kind === "image")) {
-            setAgentState({ sending: true, activity: rt("readingCanvasImages") });
+            if (!queueing) setAgentState({ sending: true, activity: rt("readingCanvasImages") });
             try {
-                referenceImages = await resolveCanvasReferenceImages(canvasReferences, currentState.canvasContext?.snapshot.nodes || []);
+                referenceImages = (await resolveCanvasReferenceImages(canvasReferences, currentState.canvasContext?.snapshot.nodes || [])).map((image) => ({ ...image, kind: "image" as const }));
             } catch (error) {
-                setAgentState({ sending: false, activity: rt("canvasImageReadFailed") });
+                if (!queueing) setAgentState({ sending: false, activity: rt("canvasImageReadFailed") });
                 addMessage({ role: "error", title: rt("canvasImageReadFailed"), text: error instanceof Error ? error.message : rt("canvasImageReadFailed") });
                 return;
             }
         }
-        const requestFiles = [...files, ...referenceImages.filter((reference) => !files.some((file) => file.dataUrl === reference.dataUrl))];
-        if (requestFiles.length > MAX_ATTACHMENTS) {
-            setAgentState({ sending: false, activity: rt("tooManyImages") });
-            addMessage({ role: "error", title: rt("tooManyImages"), text: rt("imageCountLimit", { count: MAX_ATTACHMENTS }) });
-            return;
-        }
-        if (attachmentPayloadBytes(requestFiles) > MAX_ATTACHMENT_PAYLOAD_BYTES) {
-            setAgentState({ sending: false, activity: rt("imageTooLarge") });
-            addMessage({ role: "error", title: rt("imageTooLarge"), text: rt("imagePayloadTooLarge") });
-            return;
-        }
+        const requestFiles: AgentAttachment[] = [...files, ...referenceImages.filter((reference) => !files.some((file) => file.kind === "image" && file.dataUrl === reference.dataUrl))];
+        // 入队前的校验不应改动当前 turn 的 sending 状态。
+        const reject = (title: string, detail: string) => {
+            if (!queueing) setAgentState({ sending: false, activity: title });
+            addMessage({ role: "error", title, text: detail });
+        };
+        if (requestFiles.filter((file) => file.kind === "image").length > MAX_ATTACHMENTS) return reject(rt("tooManyImages"), rt("imageCountLimit", { count: MAX_ATTACHMENTS }));
+        if (requestFiles.filter((file) => file.kind === "file").length > MAX_FILE_ATTACHMENTS) return reject(rt("tooManyFiles"), rt("fileCountLimit", { count: MAX_FILE_ATTACHMENTS }));
+        if (requestFiles.some((file) => file.kind === "file" && file.uploadState === "uploading")) return reject(rt("uploadingFiles"), rt("waitForUpload"));
+        // 上传失败的文件不能静默丢弃，要求用户移除或重新上传。
+        if (requestFiles.some((file) => file.kind === "file" && file.uploadState === "failed")) return reject(rt("fileUploadFailed"), rt("removeFailedFile"));
+        if (attachmentPayloadBytes(requestFiles) > MAX_ATTACHMENT_PAYLOAD_BYTES) return reject(rt("imageTooLarge"), rt("imagePayloadTooLarge"));
         const messageId = createId();
         const userText = text || rt(files.length ? "imagesSent" : "canvasReferencesSent", { count: files.length || canvasReferences.length });
         const messageReferences: AgentCanvasReference[] = await Promise.all(canvasReferences.map(async ({ nodeId, label, title, kind, previewUrl, text }) => {
             const image = referenceImages.find((item) => item.id === `canvas:${nodeId}`);
-            return { nodeId, label, title, kind, previewUrl: image ? (await createMessageAttachmentMetadata(image)).url : previewUrl, text };
+            return { nodeId, label, title, kind, previewUrl: image && image.kind === "image" ? (await createMessageAttachmentMetadata(image)).url : previewUrl, text };
         }));
         const messageSkill = selectedSkill ? { name: selectedSkill.name, path: selectedSkill.path, displayName: selectedSkill.interface?.displayName || undefined } : undefined;
+        // 本轮输入已经解析完成；运行中则入队，空闲时直接发送。
+        const outgoing: AgentQueuedMessage = { id: messageId, promptText: requestPrompt, draftText: text, text: userText, attachments: requestFiles, canvasReferences, messageReferences, skill: messageSkill, ...(selectedSkill ? { skillRevision: skillState.selectionRevision } : {}) };
+        setAgentState({ prompt: "", attachments: [], canvasReferences: [] });
+        if (queueing) {
+            setAgentStoreQueue([...useAgentStore.getState().queue, outgoing]);
+            addEventLog(rt("queueAdded"), compactText(userText) || rt("queuedMessageOnly"));
+            return;
+        }
+        // 手动发送会恢复自动排空。
+        queuePausedRef.current = false;
+        await dispatchMessage(outgoing);
+    };
+
+    /** 发送一条已经整理好的消息；直接发送和队列排空共用同一条路径。 */
+    const dispatchMessage = async (outgoing: AgentQueuedMessage) => {
+        const { id: messageId, promptText: requestPrompt, text: userText, attachments: files, canvasReferences, messageReferences, draftText } = outgoing;
+        const messageSkill = outgoing.skill;
+        // 只在入队时的 Skill 选择仍然有效时清除，避免误清用户后来重新选的 Skill。
+        if (messageSkill) clearSkillSelection(outgoing.skillRevision);
         loadThreadsSequenceRef.current += 1;
         const currentBeforeSend = useAgentStore.getState();
         const requestThreadId = currentBeforeSend.activeThreadId;
-        setAgentState({ prompt: "", attachments: [], canvasReferences: [], activity: rt("sending"), sending: true, loadingThreads: false, activeTurnId: "", messages: currentBeforeSend.messages });
+        setAgentState({ activity: rt("sending"), sending: true, loadingThreads: false, activeTurnId: "", messages: currentBeforeSend.messages });
         addMessage({ id: messageId, itemId: "synthetic:user", clientMessageId: messageId, threadId: requestThreadId, turnId: "", role: "user", text: userText, attachments: files, canvasReferences: messageReferences, skill: messageSkill });
         let threadId = requestThreadId;
         try {
-            const messageAttachments = await Promise.all(files.map(createMessageAttachmentMetadata));
+            // 文件附件已在选择时上传到工作区，这里只提交 fileId，图片仍走 dataUrl。
+            const messageAttachments = (await Promise.all(files.map(async (item) => item.kind === "file" ? { id: item.id, name: item.name, type: item.type, size: item.size, kind: "file" as const, fileId: item.fileId } : createMessageAttachmentMetadata(item))));
             const messageMetadata = {
                 ...(messageAttachments.length ? { attachments: messageAttachments } : {}),
                 ...(messageReferences.length ? { canvasReferences: messageReferences } : {}),
@@ -746,7 +796,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             };
             const modelName = models.find((item) => item.model === model)?.displayName || model || rt("defaultModel");
             const effortName = reasoningEffort ? i18n.t(`agent.composer.effort.${reasoningEffort}`) : rt("defaultEffort");
-            addEventLog(rt("sendTask"), `${modelName} · ${effortName}${selectedSkill ? ` · Skill ${selectedSkill.name}` : ""}${files.length ? ` · ${rt("attachmentCount", { count: files.length })}` : ""}${canvasReferences.length ? ` · ${rt("canvasReferenceCount", { count: canvasReferences.length })}` : ""} · ${compactText(text) || rt(canvasReferences.length ? "canvasReferencesOnly" : "attachmentsOnly")}`);
+            addEventLog(rt("sendTask"), `${modelName} · ${effortName}${messageSkill ? ` · Skill ${messageSkill.name}` : ""}${files.length ? ` · ${rt("attachmentCount", { count: files.length })}` : ""}${canvasReferences.length ? ` · ${rt("canvasReferenceCount", { count: canvasReferences.length })}` : ""} · ${compactText(userText) || rt(canvasReferences.length ? "canvasReferencesOnly" : "attachmentsOnly")}`);
             const accepted = await fetchAgentJson<AgentTurnResponse>(endpoint, token, `/agent/${engine}/turn`, {
                 method: "POST",
                 headers: { "content-type": "application/json" },
@@ -761,24 +811,26 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                     permissionMode,
                     model,
                     effort: reasoningEffort,
-                    skill: selectedSkill ? { name: selectedSkill.name, path: selectedSkill.path } : undefined,
-                    attachments: requestFiles.map(({ id, name, type, size, width, height, dataUrl }) => ({ id, name, type, size, width, height, dataUrl })),
+                    skill: messageSkill ? { name: messageSkill.name, path: messageSkill.path } : undefined,
+                    attachments: files.map((item) => item.kind === "file"
+                        ? { id: item.id, name: item.name, type: item.type, size: item.size, fileId: item.fileId }
+                        : { id: item.id, name: item.name, type: item.type, size: item.size, width: item.width, height: item.height, dataUrl: item.dataUrl }),
                     messageMetadata,
                 }),
             });
             threadId = accepted.threadId || threadId;
             if (!threadId) throw new Error(rt("startConversationFailed"));
-            if (selectedSkill) clearSkillSelection(selectedSkillRevision);
             files.forEach((item) => {
+                if (item.kind !== "image") return;
                 URL.revokeObjectURL(item.url);
                 attachmentUrlsRef.current.delete(item.url);
             });
         } catch (error) {
-            const text = error instanceof Error ? error.message : rt("sendFailed");
+            const failureText = error instanceof Error ? error.message : rt("sendFailed");
             const response = error instanceof AgentApiError ? error.response as { code?: string; state?: AgentConversationState } : undefined;
             if (response?.state) applyConversationState(response.state);
             const stale = response?.code === "CONVERSATION_STALE";
-            const busy = response?.code === "CONVERSATION_BUSY" || text.includes("Codex 正在运行");
+            const busyFailure = response?.code === "CONVERSATION_BUSY" || failureText.includes("Codex 正在运行");
             const state = useAgentStore.getState();
             const removeFailedPending = (messages: AgentChatItem[]) => messages.filter((item) => item.clientMessageId !== messageId || Boolean(item.turnId));
             threadMessagesRef.current.forEach((messages, cachedThreadId) => {
@@ -786,24 +838,54 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                 if (next.length !== messages.length) threadMessagesRef.current.set(cachedThreadId, next);
             });
             const ownsCurrentThread = state.activeThreadId === (threadId || requestThreadId);
-            const restoreDraft = state.prompt || state.attachments.length || state.canvasReferences.length ? {} : { prompt, attachments: files, canvasReferences };
+            // 失败的消息放回输入框而不是队列，避免自动重发形成循环。
+            // 输入框已被用户重新编辑时保持用户内容，只提示发送失败。
+            const draftFree = !state.prompt && !state.attachments.length && !state.canvasReferences.length;
+            if (!draftFree) addEventLog(rt("sendFailedKeptDraft"), rt("sendFailedKeptDraftDetail"));
             if (ownsCurrentThread) {
                 setAgentState({
-                    activity: rt(stale ? "conversationSynced" : busy ? "codexRunning" : "sendFailed"),
+                    activity: rt(stale ? "conversationSynced" : busyFailure ? "codexRunning" : "sendFailed"),
                     sending: false,
                     messages: removeFailedPending(state.messages),
-                    ...restoreDraft,
+                    ...(draftFree ? { prompt: draftText, attachments: files, canvasReferences } : {}),
                 });
-                addMessage({ threadId: state.activeThreadId, turnId: "", role: "error", title: rt(stale ? "conversationSynced" : busy ? "taskStillRunning" : "sendFailed"), text });
+                addMessage({ threadId: state.activeThreadId, turnId: "", role: "error", title: rt(stale ? "conversationSynced" : busyFailure ? "taskStillRunning" : "sendFailed"), text: failureText });
             } else {
-                setAgentState({ sending: false, messages: removeFailedPending(state.messages), ...restoreDraft });
+                setAgentState({ sending: false, messages: removeFailedPending(state.messages), ...(draftFree ? { prompt: draftText, attachments: files, canvasReferences } : {}) });
             }
             addEventLog(rt("sendFailed"), error);
         }
     };
 
+    /** 当前 turn 结束后按顺序发送队首消息。 */
+    const drainQueue = useCallback(() => {
+        if (queuePausedRef.current) return;
+        // effect 触发与 setState 生效之间存在一帧窗口，用同步标记防止同一条消息被发出两次。
+        if (drainInFlightRef.current) return;
+        const state = useAgentStore.getState();
+        if (!state.connected || state.sending || state.waiting || state.loadingThreads) return;
+        if (!["ready", "warning"].includes(state.conversation.status)) return;
+        const [next, ...rest] = state.queue;
+        if (!next) return;
+        drainInFlightRef.current = true;
+        useAgentStore.setState({ queue: rest });
+        void Promise.resolve(dispatchRef.current(next)).finally(() => { drainInFlightRef.current = false; });
+    }, []);
+    // dispatchMessage 在 drainQueue 之后定义，用 ref 打破顺序依赖。
+    dispatchRef.current = dispatchMessage;
+    drainQueueRef.current = drainQueue;
+    // 排队消息等 turn 真正结束（不再是 sending/waiting/loadingThreads）后再发下一条。
+    // 事件回调里直接排空会被随后的 loadThreads 置为 loadingThreads 而跳过，因此改为状态驱动。
+    useEffect(() => {
+        if (!queue.length || sending || waiting || loadingThreads) return;
+        if (conversation.status !== "ready" && conversation.status !== "warning") return;
+        drainQueueRef.current();
+    }, [conversation.status, loadingThreads, queue.length, sending, waiting]);
+
     const stopTurn = async () => {
         if (!connected || (!sending && !waiting)) return;
+        // 用户主动停止时暂停队列，避免刚停下又自动发出下一条。
+        queuePausedRef.current = true;
         setAgentState({ activity: rt("stopping") });
         try {
             if (engine === "pi") await interruptPiTurn(endpoint, token);
@@ -815,18 +897,51 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         }
     };
 
+    /** 立刻中断当前回复，并把输入框里的草稿直接发出，跳过已有队列。 */
+    const interruptAndSend = async () => {
+        if (!connected || (!sending && !waiting)) return;
+        setAgentState({ activity: rt("interrupting") });
+        try {
+            if (engine === "pi") await interruptPiTurn(endpoint, token);
+            else await interruptCodexTurn(endpoint, token, useAgentStore.getState().activeThreadId || undefined);
+            addEventLog(rt("interruptReply"), rt("replyInterrupted"));
+            // 中断是异步生效的，等 wait 状态回落再发送新消息，避免被后端判定为并发 turn。
+            await waitUntil(() => !useAgentStore.getState().waiting, INTERRUPT_WAIT_TIMEOUT_MS);
+            if (useAgentStore.getState().waiting) {
+                addEventLog(rt("interruptTimeout"), rt("interruptTimeoutDetail"));
+                return;
+            }
+            // 没有可发的新输入时只打断，保留队列（暂停自动排空），避免排队消息凭空丢失。
+            const latest = useAgentStore.getState();
+            const hasDraft = Boolean(latest.prompt.trim() || latest.attachments.length || latest.canvasReferences.length);
+            if (!hasDraft) {
+                queuePausedRef.current = true;
+                addEventLog(rt("queuePaused"), rt("queuePausedDetail", { count: latest.queue.length }));
+                return;
+            }
+            // 用户希望新输入优先，跳过已排队的消息。
+            useAgentStore.setState({ queue: [] });
+            queuePausedRef.current = false;
+            await sendPrompt();
+        } catch (error) {
+            setAgentState({ activity: rt("stopFailed") });
+            addEventLog(rt("stopFailed"), error);
+        }
+    };
     const addAttachments = async (files: FileList | File[] | null) => {
         if (!files) return;
-        const images = Array.from(files).filter((file) => file.type.startsWith("image/"));
+        const selected = Array.from(files);
+        const images = selected.filter((file) => file.type.startsWith("image/"));
+        const documents = selected.filter((file) => !file.type.startsWith("image/"));
         const prev = useAgentStore.getState().attachments;
         try {
-            const next = await Promise.all(
-                images.slice(0, Math.max(0, MAX_ATTACHMENTS - prev.length)).map(async (file) => {
+            const next: AgentImageAttachment[] = await Promise.all(
+                images.slice(0, Math.max(0, MAX_ATTACHMENTS - prev.filter((item) => item.kind === "image").length)).map(async (file) => {
                     const dataUrl = await readDataUrl(file);
                     const meta = await readImageMeta(dataUrl);
                     const url = URL.createObjectURL(file);
                     attachmentUrlsRef.current.add(url);
-                    return { id: createId(), name: file.name, type: file.type, size: file.size, width: meta.width, height: meta.height, url, dataUrl };
+                    return { kind: "image" as const, id: createId(), name: file.name, type: file.type, size: file.size, width: meta.width, height: meta.height, url, dataUrl };
                 }),
             );
             const merged = [...prev, ...next];
@@ -836,20 +951,58 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                     attachmentUrlsRef.current.delete(item.url);
                 });
                 addMessage({ role: "error", title: rt("imageTooLarge"), text: rt("imageLimit") });
-                return;
+            } else if (next.length) {
+                setAgentState({ attachments: merged });
             }
-            if (next.length) setAgentState({ attachments: merged });
+            // 图片被拒绝不影响同批选中文件的独立上传。
+            if (documents.length) void addFileAttachments(documents);
         } catch (error) {
             addMessage({ role: "error", title: rt("imageReadFailed"), text: error instanceof Error ? error.message : rt("imageReadFailed") });
         }
     };
 
+    /** 非图片附件直接流式上传到工作区，发送时只提交 fileId。 */
+    const addFileAttachments = async (documents: File[]) => {
+        const current = useAgentStore.getState();
+        if (current.engine === "pi") {
+            addMessage({ role: "error", title: rt("fileUnsupported"), text: rt("fileUnsupportedDetail") });
+            return;
+        }
+        const existing = current.attachments.filter((item) => item.kind === "file");
+        const accepted = documents.slice(0, Math.max(0, MAX_FILE_ATTACHMENTS - existing.length));
+        if (accepted.length < documents.length) addMessage({ role: "error", title: rt("tooManyFiles"), text: rt("fileCountLimit", { count: MAX_FILE_ATTACHMENTS }) });
+        for (const file of accepted) {
+            if (file.size > MAX_FILE_BYTES) {
+                addMessage({ role: "error", title: rt("fileTooLarge"), text: rt("fileTooLargeDetail", { name: file.name, size: formatBytes(MAX_FILE_BYTES) }) });
+                continue;
+            }
+            const id = createId();
+            const pending: AgentFileAttachment = { kind: "file", id, name: file.name, type: file.type || "application/octet-stream", size: file.size, fileId: "", uploadState: "uploading", progress: 0 };
+            setAgentState({ attachments: [...useAgentStore.getState().attachments, pending] });
+            try {
+                const uploaded = await uploadAgentFile(endpoint, token, file, {
+                    onProgress: (percent) => updateAttachment(id, { progress: percent }),
+                });
+                updateAttachment(id, { fileId: uploaded.fileId, uploadState: "ready", progress: 100 });
+            } catch (error) {
+                updateAttachment(id, { uploadState: "failed" });
+                addMessage({ role: "error", title: rt("fileUploadFailed"), text: error instanceof Error ? error.message : rt("fileUploadFailed") });
+            }
+        }
+    };
+
+    /** 只更新指定附件，避免覆盖同批次的其它上传状态。 */
+    const updateAttachment = (id: string, patch: Partial<AgentFileAttachment>) => {
+        setAgentState({ attachments: useAgentStore.getState().attachments.map((item) => (item.id === id && item.kind === "file" ? { ...item, ...patch } : item)) });
+    };
+
     const removeAttachment = (id: string) => {
         const removed = attachments.find((item) => item.id === id);
-        if (removed) {
+        if (removed?.kind === "image") {
             URL.revokeObjectURL(removed.url);
             attachmentUrlsRef.current.delete(removed.url);
         }
+        if (removed?.kind === "file" && removed.fileId) void deleteAgentFile(endpoint, token, removed.fileId).catch(() => undefined);
         setAgentState({ attachments: attachments.filter((item) => item.id !== id) });
     };
 
@@ -898,6 +1051,12 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                 const context = canvasContextRef.current;
                 if (!context) throw new Error(rt("openCanvasFirst"));
                 appliedOps = await attachmentNodeOps(endpoint, token, clientIdRef.current, payload.input?.nodes);
+                result = context.applyOps(appliedOps);
+                await postState(endpoint, token, clientIdRef.current, result as CanvasAgentSnapshot);
+            } else if (payload.name === "canvas_import_artifact") {
+                const context = canvasContextRef.current;
+                if (!context) throw new Error(rt("openCanvasFirst"));
+                appliedOps = await artifactNodeOps(endpoint, token, payload.input?.files);
                 result = context.applyOps(appliedOps);
                 await postState(endpoint, token, clientIdRef.current, result as CanvasAgentSnapshot);
             } else {
@@ -1095,6 +1254,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                 : await fetchAgentJson<AgentWorkspaceResponse>(endpoint, token, "/agent/codex/threads/reset", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ clientId: clientIdRef.current, permissionMode }) });
             if (threadOperationRef.current !== operation) return;
             if (result.conversation) applyConversationState(result.conversation);
+            focusNewConversationRef.current = result.conversation?.conversationId || "";
             setAgentState({ activeTab: "chat", activity: rt("newConversation") });
         } catch (error) {
             const state = agentErrorState(error);
@@ -1177,6 +1337,11 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         if (last?.title === title && last.text === value) return;
         pushEventLog({ id: `${Date.now()}-${Math.random()}`, time: dayjs().format("YYYY-MM-DD HH:mm:ss"), title, text: value, raw });
     };
+
+    /** 队列状态直接写 store，避免与其它扩展字段互相覆盖。 */
+    const setAgentStoreQueue = useCallback((queue: AgentQueuedMessage[]) => {
+        useAgentStore.setState({ queue });
+    }, []);
 
     const upsertActivityMessage = (item: AgentChatItem) => {
         setAgentState({ messages: upsertAgentMessage(useAgentStore.getState().messages, item) });
@@ -1384,31 +1549,30 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         setAgentState({ messages: currentMessages.map((message, itemIndex) => itemIndex === index ? { ...message, text: isDelta ? `${message.text}${text}` : mergeStreamText(message.text, text) } : message) });
     };
 
-    const connectionStatus = t(connectError ? "agent.status.failed" : connected ? "agent.status.connected" : enabled ? "agent.status.connecting" : "agent.status.disconnected");
-    const connectionStatusColor = connectError ? "#dc2626" : connected ? "#16a34a" : enabled ? "#d97706" : theme.node.muted;
+    const newThreadUnavailable = !connected
+        ? t("agent.history.newThreadDisconnected")
+        : loadingThreads
+            ? t("agent.history.newThreadLoading")
+            : sending || waiting || conversationBusy
+                ? t("agent.history.newThreadBusy")
+                : "";
     const content = (
         <>
             <AgentPanelTabs
                 value={activeTab}
                 theme={theme}
                 leading={
-                    <div className="flex items-center gap-1">
-                        <span className="grid size-8 place-items-center">
-                            <Bot className="size-4" />
-                        </span>
-                        <div className="hidden text-base font-semibold leading-5 @min-[560px]:block">{t("canvas.aiAssistant")}</div>
-                        <Tooltip title={t("agent.panel.connectionSettings", { status: connectionStatus })} placement="bottom">
-                            <Button size="small" type="text" className="!h-8 !w-8 !min-w-8 !px-0 @min-[560px]:!w-auto @min-[560px]:!min-w-0 @min-[560px]:!px-[7px]" aria-label={t("agent.panel.connectionSettingsLabel", { status: connectionStatus })} icon={<PlugZap className="size-3.5" style={{ color: connectionStatusColor }} />} onClick={() => setAgentState({ activeTab: "setup" })}>
-                                <span className="hidden @min-[560px]:inline">{connectionStatus}</span>
-                            </Button>
-                        </Tooltip>
-                    </div>
+                    <Tooltip title={t("agent.panel.engineSwitch", { engine: engine === "pi" ? t("agent.panel.enginePi") : t("agent.panel.engineCodex") })} placement="bottom">
+                        {/* 引擎选择会影响连接后走哪条链路，因此未连接时也允许切换，只避开运行中的状态。 */}
+                        <Button size="small" type="text" className="!h-8 !w-8 !min-w-8 !px-0" aria-label={t("agent.panel.engineSwitch", { engine: engine === "pi" ? t("agent.panel.enginePi") : t("agent.panel.engineCodex") })} disabled={sending || waiting || conversationBusy} icon={<img src={`/icons/${engine}.svg`} alt="" aria-hidden="true" className={`size-4 shrink-0 ${engine === "codex" ? "dark:invert" : ""}`} />} onClick={() => setAgentState({ engine: engine === "pi" ? "codex" : "pi" })} />
+                    </Tooltip>
                 }
                 items={[
-                    { value: "chat", label: t("agent.panel.chat"), icon: <MessageSquare className="size-3.5" /> },
-                    { value: "history", label: t("agent.panel.history"), icon: <History className="size-3.5" />, count: threads.length },
-                    { value: "skills", label: t("agent.panel.skills"), icon: <Sparkles className="size-3.5" />, count: skillCount },
-                    { value: "log", label: t("agent.panel.logs"), icon: <Terminal className="size-3.5" />, count: eventLogs.length },
+                    { value: "chat", label: t("agent.panel.chat"), icon: <MessageSquare className="size-4" strokeWidth={1.6} /> },
+                    { value: "history", label: t("agent.panel.history"), icon: <History className="size-4" strokeWidth={1.6} />, count: threads.length },
+                    { value: "skills", label: t("agent.panel.skills"), icon: <LayoutGrid className="size-4" strokeWidth={1.6} />, count: skillCount },
+                    { value: "log", label: t("agent.panel.logs"), icon: <FileText className="size-4" strokeWidth={1.6} />, count: eventLogs.length },
+                    { value: "setup", label: t("agent.panel.setup"), icon: <Settings2 className="size-4" strokeWidth={1.6} /> },
                 ]}
                 onChange={(activeTab) => {
                     setAgentState({ activeTab });
@@ -1416,19 +1580,15 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                 }}
                 right={
                     <>
-                        <Tooltip title={t("agent.panel.engineSwitch", { engine: engine === "pi" ? t("agent.panel.enginePi") : t("agent.panel.engineCodex") })} placement="bottom">
-                            {/* 引擎选择会影响连接后走哪条链路，因此未连接时也允许切换，只避开运行中的状态。 */}
-                            <Button size="small" type="text" className="!h-8 !w-8 !min-w-8 !px-0 @min-[560px]:!w-auto @min-[560px]:!min-w-0 @min-[560px]:!px-[7px]" aria-label={t("agent.panel.engineSwitch", { engine: engine === "pi" ? t("agent.panel.enginePi") : t("agent.panel.engineCodex") })} disabled={sending || waiting || conversationBusy} icon={<img src={`/icons/${engine}.svg`} alt="" aria-hidden="true" className={`size-4 shrink-0 ${engine === "codex" ? "dark:invert" : ""}`} />} onClick={() => setAgentState({ engine: engine === "pi" ? "codex" : "pi" })}>
-                                <span className="hidden @min-[560px]:inline">{engine === "pi" ? t("agent.panel.enginePi") : t("agent.panel.engineCodex")}</span>
-                            </Button>
-                        </Tooltip>
-                        <Tooltip title={t("agent.history.newThread")} placement="bottom">
-                            <Button size="small" type="text" className="!h-8 !w-8 !min-w-8 !px-0 @min-[560px]:!w-auto @min-[560px]:!min-w-0 @min-[560px]:!px-[7px]" aria-label={t("agent.history.newThread")} disabled={!connected || loadingThreads || sending || waiting || conversationBusy} icon={<Plus className="size-3.5" />} onClick={startNewThread}>
-                                <span className="hidden @min-[560px]:inline">{t("agent.history.newThread")}</span>
-                            </Button>
+                        <Tooltip title={newThreadUnavailable || t("agent.history.newThreadHint")} trigger={["hover", "focus"]} placement="bottom">
+                            <span className="inline-flex shrink-0 rounded-md focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2" tabIndex={newThreadUnavailable ? 0 : undefined} aria-label={newThreadUnavailable ? `${t("agent.history.newThread")}: ${newThreadUnavailable}` : undefined} style={{ outlineColor: theme.node.muted }}>
+                                <Button size="small" type="text" className="!h-8 !gap-1.5 !px-2 font-medium" aria-label={t("agent.history.newThread")} disabled={Boolean(newThreadUnavailable)} icon={<SquarePen className="size-4" strokeWidth={1.6} />} onClick={startNewThread}>
+                                    <span className="hidden @min-[480px]:inline">{t("agent.history.newThread")}</span>
+                                </Button>
+                            </span>
                         </Tooltip>
                         <Tooltip title={t("agent.panel.collapse")}>
-                            <Button type="text" shape="circle" className="!h-8 !w-8 !min-w-8" aria-label={t("agent.panel.collapseLabel")} style={{ color: theme.node.muted }} icon={<PanelRightClose className="size-4" />} onClick={closePanel} />
+                            <Button type="text" shape="circle" className="!h-8 !w-8 !min-w-8" aria-label={t("agent.panel.collapseLabel")} style={{ color: theme.node.muted }} icon={<PanelRightClose className="size-4" strokeWidth={1.6} />} onClick={closePanel} />
                         </Tooltip>
                     </>
                 }
@@ -1478,10 +1638,13 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                     <AgentTaskProgress theme={theme} busy={sending || waiting} />
                     {tokenUsage ? <AgentUsageBar usage={tokenUsage} theme={theme} /> : null}
                     <AgentChatComposer
+                        ref={promptInputRef}
                         prompt={prompt}
                         attachments={attachments.map((attachment) => agentAttachmentToChatAttachment(attachment, endpoint, token))}
-                        disabled={!connected || !conversationReady || loadingThreads || (engine === "pi" && !models.length)}
+                        disabled={composerDisabled}
                         sending={sending || waiting}
+                        queueable={!composerDisabled}
+                        queuedCount={queue.length}
                         placeholder={!connected
                             ? connectError || t("agent.status.disconnected")
                             : conversation.status === "failed"
@@ -1497,8 +1660,10 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                         onPromptChange={(prompt) => setAgentState({ prompt })}
                         onSubmit={sendPrompt}
                         onStop={stopTurn}
+                        onInterruptAndSend={interruptAndSend}
                         onAddFiles={addAttachments}
                         onRemoveAttachment={removeAttachment}
+                        fileUploadsEnabled={engine !== "pi"}
                         confirmTools={confirmTools}
                         onConfirmToolsChange={(confirmTools) => setAgentState({ confirmTools })}
                         permissionMode={engine === "pi" ? undefined : permissionMode}
@@ -1630,11 +1795,43 @@ async function attachmentNodeOps(endpoint: string, token: string, clientId: stri
     );
 }
 
+/** 把模型产物读取为图片或文本节点，保持顺序与位置。 */
+async function artifactNodeOps(endpoint: string, token: string, value: unknown): Promise<CanvasAgentOp[]> {
+    const files = Array.isArray(value) ? value : [];
+    if (!files.length) throw new Error(rt("noArtifactFiles"));
+    const ops: CanvasAgentOp[] = [];
+    let offset = 0;
+    for (const entry of files) {
+        const item = entry as { fileId?: unknown; name?: unknown; title?: unknown; kind?: unknown; x?: unknown; y?: unknown; gap?: unknown; direction?: unknown };
+        const fileId = String(item.fileId || "");
+        if (!fileId) throw new Error(rt("invalidAttachmentNode"));
+        const res = await fetchAgentFile(endpoint, token, fileId);
+        if (!res.ok) throw new Error(rt("artifactReadFailed"));
+        const blob = await res.blob();
+        const x = Number(item.x) || 0;
+        const y = Number(item.y) || 0;
+        const gap = Number(item.gap ?? 40);
+        const column = item.direction === "column";
+        const title = String(item.title || item.name || rt("artifactFile"));
+        if (item.kind === "text") {
+            const content = await blob.text();
+            ops.push({ type: "add_node", nodeType: "text", title, position: { x: column ? x : x + offset, y: column ? y + offset : y }, width: 340, height: 240, metadata: { content, status: "success", fontSize: 14 } });
+            offset += (column ? 240 : 340) + gap;
+            continue;
+        }
+        const image = await uploadImage(blob);
+        const size = fitNodeSize(image.width, image.height);
+        ops.push({ type: "add_node", nodeType: "image", title, position: { x: column ? x : x + offset, y: column ? y + offset : y }, width: size.width, height: size.height, metadata: imageMetadata(image) });
+        offset += (column ? size.height : size.width) + gap;
+    }
+    return ops;
+}
+
 function createId() {
     return randomId();
 }
 
-async function createMessageAttachmentMetadata(item: AgentAttachment) {
+async function createMessageAttachmentMetadata(item: AgentImageAttachment) {
     const url = Math.max(item.width, item.height) > MESSAGE_PREVIEW_LONG_EDGE || item.dataUrl.length > MESSAGE_PREVIEW_MAX_LENGTH
         ? await upscaleDataUrl(item.dataUrl, { targetLongEdge: MESSAGE_PREVIEW_LONG_EDGE, algorithm: "high" })
         : item.dataUrl;
@@ -1683,4 +1880,10 @@ function readDataUrl(file: Blob) {
 
 function delay(ms: number) {
     return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+/** 轮询等待条件成立，用于中断后等待后端 turn 真正结束。 */
+async function waitUntil(condition: () => boolean, timeoutMs: number) {
+    const deadline = Date.now() + timeoutMs;
+    while (!condition() && Date.now() < deadline) await delay(120);
 }
