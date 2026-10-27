@@ -5,6 +5,62 @@ description: Implemented changes that still need manual verification
 
 # Pending Tests
 
+## AI 助手对话与技能输入
+
+- 对话区域统一 24px 内容边距、正文行距与线性图标；用户消息采用轻底色和左对齐正文，工具记录去掉重复状态与外围卡片，保留错误语义、详情展开、Markdown、附件、审批和滚动跟随。新增空对话引导，调用用量以轻量文字靠右显示。
+- 底部输入框移除大阴影，采用细边框和轻微聚焦反馈；模型及思考程度独立成行，窄屏也能直接看到模型名，上传、工具确认、权限和发送保留扁平操作。附件移除按钮常驻且带文件名，长输入和短视口菜单可滚动，排队、停止及打断发送回调保持不变。
+- 技能既可通过 `/` 搜索，也可使用常驻「技能」入口；候选展示名称、两行说明与键盘提示。选中后以独立原子标签展示，支持点击或键盘移除、退格删除和切换，并保留 `$技能名` 的实际发送格式。没有标记的默认提示词单独展示技能上下文，编辑时不再意外丢失选择，移除时保留用户修改；重新聚焦不会再被旧的失焦回调关闭候选菜单。
+- 独立 Chromium 的真实组件与模拟数据检查通过：技能选择/筛选/切换/默认提示词/键盘移除/光标/退格、中文组合输入 Enter、换行与纯文本粘贴、画布引用、失败附件阻止发送与移除恢复、模型选择，以及排队/停止/打断、工具确认和权限菜单回调。480px 浅色、360px 深色、360×420 短屏已截图复核；窄屏无横向溢出，长输入和技能菜单可滚动，禁用态与思考详情展开正常。记录：`.local/agent-chat-ui-20261027-223613/`。
+- 浏览器最终无警告、错误或失败请求，三个涉及 Ant Design 的组件定向 lint 均无问题。未执行构建、语法/类型检查或单元测试；未向真实 Agent 发送消息、上传文件或改动用户画布，真实响应流与队列调度仍待人工验收。中英文 TODO 已检查，无对应需迁移条目；保留其他任务改动。
+
+## AI 助手面板视觉统一
+
+- 技能、日志和连接设置沿用历史面板的标题字号、24px 内容边距、线性图标与扁平操作，使用画布主题色、轻微悬停和细焦点轮廓，不新增装饰卡片、大阴影或全局样式覆盖。
+- 技能页采用无边框列表和轻选中态，搜索与来源筛选保持可见，路径与只读说明支持悬停和键盘提示；保留使用、启停、刷新、新建、编辑、删除及加载错误入口。空记录、无匹配、加载和未连接采用统一空状态，Pi 不显示 Codex 的新建/编辑入口；断连时避免重置尚未挂载的表单。
+- 日志页保留排查日志/原始 JSON、级别筛选、重复日志合并、事件详情、复制全部/最近错误、清空与新日志跟随；连接详情按需展开，操作集中在标题右侧，返回最新日志按钮靠近列表底部，窄屏筛选可自然换行。空记录和无匹配显示说明，键盘焦点与日志严重级别仍清晰可辨。
+- 连接设置优先展示状态和地址/Token 表单，移除状态胶囊及重复输入图标；启动与使用说明可展开，已连接时默认收起，未连接时默认展示，Codex 插件提醒另行折叠。Pi 只显示本地启动和自身说明，不要求安装 Codex 插件；保留连接/断开、密码遮罩和三条命令的复制能力。
+- 独立 Chromium 使用真实组件、模拟数据和被拦截的技能接口，通过技能搜索/来源筛选、使用、两引擎启停、编辑/新建弹窗与取消、错误详情、空记录/加载/断连，日志筛选/详情/重复合并/完整 JSON 与剪贴板/清空/新日志滚动，以及连接表单回调/状态/折叠说明/命令复制检查。540px 中文浅色、360px 英文深色已截图复核，窄屏无横向溢出，360×420 短屏的帮助操作可滚动到达；键盘焦点与密码输入检查通过。
+- 最终浏览器运行无警告、错误和失败请求，三个组件的 Ant Design 定向 lint 均无问题。步骤、截图、日志与验收记录：`.local/agent-panels-ui-20261027-215821/`。未连接真实 Agent、生成技能草稿、保存/删除技能、发送消息或修改用户画布；真实服务与失败恢复仍待人工验收。未执行构建、语法/类型检查或单元测试。已检查中英文 TODO，无对应需迁移条目；其他任务改动保留。
+
+## AI 助手历史面板
+
+- 历史页采用「会话历史」标题和轻量刷新图标，工作空间仅显示简短范围说明，完整路径在悬停或键盘聚焦时显示；保留顶部常驻的新建会话入口，不再在历史页标题区重复排列按钮。
+- 空记录、读取中和未连接分别显示对应的线性图标、标题与说明；空记录保留扁平的新建会话操作，任务运行时禁用，并在悬停或聚焦时说明原因。样式沿用画布主题，不新增装饰底色、大阴影或高对比度描边。
+- 会话改为无边框列表行，标题与摘要截断显示，时间简化为月日和时分，完整时间保留在提示中；当前会话使用轻微底色和文字标记，不显示内部会话 ID。点击「选择」后才展开复选框、全选、删除与取消，复选框独立于恢复会话按钮，选择操作不应触发恢复。
+- 独立 Chromium 使用真实组件与模拟数据，通过新建、刷新、恢复、选择、全选、删除回调和取消选择检查，以及工作空间路径提示、忙碌禁用、空记录/加载/未连接状态和键盘焦点检查；540px 中文浅色与 360px 英文深色截图已复核，窄面板无横向溢出，焦点轮廓为 1px。Ant Design 定向 lint 无问题；截图、步骤与日志：`.local/agent-history-ui-20261027-211613/`。
+- 上述回调均为隔离页面中的记录桩，未连接真实 Agent、创建或删除真实会话、发送消息或修改用户画布；真实 Codex/Pi 的历史加载、新建/恢复/删除、错误恢复及更多设备上的效果仍待人工确认。未运行构建、语法/类型检查或单元测试。已检查 TODO，无对应需迁移的完成条目；其他任务的并行改动保持不变。
+
+## AI 助手会话入口
+
+- 顶部移除机器人图标、「AI 助手」标题和连接状态，连接设置保留为标签栏中的设置入口；引擎切换移至顶部栏最左侧，图标导航以整个面板为基准居中，左右使用等宽网格轨道，不受两侧操作实际宽度和有无影响。右侧保留新建会话及收起按钮，窄屏收起新建文字、保留图标和可访问名称，保持透明底、无边框的扁平样式。
+- 采用图 1 的单行线性图标方案：导航图标统一为 16px、1.6px 线宽和 34px 等宽点击区域；技能使用四宫格、日志使用文档图标，不再显示标签文字和计数，仅在悬停或键盘聚焦提示中保留名称与计数。选中态使用主题文字色与 1px 短下划线，不使用胶囊底色；引擎在宽面板也只显示应用标识。
+- 检查窄面板、中英文和浅深主题：宽面板显示新建会话文字，窄面板改为图标；五个导航图标等距排列且整组始终位于面板中心，各功能和收起按钮不应遮挡。未连接、会话加载中和任务运行中不能新建，悬停或键盘聚焦时应说明原因；可用时说明新建不会删除历史记录或画布内容。
+- 居中修正已在独立 Chromium 使用真实导航组件验证：360、420、480、496、540、760px 六种宽度的中心偏差均为 0，左右操作不重叠且无横向溢出；移除任一侧操作仍保持居中，中英文、浅深主题、选中切换、键盘焦点、禁用态及操作回调通过。两处 Ant Design 定向 lint 无问题，未执行构建、语法/类型检查或单元测试，未操作用户页面或真实 Agent。记录：`.local/agent-tabs-center-20261027-230452/`。中英文 TODO 无对应需迁移事项。
+- 从对话页或历史页新建 Codex/Pi 会话，等待输入框可用后应自动聚焦，创建失败不应抢占焦点；确认原会话仍可从历史恢复、画布节点不变、设置入口仍能打开连接配置。TODO 无对应已完成条目，无需迁移。
+- 已在独立浏览器页面确认五个导航入口可切换、选中下划线唯一；DOM 测量确认图标均为 16px / 1.6px，360px 窄面板中英文按钮不重叠、键盘焦点可辨识，深色主题沿用主题色。英文窄面板曾出现不足 1px 的点击区挤压，已收紧图标间距并复核。当前页面的 540px 面板截图与图 1 归一化对比通过；独立隐藏页截图与视口不一致，未作为浅深主题的视觉验收依据。截图、测量和验收记录：`.local/agent-header-qa-2026-10-27T09-41-53-173Z/`。未创建会话、发送消息或执行生成，未运行构建与单元测试；新建后的聚焦、历史恢复和更多设备上的视觉效果仍待人工确认。
+
+## 画布中文文案
+
+- 画布库、节点工具栏、提示词输入和图像编辑说明采用简洁、规范的中文技术术语，统一「分组」「撤销」「剪贴板」「文本」等表述；生成配置的类型标签统一为「图片 / 文本 / 视频 / 音频」。检查工具栏、悬浮提示、空状态和确认弹窗是否准确、无歧义。
+- 提示词反推的说明突出单图 / 多图输入、主视角与单幅图像输出，模型说明明确图像输入能力；操作改为「仅创建节点」「开始反推」，保留文本与配置节点可编辑、复用的说明。单图与多图任务预设改为规范表述，保留原有约束和插值参数。
+- 中文文案调整不改变生成逻辑；多图反推入口的发现性方案已选定并实施，具体交互见下文。TODO 无对应已完成条目，无需迁移。
+- 文案替换后通过 6 项定向单元测试（31 个断言），并以独立 Chromium 复验反推弹窗和选区工具栏、浅深主题、桌面 / 手机 / 横屏、模型选择、联合请求、撤销重做和模拟保存后的刷新恢复，未发现浏览器错误；其他画布弹窗的逐项人工确认仍保留。日志与截图：`.local/canvas-copy-20261027-144924/`。接口均为模拟，未调用真实模型或写入用户工作区；未执行语法检查或构建。
+
+## 画布多图联合反推
+
+- 底部工具栏固定显示提示词反推图标，不显示按钮文字；通过无障碍名称和悬停提示说明操作。打开时自动带入选区中的有效图片；未选图片时可在弹窗中选择参考图。入口不随其他工具横向滚动隐藏，窄屏下工具栏上移以避开缩放控件，保持浅深主题下的扁平样式。侧栏展开导致画布可用宽度不足时，隐藏选区浮动操作，保留选区边界与底部固定入口，避免操作文字裁切。
+- 框选两张或以上有效图片后，「联合反推」显示在选区工具栏首位，并显示「参考图数量 → 1 份提示词」；原有分组操作和单图工具栏入口保留。各入口使用同一弹窗，支持继续添加画布图片。混合选区只使用图片，空图片不计入；图片组使用当前主图，其他备选图可先创建独立副本后添加。
+- 关闭弹窗不会创建节点或发送请求；再次打开时读取当前选区，包括所选图片数量相同但内容不同的情况。画布没有有效图片时显示添加图片的提示，保留禁用的提交按钮。
+- 弹窗支持搜索、独立的大图预览、添加/移除参考图、星标切换主视角、补充要求与文本模型选择。搜索不应丢失已选图片，移除主视角后应自动使用剩余第一张；清空选择时不可提交。确认浅深主题、键盘操作、窄屏滚动与底部操作始终可用。
+- 「仅创建节点」只创建说明文本和一份文本生成配置，不发送模型请求；「开始反推」在检查模型配置后通过既有同源请求链路执行一次联合分析，生成一份文本结果。所有图片与说明文本连接到同一配置，主视角是第一张输入图片，说明和配置可以继续编辑、复用、撤销和刷新恢复。需要选择支持图片理解的文本模型，实际图片数量和请求容量仍受所选渠道限制，未新增本地张数、大小、重试或超时边界。
+- 多图说明把参考图当作同一件物品的不同角度，主视角决定构图，其他角度只补全可确认的结构与材质；输出应是一段能直接生图的提示词，而不是逐图描述、多视图拼图或重复陈列。失败重试重新使用配置中的组装提示词，保留全部图片及主视角顺序；创建和重试中的图片读取失败都会提示错误并释放生成状态，不应卡在生成中。
+- 已通过独立 Chromium 界面验收：选图、移除、主视角替换、搜索保留选择、大图预览、补充要求、模型切换、空选择拦截、中英文、浅深主题，以及手机和横屏下的滚动与底部操作。主视角预览保持图片比例且不再裁切；弹窗和大图预览内的 Delete 不会误删画布节点，预览可独立关闭。截图与日志：`.local/reverse-ui-final-20261027-142541/`。
+- 已通过完整画布的模拟请求验收：单图/多图入口、选区忽略空图片、只创建节点零请求、两图进入同一同源请求且主视角在前、只生成一份文本、撤销重做、配置缺失拦截、渠道失败与重试、停止后无迟到结果、创建/重试的图片读取失败与恢复，以及模拟保存后刷新恢复节点、连线、图片和文本。日志无浏览器错误或非预期接口请求；记录：`.local/reverse-graph-final-20261027-142745/`、`.local/reverse-final-20261027-142424/`。
+- 固定图标入口验收通过：按钮仅显示图标，保留可访问名称与悬停提示；无选区可手动选图，单选、多选和混合选区均正确带入当前有效图片；同数量选区切换会刷新默认选择，取消不创建节点或请求。选区「联合反推」置于首位，说明 1 份提示词输出且不影响分组操作。
+- 新入口与旧快捷操作在模拟画布内均通过联合分析、图片顺序、单份输出和空画布禁用检查。选区边界、工具滚动及固定入口在浅深主题和桌面、平板、手机、小屏、横屏下通过浏览器可见性、缩放控件避让、键盘焦点、无横向溢出和弹窗操作区检查。日志无浏览器错误或非预期 API；截图与记录：`.local/reverse-entry-final-20261027-154105/`。
+- 已通过 6 项定向单元测试（31 个断言）：多图同一消息输入、主视角顺序与去重、单图原流程、补充要求、无效参考图整体拒绝、节点布局及中英文任务说明；未执行语法检查或构建。
+- 上述浏览器验收使用隔离页面、测试图片和拦截的模型/媒体/保存接口，没有调用真实 AI 或写入用户工作区。真实多模态模型的反推质量、渠道容量、服务器媒体与权限、跨设备恢复仍需人工确认；本次没有据此宣称真实服务端或容器集成已通过。
+
 ## Canvas Editor Performance
 
 - Additional optimizations separate builtin resource derivations from position/size-only changes, index group hit testing and neighborhood highlighting, avoid repeated selection updates, and defer autosave throughout dragging. Thumbnail subscriptions notify only consumers of the changed storage key, including isolated side-panel thumbnails; global subscribers remain supported. Theme configuration, grid rendering and unchanged mention-caret mirror measurements are reused. Verify content/title/group changes, plugin resources with geometry-dependent output, thumbnail replacement, both themes, and drag persistence. The earlier 11-unit/6-browser results below predate this follow-up.
@@ -12,6 +68,27 @@ description: Implemented changes that still need manual verification
 - Canvas wheel zoom, pan, node drag/resize, marquee selection, connection preview, minimap navigation, zoom slider, and side-panel resize now coalesce rapid updates per animation frame and commit the final pointer position on release. Node drag/resize defer autosave and history updates until the gesture ends; minimap blur/cancellation flushes pending input without leaving dragging active. Verify fast gestures, cancellation, both themes, and narrow/mobile layouts manually.
 - Node/connection lookups and resource references reuse snapshot indexes. Existing offscreen culling is preserved; unchanged node content, connections, minimap markers, canvas controls, and side-panel node lists are memoized. Cached viewport dimensions replace repeated layout reads for rendering and center insertion. Verify real plugins, grouped nodes, generation panels, media batches, full undo/redo, and Agent canvas context after graph edits.
 - All 11 focused unit cases and all 6 isolated Chromium interaction cases passed. The 500-node fixtures cover zoom/pan, drag/resize persistence and whole-gesture undo, marquee selection, connection creation, controls and side-panel resize/focus, window blur, and late plugin registration/re-registration/removal with current zoom. The visibility fixture mounts only 2 canvas nodes; its 500 minimap markers retain DOM identity with zero observed attribute/child/subtree mutations during zoom/pan. Final artifacts: `.local/e2e-2026-10-26T13-23-27-715Z/`; the isolated database and bucket were cleaned and server logs had no suspect lines. No build or syntax check ran. These checks establish behavior and avoided work, not measured frame-time gains; manual profiling on representative media-heavy canvases remains.
+
+## Agent Message Queue and Reply Interrupt
+
+- The composer is no longer disabled while Codex or Pi is replying: sending during a run appends the message to the queue, the composer shows "N queued", and the next message is sent automatically when the current reply finishes.
+- While a reply runs, Send becomes "Add to queue" and the red Stop button stays available. When the composer has content, an extra "Interrupt and send" action interrupts the current reply, waits for the backend turn to really end, then skips the queue and sends that new input first.
+- Stop only interrupts the current reply and pauses automatic draining; queued messages remain. The next manual send resumes automatic draining so nothing fires immediately after a stop.
+- Each queued message keeps the text, image attachments, file attachments, canvas references, and Skill captured at send time, so later edits to the composer or a new Skill selection never leak into it; a successful send only clears that message's own Skill selection.
+- Switching or creating a conversation clears the queue so messages cannot cross threads. A refresh does not restore the queue, which is expected.
+- When a queued message fails to send, its content returns to the composer instead of re-entering the queue, preventing an automatic retry loop; an existing draft in the composer is left untouched.
+- If the reply has not stopped within 10 seconds after an interrupt, the log records an interrupt timeout and no new message is forced through, avoiding concurrent-turn conflicts.
+
+## Agent File Attachments and Artifacts
+
+- The AI assistant accepts any file type, not only images. Files stream to the local workspace at `.infinite-canvas/files/<fileId>/` as raw bytes when selected; the composer shows the file name, size, and upload percentage, and sending stays disabled until every upload finishes. Images keep the existing `localImage` path and thumbnail previews.
+- Limits per message: 10 file attachments, 100 MB each, 300 MiB per turn; the workspace total is capped at 2 GiB, which rejects new uploads with a cleanup hint. Files bind to a conversation and are removed with it; unbound files expire after 24 hours and bound files after 30 days. Sweeping runs at Agent startup, on conversation deletion, and at most once per hour after an upload.
+- After sending, the Codex log should show that the prompt contains only the request, the image attachment list, and absolute workspace paths for files — never inlined file bodies. Asking Codex to read a PDF or spreadsheet must actually read that path rather than guess from the file name.
+- Use `canvas_import_artifact` when Codex should return a result to the canvas: images become image nodes that keep their aspect ratio, and markdown, txt, csv, and json become text nodes; PDFs and archives are rejected with a reason. Imported nodes can feed a generation flow. With manual tool confirmation the import asks first, and a rejection returns the reason without writing the canvas.
+- Local file attachments stay in the workspace and are not uploaded to the server media bucket. After a refresh, conversation switch, or Agent restart, history still shows the file name and size, but another computer or a cleared workspace cannot read the original and must re-upload it.
+- Engine difference: Pi hides the file upload entry and rejects attachments carrying `fileId`, asking the user to switch to Codex; image attachments keep their existing Pi behavior.
+- Message metadata storage moves to v2 so attachments can carry only a `fileId` without a preview URL. On first start the whole directory is copied to `message-metadata.v1-backup-<timestamp>` before records are rewritten; damaged records or unknown versions abort the migration and keep the original files untouched.
+- The Agent protocol version is now 8; a web client and Canvas Agent on mismatched versions show the existing restart prompt.
 
 ## Codex Agent Runtime and History
 
@@ -118,6 +195,8 @@ description: Implemented changes that still need manual verification
 
 - Open the settings dialog from a canvas and switch among Providers, Preferences, Prompt sources, WebDAV, and Data & storage. The dialog frame should keep its size and position; long content should scroll inside the active tab while navigation and Done stay visible. Save settings should sit at the right of the tab row for editable sections and be absent on Data & storage. Check narrow screens, both themes, and keyboard navigation.
 
+- The active settings tab must scroll to its end with the mouse wheel (Providers stays static when short). On Prompt sources, the Fetch all button should sit 16px below the interval select and 12px above the never-scheduled note, without touching the select or covering the note, in both themes.
+
 - The WebDAV page should edit URL, optional remote directory, username, and password. Save settings or blur the password field, then reload: URL, directory, and username should remain visible; the password should only show a configured state and never return in plaintext. Testing, syncing, or loading snapshots immediately after editing must save the new connection first and use the authenticated same-origin server proxy; a save failure must stop the operation. Check missing settings, invalid URL, authentication failure, both languages and themes, and manual-only snapshots.
 
 - Providers, Preferences, Prompt sources, and WebDAV should have the new grouped layout in both the full page and the in-context dialog. Check narrow and wide screens, light and dark themes, Chinese and English, keyboard focus, and that all existing edit/save, fetch, sync, and snapshot import actions still work. The WebDAV sync and snapshot import controls should appear in separate sections, with consistent vertical spacing between Load snapshots, snapshot selection, and Import snapshot.
@@ -167,6 +246,7 @@ description: Implemented changes that still need manual verification
 
 - Reload the home page, canvas library, canvas editor, and assets page with a selected workspace. The full-screen orbital animation should cover workspace and configuration loading, then fade out only when the destination page and its stored data are ready. No chooser, local spinner, or unfinished canvas should flash. Check both themes and reduced motion.
 - With no selected workspace, reveal the chooser after loading. If the selected workspace no longer exists on the server, reveal the chooser after validation. Workspace switching, creation, and configuration retry should use the same animation; failures must reveal actionable errors.
+- The headline shows only the workspace name after “正在加载” / “Loading”, without a trailing “工作区” / “workspace” suffix.
 
 ## Header Workspace Switcher
 

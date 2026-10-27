@@ -5,6 +5,7 @@
   "pages": [
     "[Changelog](/docs/progress/changelog)",
     "local-agent-integration-plan",
+    "agent-file-attachments-plan",
     "prompt-chip-input-plan",
     "canvas-template-plan",
     "canvas-media-lifecycle-plan",
