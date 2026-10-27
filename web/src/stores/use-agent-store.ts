@@ -6,10 +6,29 @@ import type { CanvasAgentOp, CanvasAgentSnapshot } from "@/lib/canvas/canvas-age
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 
 export type AgentChatRole = "user" | "assistant" | "system" | "tool" | "error";
-export type AgentAttachment = { id: string; name: string; type: string; size: number; width: number; height: number; url: string; dataUrl: string };
-export type AgentMessageAttachment = Pick<AgentAttachment, "id" | "name" | "url"> & Partial<Pick<AgentAttachment, "type" | "size" | "width" | "height" | "dataUrl">>;
+export type AgentImageAttachment = { kind: "image"; id: string; name: string; type: string; size: number; width: number; height: number; url: string; dataUrl: string };
+export type AgentFileAttachment = { kind: "file"; id: string; name: string; type: string; size: number; fileId: string; uploadState: "uploading" | "ready" | "failed"; progress?: number };
+export type AgentAttachment = AgentImageAttachment | AgentFileAttachment;
+export type AgentMessageAttachment = { id: string; name: string; kind?: "image" | "file"; url?: string; fileId?: string } & Partial<Pick<AgentImageAttachment, "type" | "size" | "width" | "height" | "dataUrl">>;
 export type AgentCanvasReference = Pick<CanvasResourceReference, "nodeId" | "label" | "title" | "kind" | "previewUrl" | "text">;
 export type AgentSkillReference = { name: string; path: string; displayName?: string };
+/** 排队等待发送的一条消息，保存发送瞬间的输入、附件和画布引用。 */
+export type AgentQueuedMessage = {
+    id: string;
+    /** 发给 Agent 的完整提示词，已拼接附件清单和画布引用说明。 */
+    promptText: string;
+    /** 输入框里的原始文本，发送失败时回填用。 */
+    draftText: string;
+    text: string;
+    attachments: AgentAttachment[];
+    /** 输入框里选择的实时引用，失败回填时需要。 */
+    canvasReferences: CanvasResourceReference[];
+    /** 消息气泡里展示的引用元数据。 */
+    messageReferences: AgentCanvasReference[];
+    skill?: AgentSkillReference;
+    /** 入队时的 Skill 选择版本，只有它仍然有效时才清除选中状态。 */
+    skillRevision?: number;
+};
 export type AgentChatItem = { id: string; itemId?: string; clientMessageId?: string; threadId?: string; turnId?: string; engine?: AgentEngine; role: AgentChatRole; title?: string; text: string; meta?: string; detail?: unknown; attachments?: AgentMessageAttachment[]; canvasReferences?: AgentCanvasReference[]; skill?: AgentSkillReference; streamId?: string; activityItems?: Record<string, string> };
 export type AgentEventLog = { id: string; time: string; title: string; text: string; raw?: unknown };
 export type AgentPendingToolCall = { requestId: string; name: string; input?: { ops?: CanvasAgentOp[]; path?: string } & Record<string, unknown> };
@@ -64,6 +83,8 @@ type AgentStore = {
     canvasReferences: CanvasResourceReference[];
     sending: boolean;
     waiting: boolean;
+    /** 待发送队列，仅在当前 turn 运行时累积，完成后按顺序自动发出。 */
+    queue: AgentQueuedMessage[];
     messages: AgentChatItem[];
     tokenUsage: AgentTokenUsage | null;
     eventLogs: AgentEventLog[];
@@ -138,6 +159,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     canvasReferences: [],
     sending: false,
     waiting: false,
+    queue: [],
     messages: [],
     tokenUsage: null,
     eventLogs: [],
@@ -164,6 +186,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         ...patch,
         messages: [], threads: [], activeThreadId: "", activeTurnId: "", tokenUsage: null,
         models: [], model: "", reasoningEffort: "", loadingThreads: false,
+        queue: [],
         pendingTool: null, pendingApprovals: [], bootstrapStatus: null, mcpStartupStatuses: {},
         conversation: { engine: patch.engine, revision: 0, conversationId: "", threadId: "", status: state.connected ? "preparing" : "idle", mcpStatuses: {} },
     } : patch),

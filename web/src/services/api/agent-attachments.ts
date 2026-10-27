@@ -2,7 +2,7 @@ import { parseAgentAttachmentManifest, type AgentStoredAttachment, type AgentAtt
 
 export type AgentAttachmentTurn = {
     messageId: string; threadId?: string;
-    attachments?: Array<{ id: string; name: string; dataUrl: string; width?: number; height?: number }>;
+    attachments?: Array<{ id: string; name: string; dataUrl?: string; fileId?: string; width?: number; height?: number }>;
     messageMetadata?: { attachments?: Array<{ id: string }> };
 };
 export type AgentAttachmentMessage = { role?: string; threadId?: string; turnId?: string; itemId?: string; clientMessageId?: string; attachments?: unknown[] };
@@ -17,11 +17,13 @@ async function inventory(workspaceId: string, method = "GET", body?: unknown): P
 }
 
 export async function persistAgentTurnAttachments(workspaceId: string, engine: string, body: AgentAttachmentTurn) {
-    if (!Array.isArray(body.attachments) || !body.attachments.length) return false;
+    // 本机文件附件不进入服务器媒体清单，只持久化图片原图。
+    const files = body.attachments?.filter((file) => !file.fileId) || [];
+    if (!files.length) return false;
     if (!workspaceId || !body.messageId) throw new Error("未选择工作区或缺少 Agent 消息标识，附件未保存");
     const visible = new Set((body.messageMetadata?.attachments ?? []).map((item: { id: string }) => item.id));
     const attachments: AgentStoredAttachment[] = [];
-    for (const file of body.attachments) {
+    for (const file of files) {
         if (typeof file.dataUrl !== "string" || !file.dataUrl.startsWith("data:image/")) throw new Error("Agent 附件缺少可持久化的原图");
         const blob = await (await fetch(file.dataUrl)).blob();
         const storageKey = `image:agent_${crypto.randomUUID()}`;
@@ -49,7 +51,16 @@ export async function restoreAgentAttachments(workspaceId: string, engine: strin
         if (canBind && message.turnId && message.itemId && (!stored.turnId || !stored.itemId || !session!.threadId)) {
             await bindAgentTurnAttachments(workspaceId, engine, stored.clientMessageId, threadId, message.turnId, message.itemId);
         }
-        message.attachments = stored.attachments.filter((item) => item.purpose === "attachment").map((item) => ({ ...item, url: `/api/media/blob/${encodeURIComponent(item.storageKey)}?workspaceId=${encodeURIComponent(workspaceId)}` }));
+        // 服务器清单只有图片原图；本机文件附件保留原顺序，图片按 id 补回规范媒体地址。
+        const images = new Map(stored.attachments.filter((item) => item.purpose === "attachment").map((item) => [item.id, item]));
+        const current = (message.attachments as Array<{ id: string; name: string; kind?: string; type?: string; size?: number }> | undefined) || [];
+        const merged = current.map((item) => {
+            const image = images.get(item.id);
+            return image
+                ? { ...item, kind: "image" as const, url: `/api/media/blob/${encodeURIComponent(image.storageKey)}?workspaceId=${encodeURIComponent(workspaceId)}` }
+                : { ...item, kind: "file" as const };
+        });
+        message.attachments = merged.length ? merged : [...images.values()].map((item) => ({ id: item.id, name: item.name, kind: "image" as const, url: `/api/media/blob/${encodeURIComponent(item.storageKey)}?workspaceId=${encodeURIComponent(workspaceId)}` }));
     }
 }
 

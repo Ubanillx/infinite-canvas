@@ -125,6 +125,43 @@ export async function revealAgentLocalFile(endpoint: string, token: string, path
     await fetchAgentJson(endpoint, token, "/agent/local-file/reveal", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path }) });
 }
 
+export type AgentUploadedFile = { fileId: string; name: string; type: string; size: number; sha256: string; threadId: string; origin: "upload" | "artifact"; createdAt: number };
+
+/** 把任意文件流式上传到本机工作区，返回可用于本轮任务的 fileId。 */
+export function uploadAgentFile(endpoint: string, token: string, file: File, options: { threadId?: string; onProgress?: (percent: number) => void; signal?: AbortSignal } = {}) {
+    return new Promise<AgentUploadedFile>((resolve, reject) => {
+        const workspace = getActiveWorkspace();
+        const query = new URLSearchParams({ token, name: file.name, threadId: options.threadId || "", ...(workspace ? { workspaceId: workspace.id } : {}) });
+        const request = new XMLHttpRequest();
+        request.open("POST", `${endpoint}/agent/files?${query.toString()}`);
+        request.setRequestHeader("content-type", file.type || "application/octet-stream");
+        request.upload.onprogress = (event) => {
+            if (event.lengthComputable) options.onProgress?.(Math.round((event.loaded / event.total) * 100));
+        };
+        request.onerror = () => reject(new Error(i18n.t("agent.composer.uploadFailed", { name: file.name })));
+        request.onabort = () => reject(new Error(i18n.t("agent.composer.uploadCanceled")));
+        request.onload = () => {
+            let body: { ok?: boolean; error?: string; file?: AgentUploadedFile } = {};
+            try {
+                body = JSON.parse(request.responseText || "{}") as typeof body;
+            } catch {}
+            if (request.status < 200 || request.status >= 300 || !body.file) return reject(new AgentApiError(request.status, body as { error?: string }));
+            resolve(body.file);
+        };
+        options.signal?.addEventListener("abort", () => request.abort(), { once: true });
+        request.send(file);
+    });
+}
+
+export async function deleteAgentFile(endpoint: string, token: string, fileId: string) {
+    await fetchAgentJson(endpoint, token, `/agent/files/${encodeURIComponent(fileId)}`, { method: "DELETE" });
+}
+
+/** 读取产物或附件文件的原始字节。 */
+export function fetchAgentFile(endpoint: string, token: string, fileId: string) {
+    return fetch(`${endpoint}/agent/files/${encodeURIComponent(fileId)}/content?token=${encodeURIComponent(token)}${workspaceQuerySuffix()}`);
+}
+
 export function resolveAgentMessageAssetUrl(endpoint: string, token: string, value: string) {
     const match = AGENT_MESSAGE_ASSET_PATTERN.exec(value);
     if (!match) return value.startsWith("agent-asset:") ? "" : value;
@@ -179,8 +216,7 @@ export async function fetchAgentJson<T>(endpoint: string, token: string, path: s
     const workspaceId = workspace?.id || "";
     const turn = /^\/agent\/(codex|pi)\/turn$/.exec(path);
     const body: AgentAttachmentTurn | null = turn && typeof init?.body === "string" ? JSON.parse(init.body) : null;
-    const persisted = body && await persistAgentTurnAttachments(workspaceId, turn![1], body);
-    if (getActiveWorkspace()?.id !== (workspaceId || undefined)) throw new Error("工作区已切换，未继续原 Agent 请求");
+    const persisted = body && await persistAgentTurnAttachments(workspaceId, turn![1], body);    if (getActiveWorkspace()?.id !== (workspaceId || undefined)) throw new Error("工作区已切换，未继续原 Agent 请求");
     const url = `${endpoint}${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}${workspaceQuerySuffix()}`;
     const res = await fetch(url, { ...init, headers: { ...workspaceHeaders(), ...init?.headers } });
     const data = (await res.json().catch(() => ({}))) as T & { error?: string; msg?: string; threadId?: string; messages?: AgentAttachmentMessage[] };
