@@ -23,6 +23,7 @@ const videoLogStore = localforage.createInstance({ name: "infinite-canvas", stor
 const objectUrls = new Map<string, string>();
 const previewUrls = new Map<string, string>();
 const previewListeners = new Set<() => void>();
+const previewListenersByKey = new Map<string, Set<() => void>>();
 let previewRevision = 0;
 let previewQueue: Promise<unknown> = Promise.resolve();
 const IMAGE_PREVIEW_VERSION = 1;
@@ -148,7 +149,17 @@ export function previewUrlFor(storageKey?: string) {
 }
 
 // 缩略图在后台补，生成完成后再让用到它的界面重渲染一次。
-export function subscribeImagePreviews(listener: () => void) {
+export function subscribeImagePreviews(listener: () => void, storageKey?: string) {
+    if (storageKey) {
+        let listeners = previewListenersByKey.get(storageKey);
+        if (!listeners) previewListenersByKey.set(storageKey, listeners = new Set());
+        const subscribers = listeners;
+        subscribers.add(listener);
+        return () => {
+            subscribers.delete(listener);
+            if (!subscribers.size && previewListenersByKey.get(storageKey) === subscribers) previewListenersByKey.delete(storageKey);
+        };
+    }
     previewListeners.add(listener);
     return () => {
         previewListeners.delete(listener);
@@ -157,6 +168,12 @@ export function subscribeImagePreviews(listener: () => void) {
 
 export function getImagePreviewRevision() {
     return previewRevision;
+}
+
+function notifyImagePreviews(storageKey: string) {
+    previewRevision += 1;
+    previewListeners.forEach((listener) => listener());
+    previewListenersByKey.get(storageKey)?.forEach((listener) => listener());
 }
 
 export async function ensureImagePreview(storageKey?: string) {
@@ -188,8 +205,7 @@ async function storeImagePreview(storageKey: string, original: Blob) {
 function cacheImagePreview(storageKey: string, preview: Blob) {
     const url = URL.createObjectURL(preview);
     previewUrls.set(storageKey, url);
-    previewRevision += 1;
-    previewListeners.forEach((listener) => listener());
+    notifyImagePreviews(storageKey);
     return url;
 }
 
@@ -197,6 +213,7 @@ async function deleteImagePreview(storageKey: string) {
     const url = previewUrls.get(storageKey);
     if (url) URL.revokeObjectURL(url);
     previewUrls.delete(storageKey);
+    if (url) notifyImagePreviews(storageKey);
     await previewStore.removeItem(storageKey).catch(() => undefined);
 }
 

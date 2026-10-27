@@ -1,14 +1,16 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
-import { getNodeDefinition } from "@/lib/canvas/node-registry";
+import { getNodeDefinition, useNodeRegistryVersion } from "@/lib/canvas/node-registry";
+import { createFrameTask } from "@/lib/canvas/frame-task";
 import { useThemeStore } from "@/stores/use-theme-store";
-import { type CanvasNodeData, type ViewportTransform } from "@/types/canvas";
+import { type CanvasNodeData, type Position, type ViewportTransform } from "@/types/canvas";
 
-export function Minimap({ nodes, viewport, viewportSize, onViewportChange }: { nodes: CanvasNodeData[]; viewport: ViewportTransform; viewportSize: { width: number; height: number }; onViewportChange: (viewport: ViewportTransform) => void }) {
+export const Minimap = memo(function Minimap({ nodes, viewport, viewportSize, onViewportChange }: { nodes: CanvasNodeData[]; viewport: ViewportTransform; viewportSize: { width: number; height: number }; onViewportChange: (viewport: ViewportTransform) => void }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const containerRef = useRef<HTMLDivElement>(null);
-    const [isDragging, setIsDragging] = useState(false);
+    const draggingRef = useRef(false);
+    const registryVersion = useNodeRegistryVersion((state) => state.version);
     const width = 240;
     const height = 160;
 
@@ -83,17 +85,38 @@ export function Minimap({ nodes, viewport, viewportSize, onViewportChange }: { n
         };
     }, [toMinimap, viewport.k, viewport.x, viewport.y, viewportSize.height, viewportSize.width]);
 
-    const updateViewportFromEvent = (event: React.PointerEvent) => {
+    const viewportTask = useMemo(() => createFrameTask<Position>(({ x, y }) => {
         const rect = containerRef.current?.getBoundingClientRect();
         if (!rect) return;
 
-        const world = toWorld(event.clientX - rect.left, event.clientY - rect.top);
+        const world = toWorld(x - rect.left, y - rect.top);
         onViewportChange({
             x: viewportSize.width / 2 - world.x * viewport.k,
             y: viewportSize.height / 2 - world.y * viewport.k,
             k: viewport.k,
         });
-    };
+    }), [onViewportChange, toWorld, viewport.k, viewportSize.width, viewportSize.height]);
+    useEffect(() => () => viewportTask.cancel(), [viewportTask]);
+    const finishDrag = useCallback(() => {
+        viewportTask.flush();
+        draggingRef.current = false;
+    }, [viewportTask]);
+    useEffect(() => {
+        window.addEventListener("blur", finishDrag);
+        return () => window.removeEventListener("blur", finishDrag);
+    }, [finishDrag]);
+
+    // Panning changes only the viewport rectangle, not every node's DOM and inline styles.
+    const nodeMarkers = useMemo(() => nodes.map((node) => {
+        const pos = toMinimap(node.position.x, node.position.y);
+        return <div key={node.id} className="absolute rounded-[1px]" style={{
+            transform: `translate(${pos.x}px, ${pos.y}px)`,
+            width: Math.max(node.width * scale, 2),
+            height: Math.max(node.height * scale, 2),
+            backgroundColor: getNodeDefinition(node.type)?.minimapColor || theme.node.muted,
+            opacity: 0.8,
+        }} />;
+    }), [nodes, toMinimap, scale, theme.node.muted, registryVersion]);
 
     return (
         <div className="absolute bottom-24 left-6 z-50 overflow-hidden rounded-lg border shadow-2xl backdrop-blur-sm" style={{ width, height, background: theme.toolbar.panel, borderColor: theme.toolbar.border }}>
@@ -103,35 +126,23 @@ export function Minimap({ nodes, viewport, viewportSize, onViewportChange }: { n
                 onPointerDown={(event) => {
                     event.preventDefault();
                     event.currentTarget.setPointerCapture(event.pointerId);
-                    setIsDragging(true);
-                    updateViewportFromEvent(event);
+                    draggingRef.current = true;
+                    viewportTask.schedule({ x: event.clientX, y: event.clientY });
                 }}
                 onPointerMove={(event) => {
-                    if (isDragging) updateViewportFromEvent(event);
+                    if (draggingRef.current) viewportTask.schedule({ x: event.clientX, y: event.clientY });
                 }}
-                onPointerUp={() => setIsDragging(false)}
-                onPointerLeave={() => setIsDragging(false)}
+                onPointerUp={(event) => {
+                    if (!draggingRef.current) return;
+                    viewportTask.schedule({ x: event.clientX, y: event.clientY });
+                    finishDrag();
+                }}
+                onPointerCancel={finishDrag}
+                onLostPointerCapture={finishDrag}
             >
-                {nodes.map((node) => {
-                    const pos = toMinimap(node.position.x, node.position.y);
-                    const color = getNodeDefinition(node.type)?.minimapColor || theme.node.muted;
-                    return (
-                        <div
-                            key={node.id}
-                            className="absolute rounded-[1px]"
-                            style={{
-                                left: pos.x,
-                                top: pos.y,
-                                width: Math.max(node.width * scale, 2),
-                                height: Math.max(node.height * scale, 2),
-                                backgroundColor: color,
-                                opacity: 0.8,
-                            }}
-                        />
-                    );
-                })}
-                <div className="pointer-events-none absolute border" style={{ left: viewportRect.x, top: viewportRect.y, width: viewportRect.w, height: viewportRect.h, borderColor: theme.node.activeStroke, background: `${theme.node.activeStroke}18` }} />
+                {nodeMarkers}
+                <div className="pointer-events-none absolute border" style={{ transform: `translate(${viewportRect.x}px, ${viewportRect.y}px)`, width: viewportRect.w, height: viewportRect.h, borderColor: theme.node.activeStroke, background: `${theme.node.activeStroke}18` }} />
             </div>
         </div>
     );
-}
+});

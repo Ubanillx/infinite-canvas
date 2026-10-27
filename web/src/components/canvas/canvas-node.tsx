@@ -1,13 +1,14 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ChevronRight, Copy, Download, Group, Image as ImageIcon, Music2, Puzzle, RefreshCw, Star, Trash2, Video } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes } from "@/lib/image-utils";
 import { pickImageSource } from "@/lib/image-thumbnail";
-import { previewUrlFor, subscribeImagePreviews, getImagePreviewRevision } from "@/services/image-storage";
+import { useImagePreview } from "@/hooks/use-image-preview";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { buildNodeContext } from "@/lib/canvas/plugin-node-context";
+import { createFrameTask } from "@/lib/canvas/frame-task";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeImage, type CanvasNodeText, type Position } from "@/types/canvas";
@@ -17,6 +18,7 @@ import { useTranslation } from "react-i18next";
 
 type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 const selectionBlue = "#2f80ff";
+const EMPTY_REFERENCES: CanvasResourceReference[] = [];
 
 type CanvasNodeProps = {
     data: CanvasNodeData;
@@ -95,7 +97,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     referenceSelectionState,
     showPanel,
     showImageInfo,
-    mentionReferences = [],
+    mentionReferences = EMPTY_REFERENCES,
     pluginHost,
     renderPanel,
     renderNodeContent,
@@ -127,7 +129,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     const { t } = useTranslation();
     const [hovered, setHovered] = useState(false);
     const definition = getNodeDefinition(data.type);
-    const pluginContext = useMemo<CanvasNodeContext | null>(() => (pluginHost ? buildNodeContext(pluginHost, data, theme, scale, isSelected) : null), [pluginHost, data, theme, scale, isSelected]);
+    const pluginContext = useMemo<CanvasNodeContext | null>(() => (pluginHost && (definition?.Content || definition?.onDoubleClick) ? buildNodeContext(pluginHost, data, theme, scale, isSelected) : null), [pluginHost, data, theme, scale, isSelected, definition]);
     const [isEditingContent, setIsEditingContent] = useState(false);
     const [isEditingTitle, setIsEditingTitle] = useState(false);
     const [titleDraft, setTitleDraft] = useState(data.title || "");
@@ -148,6 +150,18 @@ export const CanvasNode = React.memo(function CanvasNode({
     const imageBorderColor = isActive ? selectionBlue : isRelated ? theme.node.muted : "transparent";
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const titleInputRef = useRef<HTMLInputElement>(null);
+    const scaleRef = useRef(scale);
+    scaleRef.current = scale;
+    const contentActions = useMemo(() => ({
+        onStopEditing: () => setIsEditingContent(false),
+        onToggleBatch: () => onToggleBatch?.(data.id),
+        onSetBatchPrimary: (itemId: string) => onSetBatchPrimary?.(data.id, itemId),
+        onDuplicateBatchImage: (imageId: string) => onDuplicateBatchImage?.(data, imageId),
+        onDownloadBatchImage: (imageId: string) => onDownloadBatchImage?.(data, imageId),
+        onRetryBatchImage: (imageId: string) => onRetryBatchImage?.(data, imageId),
+        onDeleteBatchImage: (imageId: string) => onDeleteBatchImage?.(data.id, imageId),
+        onViewBatchImage: (imageId: string) => onViewImage?.(data, imageId),
+    }), [data, onToggleBatch, onSetBatchPrimary, onDuplicateBatchImage, onDownloadBatchImage, onRetryBatchImage, onDeleteBatchImage, onViewImage]);
     const resizeRef = useRef({
         isResizing: false,
         corner: "bottom-right" as ResizeCorner,
@@ -224,8 +238,8 @@ export const CanvasNode = React.memo(function CanvasNode({
         (event: MouseEvent) => {
             if (!resizeRef.current.isResizing) return;
 
-            const dx = (event.clientX - resizeRef.current.startX) / scale;
-            const dy = (event.clientY - resizeRef.current.startY) / scale;
+            const dx = (event.clientX - resizeRef.current.startX) / scaleRef.current;
+            const dy = (event.clientY - resizeRef.current.startY) / scaleRef.current;
             const minWidth = 220;
             const minHeight = 160;
             const startRight = resizeRef.current.startLeft + resizeRef.current.startWidth;
@@ -258,15 +272,21 @@ export const CanvasNode = React.memo(function CanvasNode({
                 y: fromTop ? startBottom - height : resizeRef.current.startTop,
             });
         },
-        [data.id, onResize, scale],
+        [data.id, onResize],
     );
+    const resizeTask = useMemo(() => createFrameTask(handleResizeMove), [handleResizeMove]);
 
-    const handleResizeUp = useCallback(() => {
+    const handleResizeUp = useCallback((event: Event) => {
+        if (!resizeRef.current.isResizing) return;
+        if (event instanceof MouseEvent && event.type === "mouseup") resizeTask.schedule(event);
+        resizeTask.flush();
         resizeRef.current.isResizing = false;
-        window.removeEventListener("mousemove", handleResizeMove);
+        window.removeEventListener("mousemove", resizeTask.schedule);
         window.removeEventListener("mouseup", handleResizeUp);
+        window.removeEventListener("blur", handleResizeUp);
+        window.removeEventListener("pointercancel", handleResizeUp);
         onResizeEnd(data.id);
-    }, [data.id, handleResizeMove, onResizeEnd]);
+    }, [data.id, resizeTask, onResizeEnd]);
 
     const handleResizeMouseDown = (event: React.MouseEvent, corner: ResizeCorner) => {
         event.stopPropagation();
@@ -284,16 +304,21 @@ export const CanvasNode = React.memo(function CanvasNode({
             keepRatio: (data.type === CanvasNodeType.Image && !data.metadata?.freeResize) || data.type === CanvasNodeType.Video || Boolean(definition?.keepAspectRatio?.(data)),
             ratio: (data.metadata?.naturalWidth || data.width) / (data.metadata?.naturalHeight || data.height || 1),
         };
-        window.addEventListener("mousemove", handleResizeMove);
+        window.addEventListener("mousemove", resizeTask.schedule);
         window.addEventListener("mouseup", handleResizeUp);
+        window.addEventListener("blur", handleResizeUp);
+        window.addEventListener("pointercancel", handleResizeUp);
     };
 
     useEffect(() => {
         return () => {
-            window.removeEventListener("mousemove", handleResizeMove);
+            resizeTask.cancel();
+            window.removeEventListener("mousemove", resizeTask.schedule);
             window.removeEventListener("mouseup", handleResizeUp);
+            window.removeEventListener("blur", handleResizeUp);
+            window.removeEventListener("pointercancel", handleResizeUp);
         };
-    }, [handleResizeMove, handleResizeUp]);
+    }, [resizeTask, handleResizeUp]);
 
     return (
         <div
@@ -409,20 +434,13 @@ export const CanvasNode = React.memo(function CanvasNode({
                         isBatchRoot={isBatchRoot}
                         batchCount={batchCount}
                         batchExpanded={batchExpanded}
-                        scale={scale}
+                        scale={data.type === CanvasNodeType.Image || pluginContext ? scale : 1}
                         renderNodeContent={renderNodeContent}
                         pluginContext={pluginContext}
                         mentionReferences={mentionReferences}
                         onContentChange={onContentChange}
-                        onStopEditing={() => setIsEditingContent(false)}
                         onRetry={onRetry}
-                        onToggleBatch={() => onToggleBatch?.(data.id)}
-                        onSetBatchPrimary={(itemId) => onSetBatchPrimary?.(data.id, itemId)}
-                        onDuplicateBatchImage={(imageId) => onDuplicateBatchImage?.(data, imageId)}
-                        onDownloadBatchImage={(imageId) => onDownloadBatchImage?.(data, imageId)}
-                        onRetryBatchImage={(imageId) => onRetryBatchImage?.(data, imageId)}
-                        onDeleteBatchImage={(imageId) => onDeleteBatchImage?.(data.id, imageId)}
-                        onViewBatchImage={(imageId) => onViewImage?.(data, imageId)}
+                        {...contentActions}
                         groupChildCount={groupChildCount}
                     />
                 </div>
@@ -456,7 +474,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     );
 });
 
-function NodeContent(props: NodeContentRendererProps) {
+const NodeContent = React.memo(function NodeContent(props: NodeContentRendererProps) {
     if (props.node.type === CanvasNodeType.Config && props.renderNodeContent) return props.renderNodeContent(props.node);
     if (props.isBatchRoot && props.node.type === CanvasNodeType.Image) return <ImageNodeContent {...props} />;
     if (props.node.type === CanvasNodeType.Text && props.node.metadata?.texts?.length && (props.node.metadata.status !== "error" || props.node.metadata.texts.some((text) => text.content))) return <TextContent {...props} />;
@@ -473,7 +491,7 @@ function NodeContent(props: NodeContentRendererProps) {
         return <PluginContent ctx={props.pluginContext} />;
     }
     return <MissingPluginContent theme={props.theme} type={props.node.type} />;
-}
+});
 
 const nodeContentRenderers = {
     [CanvasNodeType.Text]: TextContent,
@@ -761,14 +779,13 @@ function ImageContent({
 }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
-    useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
     const images = node.metadata?.images || [];
     const batchCount = images.length;
     const isBatchRoot = batchCount > 1;
     const primaryImageId = node.metadata?.primaryImageId || images[0]?.id;
     const primaryImage = images.find((image) => image.id === primaryImageId);
     const primaryContent = primaryImage?.content || node.metadata?.content;
-    const primaryPreviewUrl = previewUrlFor(primaryImage?.storageKey || node.metadata?.storageKey);
+    const primaryPreviewUrl = useImagePreview(primaryImage?.storageKey || node.metadata?.storageKey);
     const primarySource = primaryContent
         ? pickImageSource({
               previewUrl: primaryPreviewUrl,
@@ -832,7 +849,7 @@ function ImageContent({
 function ExpandedImageCard({ node, image, index, scale, onView, onSetPrimary, onDuplicate, onDownload, onRetry, onDelete }: { node: CanvasNodeData; image: CanvasNodeImage; index: number; scale: number; onView: () => void; onSetPrimary: () => void; onDuplicate: () => void; onDownload: () => void; onRetry: () => void; onDelete: () => void }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
-    useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
+    const previewUrl = useImagePreview(image.storageKey);
     const count = node.metadata?.images?.length || 0;
     const columns = Math.min(count, 4);
     const rows = Math.ceil(count / columns);
@@ -844,7 +861,7 @@ function ExpandedImageCard({ node, image, index, scale, onView, onSetPrimary, on
     const y = (row - rows + 1) * (node.height + 18);
     const source = image.content
         ? pickImageSource({
-              previewUrl: previewUrlFor(image.storageKey),
+              previewUrl,
               originalUrl: image.content,
               naturalWidth: image.naturalWidth,
               naturalHeight: image.naturalHeight,

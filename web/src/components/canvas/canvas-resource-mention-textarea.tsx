@@ -222,10 +222,13 @@ function MentionMenu({ textarea, caretIndex, references, activeIndex, theme, onS
     const gap = 6;
     // Anchor the menu to the pixel position of the @ caret instead of the textarea edge.
     // The canvas may be scaled: rect uses scaled coordinates while mirror measurements use layout coordinates, so apply the scale.
-    const scale = textarea.offsetWidth ? rect.width / textarea.offsetWidth : 1;
+    const width = textarea.offsetWidth;
+    const scale = width ? rect.width / width : 1;
     const computed = window.getComputedStyle(textarea);
     const lineHeight = (parseFloat(computed.lineHeight) || parseFloat(computed.fontSize) * 1.4 || 20) * scale;
-    const caret = getCaretPoint(textarea, caretIndex);
+    const layoutKey = MIRROR_STYLE_PROPS.map((prop) => computed[prop]).join("\n");
+    // Moving the active suggestion does not change the textarea's intrinsic caret layout.
+    const caret = useMemo(() => getCaretPoint(textarea, caretIndex, computed), [textarea, caretIndex, textarea.value, layoutKey]);
     const caretLeft = rect.left + (caret.left - textarea.scrollLeft) * scale;
     const caretTop = rect.top + (caret.top - textarea.scrollTop) * scale;
     const left = clamp(caretLeft, boundary.left + 8, boundary.right - menuWidth - 8);
@@ -287,8 +290,7 @@ function clamp(value: number, min: number, max: number) {
 // Mirror the textarea layout in a div to measure the caret at index in unscaled layout coordinates.
 const MIRROR_STYLE_PROPS = ["boxSizing", "width", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth", "fontStyle", "fontVariant", "fontWeight", "fontStretch", "fontSize", "lineHeight", "fontFamily", "textAlign", "textIndent", "letterSpacing", "wordSpacing", "tabSize", "textTransform"] as const;
 
-function getCaretPoint(textarea: HTMLTextAreaElement, index: number) {
-    const computed = window.getComputedStyle(textarea);
+function getCaretPoint(textarea: HTMLTextAreaElement, index: number, computed: CSSStyleDeclaration) {
     const mirror = document.createElement("div");
     const style = mirror.style;
     style.position = "absolute";

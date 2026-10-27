@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { ProConfigProvider } from "@ant-design/pro-components";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App, ConfigProvider } from "antd";
@@ -32,6 +32,7 @@ export function AppProviders({ children }: { children: ReactNode }) {
     const theme = useThemeStore((state) => state.theme);
     const loading = useAppLoadingStore((state) => state.loading);
     const dark = theme === "dark";
+    const antTheme = useMemo(() => getAntThemeConfig(dark), [dark]);
     const locale = i18n.resolvedLanguage as AppLocale;
 
     useEffect(() => {
@@ -47,7 +48,7 @@ export function AppProviders({ children }: { children: ReactNode }) {
     }, [locale, t]);
 
     return (
-        <ConfigProvider locale={locale === "zh-CN" ? zhCN : enUS} theme={getAntThemeConfig(dark)} wave={{ disabled: true }}>
+        <ConfigProvider locale={locale === "zh-CN" ? zhCN : enUS} theme={antTheme} wave={{ disabled: true }}>
             <ProConfigProvider dark={dark}>
                 <App>
                     <QueryClientProvider client={queryClient}>

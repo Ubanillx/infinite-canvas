@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { App, Image, Input, Popconfirm, Select, Spin, Tag } from "antd";
 import { useQuery } from "@tanstack/react-query";
 import { BookOpen, Check, ChevronRight, Download, Eye, FileText, Image as ImageIcon, LayoutGrid, ListChecks, Music2, Plus, Rows3, Search, Settings2, Square, Trash2, Type, Video } from "lucide-react";
@@ -7,12 +7,14 @@ import { useTranslation } from "react-i18next";
 
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { exportCanvasNodes } from "@/lib/canvas/canvas-export";
-import { getNodeDefinition } from "@/lib/canvas/node-registry";
+import { createFrameTask } from "@/lib/canvas/frame-task";
+import { getNodeDefinition, useNodeRegistryVersion } from "@/lib/canvas/node-registry";
 import { cn } from "@/lib/utils";
 import { PromptDetailDialog } from "@/pages/prompts/components/prompt-detail-dialog";
 import { fetchSourcePrompts, type Prompt } from "@/services/api/prompts";
 import { uploadMediaFile } from "@/services/file-storage";
-import { previewUrlFor, subscribeImagePreviews, getImagePreviewRevision, uploadImage } from "@/services/image-storage";
+import { uploadImage } from "@/services/image-storage";
+import { useImagePreview } from "@/hooks/use-image-preview";
 import { useAssetStore, type Asset, type AssetKind } from "@/stores/use-asset-store";
 import { usePromptSourceStore } from "@/stores/use-prompt-source-store";
 import { CANVAS_SIDE_PANEL_MAX_WIDTH, CANVAS_SIDE_PANEL_MIN_WIDTH, CANVAS_SIDE_PANEL_MOTION_MS, useCanvasSidePanelStore } from "@/stores/use-canvas-side-panel-store";
@@ -51,7 +53,7 @@ const STATUS_COLOR: Record<string, string> = {
     idle: "transparent",
 };
 
-export function CanvasSidePanel({ nodes, selectedNodeIds, onFocusNode, onPreviewNode, onHoverNode, onInsertAsset }: Props) {
+export const CanvasSidePanel = memo(function CanvasSidePanel({ nodes, selectedNodeIds, onFocusNode, onPreviewNode, onHoverNode, onInsertAsset }: Props) {
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [tab, setTab] = useState<PanelTab>("canvas");
@@ -61,25 +63,40 @@ export function CanvasSidePanel({ nodes, selectedNodeIds, onFocusNode, onPreview
     const panelClosing = useCanvasSidePanelStore((state) => state.panelClosing);
     const setWidth = useCanvasSidePanelStore((state) => state.setWidth);
     const [resizing, setResizing] = useState(false);
+    const resizeCleanupRef = useRef<(() => void) | null>(null);
+    useEffect(() => () => resizeCleanupRef.current?.(), []);
 
     const startResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
         event.preventDefault();
+        resizeCleanupRef.current?.();
         const startX = event.clientX;
         const startWidth = width;
         let nextWidth = startWidth;
+        const widthTask = createFrameTask(setWidth);
         const onMove = (moveEvent: PointerEvent) => {
             nextWidth = Math.min(CANVAS_SIDE_PANEL_MAX_WIDTH, Math.max(CANVAS_SIDE_PANEL_MIN_WIDTH, startWidth + moveEvent.clientX - startX));
-            setWidth(nextWidth);
+            widthTask.schedule(nextWidth);
         };
-        const onUp = () => {
+        const onUp = (upEvent: Event) => {
+            if (upEvent instanceof PointerEvent && upEvent.type === "pointerup") onMove(upEvent);
+            widthTask.flush();
             localStorage.setItem("canvas-side-panel-width", String(nextWidth));
+            resizeCleanupRef.current?.();
+            setResizing(false);
+        };
+        resizeCleanupRef.current = () => {
+            widthTask.cancel();
             window.removeEventListener("pointermove", onMove);
             window.removeEventListener("pointerup", onUp);
-            setResizing(false);
+            window.removeEventListener("pointercancel", onUp);
+            window.removeEventListener("blur", onUp);
+            resizeCleanupRef.current = null;
         };
         setResizing(true);
         window.addEventListener("pointermove", onMove);
         window.addEventListener("pointerup", onUp);
+        window.addEventListener("pointercancel", onUp);
+        window.addEventListener("blur", onUp);
     };
 
     if (!panelMounted) return null;
@@ -118,7 +135,7 @@ export function CanvasSidePanel({ nodes, selectedNodeIds, onFocusNode, onPreview
             </motion.aside>
         </motion.div>
     );
-}
+});
 
 function TabButton({ label, active, theme, onClick }: { label: string; active: boolean; theme: CanvasTheme; onClick: () => void }) {
     return (
@@ -140,10 +157,10 @@ function nodePreviewText(node: CanvasNodeData) {
     return getNodeDefinition(node.type)?.title || node.type;
 }
 
-function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, onPreviewNode, onHoverNode, theme }: { nodes: CanvasNodeData[]; selectedNodeIds: Set<string>; onFocusNode: (nodeId: string) => void; onPreviewNode: (nodeId: string) => void; onHoverNode: (nodeId: string | null) => void; theme: CanvasTheme }) {
+const CanvasNodesTab = memo(function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, onPreviewNode, onHoverNode, theme }: { nodes: CanvasNodeData[]; selectedNodeIds: Set<string>; onFocusNode: (nodeId: string) => void; onPreviewNode: (nodeId: string) => void; onHoverNode: (nodeId: string | null) => void; theme: CanvasTheme }) {
+    useNodeRegistryVersion((state) => state.version);
     const { message } = App.useApp();
     const { t } = useTranslation();
-    useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
     const [keyword, setKeyword] = useState("");
     const [typeFilter, setTypeFilter] = useState<string>("all");
     const [selectMode, setSelectMode] = useState(false);
@@ -163,7 +180,11 @@ function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, onPreviewNode, on
         const children = new Map<string, CanvasNodeData[]>();
         filtered.forEach((node) => {
             const groupId = node.metadata?.groupId;
-            if (groupId && groups.has(groupId)) children.set(groupId, [...(children.get(groupId) || []), node]);
+            if (groupId && groups.has(groupId)) {
+                const groupChildren = children.get(groupId);
+                if (groupChildren) groupChildren.push(node);
+                else children.set(groupId, [node]);
+            }
         });
         return nodes.flatMap((node) => {
             if (node.metadata?.groupId && groups.has(node.metadata.groupId)) return [];
@@ -292,7 +313,7 @@ function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, onPreviewNode, on
                                         title={selectMode ? undefined : t("canvas.sidePanel.focusNode")}
                                     >
                                         <span className="relative grid aspect-square w-full place-items-center overflow-hidden rounded-md">
-                                            {isImage ? <img src={previewUrlFor(node.metadata?.storageKey) || node.metadata?.content} alt={node.title} className="size-full object-cover" /> : <Icon className="size-6 opacity-60" />}
+                                            {isImage ? <NodeThumbnail storageKey={node.metadata?.storageKey} content={node.metadata?.content} title={node.title} /> : <Icon className="size-6 opacity-60" />}
                                             {selectMode ? (
                                                 <span className="absolute left-1 top-1">
                                                     <CheckMark checked={isChecked} theme={theme} />
@@ -333,7 +354,7 @@ function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, onPreviewNode, on
                                     <button type="button" onClick={() => (selectMode ? toggleChecked(node.id) : activateNode(node))} className={cn("flex min-w-0 flex-1 items-center gap-3 py-2 pr-2 text-left", node.type === CanvasNodeType.Group && hasChildren ? "pl-0" : "pl-2")} title={selectMode ? undefined : t("canvas.sidePanel.focusNode")}>
                                         {selectMode ? <CheckMark checked={isChecked} theme={theme} /> : null}
                                         <span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-md">
-                                            {isImage ? <img src={previewUrlFor(node.metadata?.storageKey) || node.metadata?.content} alt={node.title} className="size-full object-cover" /> : <Icon className="size-5 opacity-60" />}
+                                            {isImage ? <NodeThumbnail storageKey={node.metadata?.storageKey} content={node.metadata?.content} title={node.title} /> : <Icon className="size-5 opacity-60" />}
                                         </span>
                                         <span className="min-w-0 flex-1 space-y-0.5">
                                             <span className="block truncate text-sm font-medium leading-snug">{node.title || getNodeDefinition(node.type)?.title || t("canvas.node.untitled")}</span>
@@ -374,7 +395,12 @@ function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, onPreviewNode, on
             ) : null}
         </div>
     );
-}
+});
+
+const NodeThumbnail = memo(function NodeThumbnail({ storageKey, content, title }: { storageKey?: string; content?: string; title: string }) {
+    const previewUrl = useImagePreview(storageKey);
+    return <img src={previewUrl || content} alt={title} className="size-full object-cover" />;
+});
 
 function CheckMark({ checked, theme }: { checked: boolean; theme: CanvasTheme }) {
     return (

@@ -1,15 +1,15 @@
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type ConnectionHandle, type ViewportTransform } from "@/types/canvas";
+import { getCanvasNodeIndex } from "@/lib/canvas/canvas-graph-index";
 
 export function nodeBounds(nodes: CanvasNodeData[]) {
-    return nodes.reduce(
-        (acc, node) => ({
-            left: Math.min(acc.left, node.position.x),
-            top: Math.min(acc.top, node.position.y),
-            right: Math.max(acc.right, node.position.x + node.width),
-            bottom: Math.max(acc.bottom, node.position.y + node.height),
-        }),
-        { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity },
-    );
+    const bounds = { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity };
+    for (const node of nodes) {
+        bounds.left = Math.min(bounds.left, node.position.x);
+        bounds.top = Math.min(bounds.top, node.position.y);
+        bounds.right = Math.max(bounds.right, node.position.x + node.width);
+        bounds.bottom = Math.max(bounds.bottom, node.position.y + node.height);
+    }
+    return bounds;
 }
 
 function containsCenter(group: CanvasNodeData, node: CanvasNodeData) {
@@ -19,13 +19,18 @@ function containsCenter(group: CanvasNodeData, node: CanvasNodeData) {
 }
 
 export function findGroupDropTarget(movedIds: Set<string>, nodes: CanvasNodeData[]) {
-    if (nodes.some((node) => movedIds.has(node.id) && node.type === CanvasNodeType.Group)) return null;
-    const movingNodes = nodes.filter((node) => movedIds.has(node.id) && node.type !== CanvasNodeType.Group);
+    const { byId, groups } = getCanvasNodeIndex(nodes);
+    if (!groups.length) return null;
+    const movingNodes: CanvasNodeData[] = [];
+    for (const id of movedIds) {
+        const node = byId.get(id);
+        if (node?.type === CanvasNodeType.Group) return null;
+        if (node) movingNodes.push(node);
+    }
     if (!movingNodes.length) return null;
     // Walk backwards instead of copying and reversing; this runs on every drag frame.
-    for (let index = nodes.length - 1; index >= 0; index -= 1) {
-        const group = nodes[index];
-        if (group.type !== CanvasNodeType.Group || movedIds.has(group.id)) continue;
+    for (let index = groups.length - 1; index >= 0; index -= 1) {
+        const group = groups[index];
         if (movingNodes.some((node) => containsCenter(group, node))) return group;
     }
     return null;
@@ -124,9 +129,10 @@ export function applyUngroupSelection(selectedIds: Set<string>, nodes: CanvasNod
 
 export function findContainingGroupId(node: CanvasNodeData, nodes: CanvasNodeData[]) {
     // Called once per moved node when a drag ends, so avoid copying the node list each time.
-    for (let index = nodes.length - 1; index >= 0; index -= 1) {
-        const group = nodes[index];
-        if (group.type === CanvasNodeType.Group && group.id !== node.id && containsCenter(group, node)) return group.id;
+    const { groups } = getCanvasNodeIndex(nodes);
+    for (let index = groups.length - 1; index >= 0; index -= 1) {
+        const group = groups[index];
+        if (group.id !== node.id && containsCenter(group, node)) return group.id;
     }
     return undefined;
 }
@@ -139,8 +145,9 @@ export function getConnectionTargetAnchor(node: CanvasNodeData, current: Connect
 }
 
 export function normalizeConnection(firstNodeId: string, secondNodeId: string, nodes: CanvasNodeData[], firstHandleType: "source" | "target") {
-    const first = nodes.find((node) => node.id === firstNodeId);
-    const second = nodes.find((node) => node.id === secondNodeId);
+    const nodeById = getCanvasNodeIndex(nodes).byId;
+    const first = nodeById.get(firstNodeId);
+    const second = nodeById.get(secondNodeId);
     if (!first || !second || first.id === second.id) return null;
     if (second.type === CanvasNodeType.Group) return null;
     if (first.type === CanvasNodeType.Config && second.type === CanvasNodeType.Config) return null;

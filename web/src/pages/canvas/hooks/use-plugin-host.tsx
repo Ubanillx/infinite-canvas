@@ -7,6 +7,7 @@ import { requestVideoGeneration, storeGeneratedVideo } from "@/services/api/vide
 import { decodeChannelModel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 import { buildGenerationConfig } from "@/lib/canvas/canvas-generation-helpers";
 import { buildNodeContext } from "@/lib/canvas/plugin-node-context";
+import { getCanvasConnectionIndex, getCanvasNodeIndex } from "@/lib/canvas/canvas-graph-index";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { ensurePluginsLoaded } from "@/lib/canvas/plugin-loader";
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -91,18 +92,16 @@ export function usePluginHost(params: PluginHostParams) {
 
     const pluginHost = useMemo<CanvasPluginHost>(
         () => ({
-            getNode: (id) => nodesRef.current.find((node) => node.id === id) || null,
+            getNode: (id) => getCanvasNodeIndex(nodesRef.current).byId.get(id) || null,
             getNodes: () => nodesRef.current,
             getConnections: () => connectionsRef.current,
             getUpstream: (nodeId) =>
-                connectionsRef.current
-                    .filter((conn) => conn.toNodeId === nodeId)
-                    .map((conn) => nodesRef.current.find((node) => node.id === conn.fromNodeId))
+                (getCanvasConnectionIndex(connectionsRef.current).incoming.get(nodeId) || [])
+                    .map((conn) => getCanvasNodeIndex(nodesRef.current).byId.get(conn.fromNodeId))
                     .filter((node): node is CanvasNodeData => Boolean(node)),
             getDownstream: (nodeId) =>
-                connectionsRef.current
-                    .filter((conn) => conn.fromNodeId === nodeId)
-                    .map((conn) => nodesRef.current.find((node) => node.id === conn.toNodeId))
+                (getCanvasConnectionIndex(connectionsRef.current).outgoing.get(nodeId) || [])
+                    .map((conn) => getCanvasNodeIndex(nodesRef.current).byId.get(conn.toNodeId))
                     .filter((node): node is CanvasNodeData => Boolean(node)),
             updateNode: (nodeId, patch) => setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, ...patch } : node))),
             updateMetadata: (nodeId, patch) => setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, ...patch } } : node))),
@@ -126,10 +125,9 @@ export function usePluginHost(params: PluginHostParams) {
 
     // Build the node toolbar from plugin items and a host-provided interaction/move toggle when enabled.
     const buildNodeToolbarItems = useCallback(
-        (node: CanvasNodeData): CanvasNodeToolbarItem[] => {
+        (node: CanvasNodeData, scale: number): CanvasNodeToolbarItem[] => {
             const definition = getNodeDefinition(node.type);
-            const ctx = buildNodeContext(pluginHost, node, theme, viewportRef.current.k);
-            const custom = definition?.toolbar?.(ctx) || [];
+            const custom = definition?.toolbar?.(buildNodeContext(pluginHost, node, theme, scale)) || [];
             // Show the interaction/move toggle only for nodes with content that are not forced into an interactive state.
             if (!definition?.interactionToggle || !node.metadata?.content || definition.forceInteractive?.(node)) return custom;
             const interactive = Boolean(node.metadata?.interactive);

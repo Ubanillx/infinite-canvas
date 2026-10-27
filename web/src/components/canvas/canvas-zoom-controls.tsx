@@ -1,10 +1,11 @@
 import type { ReactNode } from "react";
 import { Compass, Focus, HelpCircle } from "lucide-react";
-import { useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { Button, Modal, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { canvasThemes } from "@/lib/canvas-theme";
+import { createFrameTask } from "@/lib/canvas/frame-task";
 import { useThemeStore } from "@/stores/use-theme-store";
 
 type CanvasZoomControlsProps = {
@@ -15,8 +16,10 @@ type CanvasZoomControlsProps = {
     onToggleMiniMap: () => void;
 };
 
-export function CanvasZoomControls({ scale, onScaleChange, onReset, isMiniMapOpen, onToggleMiniMap }: CanvasZoomControlsProps) {
+export const CanvasZoomControls = memo(function CanvasZoomControls({ scale, onScaleChange, onReset, isMiniMapOpen, onToggleMiniMap }: CanvasZoomControlsProps) {
     const [shortcutsOpen, setShortcutsOpen] = useState(false);
+    const scaleTask = useMemo(() => createFrameTask(onScaleChange), [onScaleChange]);
+    useEffect(() => () => scaleTask.cancel(), [scaleTask]);
     const { t } = useTranslation();
     const colorTheme = useThemeStore((state) => state.theme);
     const theme = canvasThemes[colorTheme];
@@ -48,7 +51,10 @@ export function CanvasZoomControls({ scale, onScaleChange, onReset, isMiniMapOpe
                         value={Math.round(scale * 100)}
                         className="w-24"
                         style={{ accentColor: theme.node.activeStroke }}
-                        onChange={(event) => onScaleChange(Number(event.target.value) / 100)}
+                        onChange={(event) => scaleTask.schedule(Number(event.target.value) / 100)}
+                        onPointerUp={scaleTask.flush}
+                        onKeyUp={scaleTask.flush}
+                        onBlur={scaleTask.flush}
                         aria-label={t("canvas.zoom")}
                     />
                 </Tooltip>
@@ -73,7 +79,7 @@ export function CanvasZoomControls({ scale, onScaleChange, onReset, isMiniMapOpe
             </Modal>
         </div>
     );
-}
+});
 
 function Shortcut({ label, value }: { label: ReactNode; value: string }) {
     return (
