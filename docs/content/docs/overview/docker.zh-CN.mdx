@@ -30,7 +30,7 @@ docker compose -f docker-compose.local.yml up -d --build --wait --wait-timeout 1
 
 ## 自动发布
 
-[Jenkins 自动部署](/zh-CN/docs/overview/jenkins) 使用 deploy 分支、GitHub Push Webhook、SSH 严格主机密钥校验、镜像 ID 校验、Compose 健康检查及上一版本恢复。冒烟检查会在隔离的 Compose 项目中临时拉起同一套 PostgreSQL 与 RustFS，通过后清理；部署只重建 `app`，数据服务与数据卷不随版本回滚。部署主机不访问镜像仓库，数据服务镜像需预先加载。详细配置见仓库 deploy/README.md。
+[Jenkins 自动部署](/zh-CN/docs/overview/jenkins) 使用 deploy 分支、GitHub Push Webhook、SSH 严格主机密钥校验、镜像 ID 校验、Compose 健康检查及上一版本恢复。冒烟检查会在隔离的 Compose 项目中临时拉起同一套 PostgreSQL 与 RustFS，通过后清理；部署只重建 `app`，数据服务与数据卷不随版本回滚。部署主机不访问镜像仓库，缺失的数据服务镜像由构建节点导出后经 SSH 传输加载。详细配置见仓库 deploy/README.md。
 
 ## 统计与文档站
 

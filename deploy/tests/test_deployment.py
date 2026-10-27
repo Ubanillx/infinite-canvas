@@ -26,10 +26,14 @@ if a == ["compose", "version"]: print("Docker Compose v2.30.0"); sys.exit(0)
 if a == ["compose", "up", "--help"]: print("--wait-timeout"); sys.exit(0)
 if a == ["load"]: sys.stdin.buffer.read(); sys.exit(0)
 if a[:2] == ["image", "inspect"]:
+    if os.getenv("SCENARIO") == "missing-infra" and a[-1] in ("postgres:17-alpine", "rustfs/rustfs:latest", "amazon/aws-cli:latest"):
+        sys.exit(1)
     if os.getenv("SCENARIO") == "loaded-image-mismatch" and a[3] == "{{.Id}}":
         print("sha256:" + "c" * 64); sys.exit(0)
     print(os.environ["IMAGE_ID"] if a[3] == "{{.Id}}" else os.environ["SHA"])
     sys.exit(0)
+if a[0] == "save":
+    print("fake-infra-images"); sys.exit(0)
 if a[0] == "inspect":
     print("wrong" if os.getenv("SCENARIO") == "wrong-image" else os.environ["IMAGE_ID"] if a[2] == "{{.Image}}" else "healthy")
     sys.exit(0)
@@ -182,7 +186,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("Invalid SSH host", result.stderr)
 
-    def ssh_transport(self, fail=False, preflight=False):
+    def ssh_transport(self, fail=False, preflight=False, scenario="success"):
         fake = '''#!/usr/bin/env python3
 import json, os, subprocess, sys
 with open(os.environ["CALL_LOG"], "a") as f: f.write(json.dumps(sys.argv) + "\\n")
@@ -198,7 +202,7 @@ if os.path.basename(sys.argv[0]) == "ssh": sys.stdin.buffer.read()
         env = dict(self.env, DEPLOY_HOST="deploy.example.com", DEPLOY_USER="deploy",
                    DEPLOY_KEY="/secret/key", KNOWN_HOSTS="/secret/hosts", DEPLOY_DIR=str(self.root),
                    COMPOSE_PROJECT="test", RELEASE_SHA=SHA, BUILD_NUMBER="7", SSH_FAIL="1" if fail else "0",
-                   SSH_PREFLIGHT="1" if preflight else "0")
+                   SSH_PREFLIGHT="1" if preflight else "0", SCENARIO=scenario)
         return subprocess.run(["bash", str(REPO / "deploy/ssh-deploy.sh")], cwd=REPO,
                               env=env, stdin=subprocess.DEVNULL, text=True, capture_output=True)
 
@@ -239,9 +243,21 @@ if os.path.basename(sys.argv[0]) == "ssh": sys.stdin.buffer.read()
         shutil.rmtree(self.root / "incoming")
         result = self.ssh_transport(preflight=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(self.calls()), 3)
+        # 3 次 ssh/scp 调用 + 预检中的 3 次基础镜像检查。
+        self.assertEqual(len(self.calls()), 6)
         self.assertTrue((self.root / "incoming" / RELEASE).is_dir())
         self.assertNotIn("must-not-be-logged", result.stdout + result.stderr)
+
+    def test_missing_infrastructure_images_are_transferred(self):
+        infra_file = REPO / ".ci" / "infra-images.tar.gz"
+        infra_file.unlink(missing_ok=True)
+        self.addCleanup(lambda: infra_file.unlink(missing_ok=True))
+        shutil.rmtree(self.root / "incoming")
+        result = self.ssh_transport(preflight=True, scenario="missing-infra")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(infra_file.exists())
+        calls = self.calls()
+        self.assertTrue(any(isinstance(call, dict) and call["args"][:1] == ["save"] for call in calls))
 
     def supervisor(self, exit_role):
         app = self.root / "app"

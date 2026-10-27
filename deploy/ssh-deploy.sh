@@ -15,13 +15,27 @@ target="$DEPLOY_USER@$DEPLOY_HOST"
 ssh_opts=(-i "$DEPLOY_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$KNOWN_HOSTS" -o GlobalKnownHostsFile=/dev/null)
 stage='remote preflight'
 trap 'status=$?; printf "SSH deployment failed during %s (exit %s)\n" "$stage" "$status" >&2' ERR
-ssh "${ssh_opts[@]}" -p "$DEPLOY_PORT" "$target" "set -eu
+preflight_output="$(ssh "${ssh_opts[@]}" -p "$DEPLOY_PORT" "$target" "set -eu
 umask 077
 test -d '$DEPLOY_DIR/shared' || { echo 'Missing deployment directory: $DEPLOY_DIR/shared' >&2; exit 1; }
 test -f '$DEPLOY_DIR/shared/production.env' && test -r '$DEPLOY_DIR/shared/production.env' || { echo 'Initialize readable $DEPLOY_DIR/shared/production.env first (see deploy/README.md)' >&2; exit 1; }
 test -w '$DEPLOY_DIR' && test -w '$DEPLOY_DIR/shared' || { echo 'Deployment directories must be writable by the SSH user' >&2; exit 1; }
 mkdir -p '$DEPLOY_DIR/incoming'
-mkdir '$DEPLOY_DIR/incoming/$release'"
+mkdir '$DEPLOY_DIR/incoming/$release'
+for image in postgres:17-alpine rustfs/rustfs:latest amazon/aws-cli:latest; do
+    docker image inspect --format '{{.Id}}' \"\$image\" >/dev/null 2>&1 || printf 'MISSING_IMAGE=%s\n' \"\$image\"
+done")"
+missing_images="$(printf '%s\n' "$preflight_output" | sed -n 's/^MISSING_IMAGE=//p')"
+if [[ -n "$missing_images" ]]; then
+    # 部署主机不访问镜像仓库，缺失的数据服务镜像由构建节点导出后经 SSH 传输。
+    printf 'Transferring missing infrastructure images: %s\n' "$(printf '%s' "$missing_images" | tr '\n' ' ')" >&2
+    stage='infrastructure image upload'
+    mapfile -t images <<< "$missing_images"
+    mkdir -p .ci
+    docker save "${images[@]}" | gzip > .ci/infra-images.tar.gz
+    scp "${ssh_opts[@]}" -P "$DEPLOY_PORT" .ci/infra-images.tar.gz "$target:$DEPLOY_DIR/incoming/$release/infra-images.tar.gz"
+    ssh "${ssh_opts[@]}" -p "$DEPLOY_PORT" "$target" "gzip -dc '$DEPLOY_DIR/incoming/$release/infra-images.tar.gz' | docker load && rm -f '$DEPLOY_DIR/incoming/$release/infra-images.tar.gz'"
+fi
 stage='release upload'
 scp "${ssh_opts[@]}" -P "$DEPLOY_PORT" .ci/release.tar.gz "$target:$DEPLOY_DIR/incoming/$release/release.tar.gz"
 # The script itself is sent over the authenticated channel, not executed from an unchecked archive.
