@@ -458,7 +458,7 @@ export default {
         config: "Settings",
     },
     navigationGroups: { create: "Create", resources: "Resources", settings: "Settings" },
-    boot: { restoring: "Loading {{name}} workspace", preparing: "Preparing canvases and settings", opening: "Opening Infinite Canvas", finding: "Finding workspaces" },
+    boot: { restoring: "Loading {{name}}", preparing: "Preparing canvases and settings", opening: "Opening Infinite Canvas", finding: "Finding workspaces" },
     sidebar: { collapse: "Collapse sidebar", expand: "Expand sidebar" },
     topNav: {
         currentWorkspace: "Current workspace",

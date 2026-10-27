@@ -220,11 +220,11 @@ export function AppConfigPanel({ showDoneButton = false, showTabs = true, showSa
                 activeKey={activeTab}
                 onChange={(key) => setSelectedTab(key as ConfigTabKey)}
                 renderTabBar={showTabs ? undefined : () => <></>}
+                className={showDoneButton ? "[&_.ant-tabs-content-holder]:overflow-y-auto" : undefined}
                 tabBarExtraContent={showDoneButton && showSaveButton && activeTab !== "local-storage" ? <SaveConfigButton /> : undefined}
                 styles={showDoneButton ? {
                     root: { display: "flex", flex: 1, flexDirection: "column", minHeight: 0 },
                     header: { marginBottom: 0 },
-                    body: { height: "100%", overflowY: "auto" },
                     content: { paddingTop: 16, paddingRight: 4 },
                 } : undefined}
                 items={[
