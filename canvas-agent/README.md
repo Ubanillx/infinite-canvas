@@ -121,6 +121,7 @@ default_tools_approval_mode = "approve"
 - `canvas_apply_ops`
 - `canvas_create_text_node`
 - `canvas_create_image_prompt_flow`
+- `canvas_import_artifact`
 
 `canvas_apply_ops` 示例：
 
@@ -145,6 +146,10 @@ default_tools_approval_mode = "approve"
 侧边栏会展示 Codex 返回的 `thread.started`、`turn.started`、`item.*`、`turn.completed` 等结构化事件；Canvas Agent 会合并短时间内的回复、思考摘要和命令输出增量，网页使用同一条消息持续更新，并把任务进度、计划、搜索、文件修改与工具操作整理为中文过程时间线。
 
 侧边栏上传或粘贴的图片会先发到本机 Canvas Agent，再由 Canvas Agent 临时写入本机文件并作为 app-server `localImage` 输入传给 Codex；前端会提示附件体积，单次请求体限制为 30MB。
+
+其他类型的文件走本机工作区文件中心：选择后即以原始字节流式上传到 `<workspacePath>/.infinite-canvas/files/<fileId>/`，发送时提示词里只带文件绝对路径和元信息，Codex 用自身的读取能力打开这些路径。单个文件上限 100 MB、单条消息最多 10 个、单轮合计 300 MiB、工作区总量 2 GiB；文件按会话绑定，删除会话时同步删除，未发送的文件 24 小时后清理，已绑定文件保留 30 天。文件只存在本机工作区，不上传服务器媒体桶。Pi 引擎没有文件读取工具，因此不显示文件上传入口。
+
+Codex 生成结果需要回到画布时调用 `canvas_import_artifact`，`path` 必须是当前工作区内的绝对路径：图片导入为图片节点，markdown、txt、csv、json 等文本类导入为文本节点，其他类型会被拒绝。手动确认模式下该工具和其他画布写入工具一样需要先确认。
 
 ## 服务端 Pi 引擎
 

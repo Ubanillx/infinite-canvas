@@ -5,6 +5,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import express, { type NextFunction, type Request, type Response } from "express";
 
 import { runClaudeTurn } from "../agent/claude.js";
+import { fileCenterFor, FILE_LIMITS, FileCenterError } from "../agent/file-center.js";
 import { interruptPiTurn, releasePiRuntime, runPiTurn } from "../agent/pi/engine.js";
 import { piModelOptions, readPiChannels } from "../agent/pi/model.js";
 import { loadPiSkills, PiSkillError, piSkillSummaries, setPiSkillEnabled } from "../agent/pi/skills.js";
@@ -42,7 +43,7 @@ export function startHttpServer() {
     const initialRuntime: WorkspaceRuntime = {
         id: "site",
         workspace: initialWorkspace,
-        session: new CanvasSession(initialWorkspace.activeThreadId || "", initialWorkspace.engine),
+        session: new CanvasSession(initialWorkspace.activeThreadId || "", initialWorkspace.engine, initialWorkspace.workspacePath),
         skillStore: new SkillStore(initialWorkspace.workspacePath),
         draftThreadStart: null,
         skillDraftRunning: false,
@@ -57,7 +58,7 @@ export function startHttpServer() {
         const runtime: WorkspaceRuntime = {
             id,
             workspace,
-            session: new CanvasSession(workspace.engine === "pi" ? workspace.activeThreadId || "" : "", workspace.engine),
+            session: new CanvasSession(workspace.engine === "pi" ? workspace.activeThreadId || "" : "", workspace.engine, workspace.workspacePath),
             skillStore: new SkillStore(workspace.workspacePath),
             draftThreadStart: null,
             skillDraftRunning: false,
@@ -181,7 +182,9 @@ export function startHttpServer() {
     };
     const app = express();
     app.disable("x-powered-by");
-    app.use(express.json({ limit: "30mb" }));
+    const jsonParser = express.json({ limit: "30mb" });
+    // 文件上传的请求体是原始字节，不能被 JSON 解析器消费。
+    app.use((req, res, next) => (req.method === "POST" && req.path === "/agent/files" ? next() : jsonParser(req, res, next)));
     app.use((req, res, next) => {
         if (!logger.enabled) return next();
         const startedAt = Date.now();
@@ -228,6 +231,29 @@ export function startHttpServer() {
         const ok = session.resolveResult(String(req.query.clientId || ""), req.body);
         res.status(ok ? 200 : 409).json({ ok });
     });
+    app.post("/agent/files", route(async (req, res) => {
+        const center = fileCenterFor(currentRuntime().workspace.workspacePath);
+        const name = String(req.query.name || "");
+        if (!name.trim()) return res.status(400).json({ ok: false, error: "缺少文件名" });
+        const declared = Number(req.headers["content-length"] || 0);
+        if (declared > FILE_LIMITS.fileBytes) return res.status(413).json({ ok: false, error: `单个文件不能超过 ${Math.round(FILE_LIMITS.fileBytes / 1024 / 1024)} MB` });
+        const file = await center.save(req, { name, type: String(req.headers["content-type"] || ""), threadId: String(req.query.threadId || ""), size: declared || undefined });
+        logger.info("File uploaded", { fileId: file.fileId, name: file.name, size: file.size });
+        res.json({ ok: true, file });
+    }));
+    app.get("/agent/files/:fileId/content", route(async (req, res) => {
+        const center = fileCenterFor(currentRuntime().workspace.workspacePath);
+        const { file, data } = await center.read(routeParam(req.params.fileId));
+        res.setHeader("Cache-Control", "no-store");
+        // 附件类型来自客户端，禁止嗅探并把不确定的类型降级为二进制，避免本机服务被当成页面源。
+        res.setHeader("X-Content-Type-Options", "nosniff");
+        res.type(safeContentType(file.type)).send(data);
+    }));
+    app.delete("/agent/files/:fileId", route(async (req, res) => {
+        const center = fileCenterFor(currentRuntime().workspace.workspacePath);
+        await center.removeFile(routeParam(req.params.fileId));
+        res.json({ ok: true });
+    }));
     app.get("/agent/attachments/:attachmentId", route(async (req, res) => {
         const attachment = session.getTurnAttachment(String(req.query.clientId || ""), routeParam(req.params.attachmentId));
         const data = attachment.dataUrl.split(",", 2)[1];
@@ -414,6 +440,7 @@ export function startHttpServer() {
         const workspace = requestWorkspace(config, req);
         const threadId = routeParam(req.params.threadId);
         await archiveCodexThread(emit, threadId, workspace.workspacePath);
+        await fileCenterFor(workspace.workspacePath).removeThread(threadId);
         const nextWorkspace = setActiveThread(workspace.activeThreadId === threadId ? "" : workspace.activeThreadId || "", { sourceClientId: String(req.body?.clientId || "") });
         res.json({ ok: true, workspace: nextWorkspace, conversation: session.conversationStateSnapshot });
     }));
@@ -466,6 +493,7 @@ export function startHttpServer() {
         const threadId = routeParam(req.params.threadId);
         await new PiThreadStore(workspace.workspacePath).remove(threadId);
         releasePiRuntime(workspace.workspacePath, threadId);
+        await fileCenterFor(workspace.workspacePath).removeThread(threadId);
         const nextWorkspace = setActiveThread(workspace.activeThreadId === threadId ? "" : workspace.activeThreadId || "", { sourceClientId: String(req.body?.clientId || "") });
         if (!nextWorkspace.activeThreadId) session.completePiConversation("");
         res.json({ ok: true, workspace: nextWorkspace, conversation: session.conversationStateSnapshot });
@@ -486,6 +514,7 @@ export function startHttpServer() {
         if (!activeThreadId || !["ready", "warning"].includes(conversation.status)) {
             return res.status(409).json({ ok: false, code: "CONVERSATION_NOT_READY", error: "Pi 对话仍在初始化，请稍后再试", state: conversation });
         }
+        if (attachments.some((item) => item.fileId)) return res.status(400).json({ ok: false, error: "Pi 引擎不支持文件附件，请切换到 Codex 后发送" });
         const messageId = String(req.body?.messageId || Date.now());
         const messageText = String(req.body?.messageText || prompt || `发送了 ${attachments.length} 张图片`);
         const messageMetadata = await messageMetadataStoreForWorkspace(workspace.workspacePath).recordPending(messageId, req.body?.messageMetadata);
@@ -579,9 +608,11 @@ export function startHttpServer() {
         const skill = req.body?.skill === undefined ? undefined : await resolveCodexSkill(emit, workspace.workspacePath, skillSelector(req.body.skill), true);
         const messageId = String(req.body?.messageId || Date.now());
         const messageText = String(req.body?.messageText || prompt || `发送了 ${attachments.length} 张图片`);
+        // 先绑定本轮文件再记录元数据：绑定失败时直接拒绝，不留下指向失效文件的记录。
+        const fileRefs = await fileCenterFor(workspace.workspacePath).bind(attachments.flatMap((item) => (item.fileId ? [item.fileId] : [])), activeThreadId);
         const messageMetadata = await messageMetadataStoreForWorkspace(workspace.workspacePath).recordPending(messageId, req.body?.messageMetadata);
         let threadId = activeThreadId;
-        logger.info("Codex turn accepted", { threadId: req.body?.threadId, model: model || "default", reasoningEffort: effort || "default", promptLength: prompt.length, attachmentCount: attachments.length });
+        logger.info("Codex turn accepted", { threadId: req.body?.threadId, model: model || "default", reasoningEffort: effort || "default", promptLength: prompt.length, attachmentCount: attachments.length, fileCount: fileRefs.length });
         session.bindClient(clientId);
         session.markConversationRunning(threadId);
         session.setCodexState({ busy: true, threadId, turnId: "" });
@@ -607,7 +638,7 @@ export function startHttpServer() {
                     ...(sourceClientId ? { sourceClientId } : {}),
                 });
             };
-            void runCodexTurn(withAttachmentContext(prompt, attachmentRefs), lifecycleEmit, attachments, {
+            void runCodexTurn(withAttachmentContext(prompt, attachmentRefs, fileRefs), lifecycleEmit, attachments, {
                 threadId,
                 cwd: workspace.workspacePath,
                 permissionMode: permissionMode(req.body?.permissionMode),
@@ -705,6 +736,7 @@ export function startHttpServer() {
     app.use((_req, res) => res.status(404).json({ ok: false, error: "not found" }));
     app.use((error: Error, req: Request, res: Response, _next: NextFunction) => {
         logger.error("HTTP request failed", { method: req.method, path: req.path, error });
+        if (error instanceof FileCenterError) return void res.status(error.statusCode).json({ ok: false, error: error.message });
         if (error instanceof SkillStoreError || error instanceof CodexSkillLookupError || error instanceof PiSkillError) return void res.status(error.statusCode).json({ ok: false, error: error.message });
         res.status(500).json({ ok: false, error: error.message });
     });
@@ -805,7 +837,7 @@ function setCors(req: Request, res: Response, url: URL, config: CanvasAgentConfi
     const origin = req.headers.origin;
     res.setHeader("Access-Control-Allow-Origin", origin || "*");
     res.setHeader("Access-Control-Allow-Headers", "content-type,x-canvas-agent-token");
-    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
     res.setHeader("Access-Control-Allow-Private-Network", "true");
     if (!origin || req.method === "OPTIONS" || url.pathname === "/health" || url.pathname === "/config") return true;
     config.origins ||= [];
@@ -823,9 +855,27 @@ function validToken(req: Request, url: URL, token: string) {
     return url.searchParams.get("token") === token || header === token || (Array.isArray(header) && header.includes(token));
 }
 
-/** 向 Agent 提示词追加本轮图片附件引用说明。 */
-function withAttachmentContext(prompt: string, attachments: Array<{ id: string; name: string }>) {
-    if (!attachments.length) return prompt;
-    const list = attachments.map((item, index) => `${index + 1}. attachmentId=${item.id}, name=${JSON.stringify(item.name)}`).join("\n");
-    return `${prompt}\n\n本轮可用图片附件（顺序与图片输入一致）：\n${list}\n需要把附件放入画布或作为生成参考图时，先调用 canvas_create_attachment_nodes，再使用返回的画布节点 ID 创建生成流程。`;
+/** 向 Agent 提示词追加本轮图片附件与工作区文件清单。 */
+function withAttachmentContext(prompt: string, attachments: Array<{ id: string; name: string }>, files: Array<{ fileId: string; name: string; type: string; size: number; path: string }> = []) {
+    if (!attachments.length && !files.length) return prompt;
+    const sections = [prompt];
+    if (attachments.length) {
+        const list = attachments.map((item, index) => `${index + 1}. attachmentId=${item.id}, name=${JSON.stringify(item.name)}`).join("\n");
+        sections.push(`本轮可用图片附件（顺序与图片输入一致）：\n${list}\n需要把附件放入画布或作为生成参考图时，先调用 canvas_create_attachment_nodes，再使用返回的画布节点 ID 创建生成流程。`);
+    }
+    if (files.length) {
+        const list = files.map((item, index) => `${index + 1}. fileId=${item.fileId}, name=${JSON.stringify(item.name)}, type=${item.type}, size=${formatFileSize(item.size)}\n   path=${item.path}`).join("\n");
+        sections.push(`本轮文件附件（已保存在当前工作区，可直接用读取工具或 shell 打开上面的绝对路径）：\n${list}\n需要把结果交回画布时调用 canvas_import_artifact，path 使用工作区内的绝对路径；不要凭文件名猜测内容。`);
+    }
+    return sections.join("\n\n");
+}
+
+/** 将字节数格式化为模型可读的大小。 */
+function formatFileSize(bytes: number) {
+    return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)}MB` : `${Math.max(1, Math.ceil(bytes / 1024))}KB`;
+}
+
+/** 只接受 MIME 形式的类型，其余按二进制返回，避免把客户端输入当成页面类型。 */
+function safeContentType(value: string) {
+    return /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i.test(value) ? value : "application/octet-stream";
 }

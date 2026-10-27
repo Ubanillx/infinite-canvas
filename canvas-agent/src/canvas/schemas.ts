@@ -16,6 +16,7 @@ export const toolNames = [
     "canvas_apply_ops",
     "canvas_create_node",
     "canvas_create_attachment_nodes",
+    "canvas_import_artifact",
     "canvas_create_text_node",
     "canvas_create_text_nodes",
     "canvas_create_config_node",
@@ -89,6 +90,8 @@ const generationFlowSchema = z.object({
     referenceNodeIds: z.array(z.string()).optional(),
 });
 
+const artifactInputSchema = z.object({ path: z.string(), mode: z.enum(["auto", "image", "text"]).optional(), title: z.string().optional(), x: z.number().optional(), y: z.number().optional(), gap: z.number().optional(), direction: z.enum(["row", "column"]).optional() });
+
 export const toolInputSchemas = {
     site_navigate: z.object({ path: z.string() }),
     canvas_list_projects: z.object({ keyword: z.string().optional(), page: z.number().optional(), pageSize: z.number().optional() }),
@@ -98,6 +101,7 @@ export const toolInputSchemas = {
     canvas_apply_ops: z.object({ ops: z.array(canvasOpSchema) }),
     canvas_create_node: z.object({ nodeType: nodeTypeSchema, title: z.string().optional(), x: z.number().optional(), y: z.number().optional(), width: z.number().optional(), height: z.number().optional(), metadata: recordSchema.optional() }),
     canvas_create_attachment_nodes: z.object({ attachmentIds: z.array(z.string()).min(1), x: z.number().optional(), y: z.number().optional(), gap: z.number().optional(), direction: z.enum(["row", "column"]).optional() }),
+    canvas_import_artifact: artifactInputSchema,
     canvas_create_text_node: z.object({ text: z.string().optional(), x: z.number().optional(), y: z.number().optional(), title: z.string().optional(), width: z.number().optional(), height: z.number().optional() }),
     canvas_create_text_nodes: z.object({ items: z.array(textNodeSchema).min(1), x: z.number().optional(), y: z.number().optional(), gap: z.number().optional(), direction: z.enum(["row", "column"]).optional() }),
     canvas_create_config_node: z.object({ prompt: z.string().optional(), mode: generationModeSchema.optional(), title: z.string().optional(), x: z.number().optional(), y: z.number().optional(), width: z.number().optional(), height: z.number().optional(), autoRun: z.boolean().optional() }).merge(generationOptionsSchema),
@@ -135,6 +139,7 @@ export const toolDescriptions: Record<ToolName, string> = {
     canvas_apply_ops: "批量操作当前网页画布。ops 支持 add_node、update_node、delete_node、delete_connections、connect_nodes、set_viewport、select_nodes、run_generation。",
     canvas_create_node: "创建任意类型节点：text、image、config、video、audio。适合创建占位图、媒体占位、配置节点或自定义 metadata 节点。",
     canvas_create_attachment_nodes: "把当前对话中用户上传的图片附件创建成真实画布图片节点。attachmentIds 使用本轮附件清单中的 ID；返回的节点 ID 可传给 canvas_create_generation_flow.referenceNodeIds 作为生成参考图。",
+    canvas_import_artifact: "把你在工作区里生成的文件导入画布。path 必须是当前工作区内的绝对路径；图片会创建图片节点，markdown、txt、csv、json 等文本类文件会创建文本节点，其他类型会被拒绝。返回画布节点 ID，可继续传给 canvas_create_generation_flow.referenceNodeIds。",
     canvas_create_text_node: "在当前画布创建单个文本节点。",
     canvas_create_text_nodes: "批量创建文本节点，适合生成标题、段落、脚本、说明等内容块。",
     canvas_create_config_node: "创建生成配置节点，可指定 text/image/video/audio 模式和生成参数，可选择立即触发生成。",

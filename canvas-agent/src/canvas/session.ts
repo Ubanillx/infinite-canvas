@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type { ServerResponse } from "node:http";
 
+import { fileCenterFor } from "../agent/file-center.js";
 import type { AgentAttachment } from "../agent/types.js";
 import { logger } from "../utils/logger.js";
 import { buildCanvasToolRequest, fitAttachmentNodeSize } from "./operations.js";
@@ -24,7 +25,7 @@ export type ConversationState = {
     error?: string;
 };
 type McpInventoryItem = { name: string; authStatus?: string };
-export const AGENT_PROTOCOL_VERSION = 7;
+export const AGENT_PROTOCOL_VERSION = 8;
 
 const SITE_TOOLS = new Set<ToolName>([
     "site_navigate",
@@ -58,7 +59,7 @@ export class CanvasSession {
     private conversationInventoryComplete = false;
     private preparedConversationThreadId = "";
 
-    constructor(activeThreadId = "", engine: "codex" | "pi" = "codex") {
+    constructor(activeThreadId = "", engine: "codex" | "pi" = "codex", readonly workspacePath = "") {
         this.conversationState = {
             engine,
             revision: 1,
@@ -463,6 +464,7 @@ export class CanvasSession {
             return { nodes: (this.canvasState?.nodes || []).filter((node) => ids.has(node.id)).map(compactNode) };
         }
         if (name === "canvas_create_attachment_nodes") return await this.createAttachmentNodes(input as { attachmentIds: string[]; x?: number; y?: number; gap?: number; direction?: "row" | "column" });
+        if (name === "canvas_import_artifact") return await this.importArtifact(input as { path: string; mode?: "auto" | "image" | "text"; title?: string; x?: number; y?: number; gap?: number; direction?: "row" | "column" });
         if (!this.clients.size) throw new Error("当前没有已连接画布");
         const request = buildCanvasToolRequest(name, input, this.canvasState);
         return await this.requestCanvasTool(request.name, request.input);
@@ -493,6 +495,23 @@ export class CanvasSession {
         });
         await this.requestCanvasTool("canvas_create_attachment_nodes", { nodes });
         return { nodes: nodes.map(({ id, attachmentId, title }) => ({ id, attachmentId, title })) };
+    }
+
+    /** 把模型产出的工作区文件导入当前画布，由网页读取内容后创建节点。 */
+    private async importArtifact(input: { path: string; mode?: "auto" | "image" | "text"; title?: string; x?: number; y?: number; gap?: number; direction?: "row" | "column" }) {
+        const clientId = this.targetClientId;
+        if (!this.clients.has(clientId)) throw new Error("当前没有已连接画布");
+        if (!this.workspacePath) throw new Error("当前 Agent 没有工作区，无法导入产物");
+        const file = await fileCenterFor(this.workspacePath).registerArtifact(input.path, this.codexState.threadId, input.mode || "auto");
+        const files = [{ fileId: file.fileId, name: file.name, title: input.title || file.name, kind: file.kind, size: file.size, type: file.type, ...(input.x === undefined ? {} : { x: input.x }), ...(input.y === undefined ? {} : { y: input.y }), ...(input.gap === undefined ? {} : { gap: input.gap }), ...(input.direction ? { direction: input.direction } : {}) }];
+        try {
+            await this.requestCanvasTool("canvas_import_artifact", { files });
+        } catch (error) {
+            // 用户拒绝或网页失败时不留无引用的副本。
+            await fileCenterFor(this.workspacePath).removeFile(file.fileId).catch(() => undefined);
+            throw error;
+        }
+        return { files: files.map(({ fileId, name, kind }) => ({ fileId, name, kind })) };
     }
 
     /** 向目标网页发送工具请求并等待调用结果。 */

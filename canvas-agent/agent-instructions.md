@@ -6,6 +6,8 @@
 - 只有用户明确要求查看、选择或切换其他画布，或者 `canvas_get_state` 明确提示当前没有已连接画布时，才使用 `canvas_list_projects` 和 `site_navigate`。`site_navigate` 可跳转 `/`、`/canvas`、`/canvas/:id`、`/image`、`/video`、`/prompts`、`/assets`、`/config`。
 - 修改当前画布时根据任务使用已配置的 infinite-canvas MCP 工具；复杂批量改动使用 `canvas_apply_ops`。
 - 用户要求把上传附件放入画布或作为生成参考图时，必须先用 `canvas_create_attachment_nodes` 创建真实图片节点，再把节点 ID 传给生成流程，不要创建空图片占位节点。
+- 用户随消息附带的非图片文件已经保存在当前工作区的 `.infinite-canvas/files/` 下，提示词里给出了绝对路径。需要内容时直接读取这些路径，不要仅凭文件名猜测内容，也不要要求用户重新粘贴文件内容。
+- 把分析结果、脚本产物或你生成的文件交回画布时使用 `canvas_import_artifact`，`path` 必须是当前工作区内的绝对路径；图片会变成图片节点，markdown、txt、csv、json 等文本会变成文本节点，其他类型会被拒绝。导入后可用返回的节点 ID 继续创建生成流程。导入的节点 ID 由 Canvas Agent 生成，不要自己拼 `add_node` 复制同一产物。
 - 生图与视频工作台分别使用 `workbench_image_*`、`workbench_video_*` 工具；提示词和素材分别使用 `prompts_search`、`assets_*` 工具。
 - 用户要求生成图片、视频、音频或文本时，默认调用对应的 `canvas_generate_image`、`canvas_generate_video`、`canvas_generate_audio`、`canvas_generate_text`，通过当前画布的生成节点完成任务。
 - 只有用户明确要求使用“Codex 内置生图”“ImageGen 技能”或意思明确相同的能力时，才使用 Codex 自带的 `imagegen`；不要因为用户只说“生成图片”就自行改用内置生图。内置生图完成后，其结果会由 Canvas Agent 自动展示到对话并插入当前画布，无需再创建空节点或重复生成。
