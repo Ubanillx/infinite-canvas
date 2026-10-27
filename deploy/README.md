@@ -89,7 +89,7 @@ sudo install -m 600 -o canvas-deploy -g canvas-deploy deploy/production.env.exam
 - 一个非 root 容器内同时监管 Web（Bun/Vite preview，3000）和 Agent（Node，回环 17371），不公开 Agent 端口。Agent 显式使用自己的 PORT，避免与 Web 端口冲突。
 - Web 仍包含原有服务端认证、工作区数据、媒体、只写配置、WebDAV/AI/Agent 代理，不能换成纯 nginx 静态目录。
 - 同一 Compose 项目还运行两个有状态服务：`postgres`（账号、工作区数据、媒体索引）与 `rustfs`（S3 兼容对象存储，保存媒体对象），外加一次性的 `rustfs-init` 建桶任务。应用通过 `DATABASE_URL` 与 `S3_*` 连接，浏览器不直连桶。
-- Docker healthcheck 验证首页、构建 JS 资源、未登录的认证响应（同时确认 PostgreSQL 可用）和同源 Agent 健康响应；不要求真实 AI Key，不代表供应商生成或 Codex 账号已验收。
+- Docker healthcheck 验证首页、构建 JS 资源、未登录会话的认证响应（`/api/auth/me` 返回 200、`user` 为空且 `workspaces` 为数组，同时确认 PostgreSQL 可用）和同源 Agent 健康响应；不要求真实 AI Key，不代表供应商生成或 Codex 账号已验收。
 - 仅 `app` 的 healthcheck 参与容器健康判定。发布只重建 `app`，数据服务容器保持运行；`compose up --wait` 会等待依赖就绪（含必须成功退出的一次性 `rustfs-init`），但不重建未变化的服务。
 - 任一主进程退出会停止另一个并退出容器，由 restart 策略重启；SIGTERM 同时转发到两个进程。仅健康状态变为 unhealthy 但进程未退出时，Docker 的 restart 策略不会自动重启，应另行监控告警。
 - 数据卷：`<project>_infinite-canvas-data` → `/data`（服务端配置等）；`<project>_infinite-canvas-agent` → `/home/node/.infinite-canvas`（Agent 配置/会话/工作区）；`<project>_infinite-canvas-codex` → `/home/node/.codex`（Codex 登录/状态）；`<project>_infinite-canvas-postgres` → PostgreSQL 数据目录；`<project>_infinite-canvas-rustfs` / `...-rustfs-logs` → 对象数据与日志。

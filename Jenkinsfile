@@ -82,7 +82,8 @@ pipeline {
             }
             sh 'rm -f .ci/image.tar.gz .ci/release.tar.gz'
             // 冒烟阶段异常中断时兜底清理隔离栈，避免残留容器占用端口和磁盘。
-            sh 'docker compose -p infinite-canvas-smoke -f docker-compose.smoke.yml down -v --remove-orphans >/dev/null 2>&1 || true'
+            // down 仍会解析 image 字段，必须提供 APP_IMAGE 占位值，否则会因缺少变量直接退出。
+            sh 'APP_IMAGE=unused docker compose -p infinite-canvas-smoke -f docker-compose.smoke.yml down -v --remove-orphans >/dev/null 2>&1 || true'
         }
     }
 }
