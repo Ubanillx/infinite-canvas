@@ -54,7 +54,7 @@ if [[ -f "$root/shared/project-name" ]]; then
 else
     printf '%s\n' "$project" > "$root/shared/project-name"
 fi
-# 部署主机不访问镜像仓库，数据服务镜像必须预先存在（见 deploy/README.md）。
+# ssh-deploy.sh 会在激活前传输缺失的数据服务镜像；这里再次校验，避免直接运行本脚本时静默失败。
 # 缺少时给出明确提示，而不是让 compose 在此处静默拉取或长时间等待。
 for image in postgres:17-alpine rustfs/rustfs:latest amazon/aws-cli:latest; do
     docker image inspect --format '{{.Id}}' "$image" >/dev/null 2>&1 \

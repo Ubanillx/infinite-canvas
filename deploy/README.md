@@ -57,7 +57,7 @@ GitHub 插件收到事件后让 Git 插件检查 SCM 是否变化，不是把每
 
 安装 Docker Engine 与 Compose v2（需支持 `up --wait --wait-timeout`）、Bash、GNU coreutils/tar、gzip 和 util-linux（flock）。这里不自动安装或修改防火墙。
 
-数据服务镜像需在部署前加载到主机（部署不访问镜像仓库）：
+数据服务镜像由发布流水线在部署主机缺失时从 Jenkins 构建节点导出并通过 SSH 传输加载（部署主机不访问镜像仓库）；也可提前预加载以缩短首次发布：
 
 ```bash
 docker pull postgres:17-alpine rustfs/rustfs:latest amazon/aws-cli:latest
@@ -96,7 +96,7 @@ sudo install -m 600 -o canvas-deploy -g canvas-deploy deploy/production.env.exam
 - 容器用户 UID/GID 为 1000，空命名卷按镜像目录权限初始化。首次 Codex 登录需由管理员在运行容器内执行 `docker compose ... exec app codex login --device-auth`，具体账号/API key 方式按组织规范操作，不把登录凭据打进镜像。
 - 旧容器若使用 root 和 `/root/.infinite-canvas`，不能直接假定已有卷可被 UID 1000 读取。先停旧服务并完整备份，在离线副本上校验权限、配置中的绝对工作区路径和 Codex 状态，再制定迁移；本次不自动 chown 或迁移未知卷。
 - 更新前备份数据：PostgreSQL 使用 `pg_dump` 逻辑备份（或停服冷备），对象存储备份 bucket；只备份其中一方会导致数据与媒体不一致。禁止 `docker compose down -v` 或 volume prune。
-- 部署主机默认不访问镜像仓库（`--pull never`），因此 `postgres:17-alpine`、`rustfs/rustfs:latest` 与 `amazon/aws-cli:latest` 必须预先 `docker pull` 或离线导入；脚本在部署前逐个检查并给出明确提示。
+- 部署主机默认不访问镜像仓库（`--pull never`）。`ssh-deploy.sh` 会在远程预检时检查 `postgres:17-alpine`、`rustfs/rustfs:latest` 与 `amazon/aws-cli:latest`，缺失的镜像从 Jenkins 构建节点 `docker save` 后经 SSH 传到主机 `docker load`；也可按上一节提前 `docker pull` 或离线导入以减少首次发布传输。
 
 首次部署遇到同名但不受 current 管理的已有容器会拒绝接管，防止误覆盖旧部署。Compose 项目名、数据卷身份和部署目录应长期稳定。
 
