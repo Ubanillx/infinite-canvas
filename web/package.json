@@ -8,6 +8,9 @@
         "build": "vite build",
         "typecheck": "tsc --noEmit",
         "test": "bun test",
+        "test:e2e": "playwright test",
+        "test:e2e:ui": "playwright test --ui",
+        "test:e2e:report": "playwright show-report",
         "start": "vite preview --host 0.0.0.0 --port 3000",
         "format": "prettier --write .",
         "format:check": "prettier --check ."
@@ -15,6 +18,7 @@
     "dependencies": {
         "@ant-design/icons": "^6.1.1",
         "@ant-design/pro-components": "3.0.0-beta.3",
+        "@aws-sdk/client-s3": "^3.1156.0",
         "@codemirror/lang-javascript": "^6.2.5",
         "@codemirror/lang-json": "^6.0.2",
         "@tanstack/react-query": "^5.100.9",
@@ -28,10 +32,12 @@
         "fflate": "^0.8.3",
         "file-saver": "^2.0.5",
         "i18next": "^26.3.6",
+        "ipaddr.js": "^1.9.1",
         "localforage": "^1.10.0",
         "lucide-react": "^1.16.0",
         "motion": "^12.38.0",
         "nanoid": "^5.1.16",
+        "pg": "^8.23.1",
         "radix-ui": "^1.4.3",
         "react": "19.2.5",
         "react-dom": "19.2.5",
@@ -46,9 +52,11 @@
         "zustand": "^5.0.12"
     },
     "devDependencies": {
+        "@playwright/test": "^1.64.1",
         "@tailwindcss/postcss": "^4.3.3",
         "@types/file-saver": "^2.0.7",
         "@types/node": "^20",
+        "@types/pg": "^8.23.1",
         "@types/react": "19.1.12",
         "@types/react-dom": "19.1.9",
         "@vitejs/plugin-react": "^5.2.0",

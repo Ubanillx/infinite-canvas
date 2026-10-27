@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { App, Button, Modal } from "antd";
-import { ChevronRight, Download, FileUp, FolderPlus, Home, Plus } from "lucide-react";
+import { App, Button, Input, Modal } from "antd";
+import { ChevronRight, Download, FileUp, FolderPlus, Home, Images, LayoutTemplate, Plus, Search } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { readZip } from "@/lib/zip";
 import { setMediaBlob } from "@/services/file-storage";
 import { setImageBlob } from "@/services/image-storage";
 import { CanvasDeleteProjectsDialog } from "@/components/canvas/canvas-delete-projects-dialog";
+import { CanvasCreateProjectDialog } from "@/components/canvas/canvas-create-project-dialog";
 import { CanvasProjectCard } from "@/components/canvas/canvas-project-card";
 import { CanvasFolderCard } from "@/components/canvas/canvas-folder-card";
 import type { CanvasExportFile } from "@/types/canvas-export";
@@ -31,7 +32,6 @@ export default function CanvasPage() {
     const hydrated = useCanvasStore((state) => state.hydrated);
     const projects = useCanvasStore((state) => state.projects);
     const folders = useCanvasStore((state) => state.folders);
-    const createProject = useCanvasStore((state) => state.createProject);
     const importProject = useCanvasStore((state) => state.importProject);
     const createFolder = useCanvasStore((state) => state.createFolder);
     const renameFolder = useCanvasStore((state) => state.renameFolder);
@@ -42,16 +42,27 @@ export default function CanvasPage() {
     const selectedIds = useCanvasUiStore((state) => state.selectedProjectIds);
     const setDeleteIds = useCanvasUiStore((state) => state.setDeleteProjectIds);
     const removeSelectedIds = useCanvasUiStore((state) => state.removeSelectedProjectIds);
-    const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
+    const currentFolderId = searchParams.get("folder") || null;
     const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
     const [draggedItem, setDraggedItem] = useState<CanvasDragItem | null>(null);
     const [dropTargetId, setDropTargetId] = useState<string | null>(null);
     const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
     const [editingFolderTitle, setEditingFolderTitle] = useState("");
+    const [createProjectOpen, setCreateProjectOpen] = useState(false);
+    const [keyword, setKeyword] = useState("");
 
     const mode = searchParams.get("mode");
     const agentMode = mode === "new" || mode === "recent" || mode === "choose";
-    const agentQuery = agentMode ? `?${searchParams.toString()}` : "";
+    const projectParams = new URLSearchParams(searchParams);
+    projectParams.delete("folder");
+    const agentQuery = agentMode ? `?${projectParams.toString()}` : "";
+    const setCurrentFolderId = (folderId: string | null, replace = false) => {
+        const nextParams = new URLSearchParams(searchParams);
+        if (folderId) nextParams.set("folder", folderId);
+        else nextParams.delete("folder");
+        const search = nextParams.toString();
+        navigate({ pathname: "/canvas", search: search ? `?${search}` : "", hash: window.location.hash }, { replace });
+    };
     const enterProject = (id: string) => {
         const agentHash = hasAgentUrlBootstrap(window.location.hash) ? window.location.hash : "";
         navigate(`/canvas/${id}${agentQuery}${agentHash}`, { replace: Boolean(agentHash) });
@@ -59,9 +70,11 @@ export default function CanvasPage() {
     const currentFolder = folders.find((folder) => folder.id === currentFolderId) || null;
     const visibleFolders = useMemo(() => folders.filter((folder) => folder.parentId === currentFolderId), [currentFolderId, folders]);
     const visibleProjects = useMemo(() => projects.filter((project) => (project.folderId ?? null) === currentFolderId), [currentFolderId, projects]);
-    const visibleSelectedIds = useMemo(() => selectedIds.filter((id) => visibleProjects.some((project) => project.id === id)), [selectedIds, visibleProjects]);
+    const matchingFolders = visibleFolders.filter((folder) => folder.title.toLowerCase().includes(keyword.trim().toLowerCase()));
+    const matchingProjects = visibleProjects.filter((project) => `${project.title} ${project.description || ""}`.toLowerCase().includes(keyword.trim().toLowerCase()));
+    const visibleSelectedIds = selectedIds.filter((id) => matchingProjects.some((project) => project.id === id));
     const folderPath = useMemo(() => buildFolderPath(folders, currentFolderId), [currentFolderId, folders]);
-    const createAndEnter = () => enterProject(createProject(t("canvas.defaultTitle", { count: projects.length + 1 }), currentFolderId));
+    const createAndEnter = () => setCreateProjectOpen(true);
     const createFolderAndEdit = () => {
         const id = createFolder(t("canvas.folder.untitled"), currentFolderId);
         setSelectedFolderId(id);
@@ -142,38 +155,32 @@ export default function CanvasPage() {
     };
 
     useEffect(() => {
-        if (!hydrated || autoOpenRef.current || (mode !== "new" && mode !== "recent")) return;
+        if (mode !== "new" && mode !== "recent") {
+            autoOpenRef.current = false;
+            return;
+        }
+        if (!hydrated || autoOpenRef.current) return;
         autoOpenRef.current = true;
-        enterProject(mode === "new" ? createProject(t("canvas.defaultTitle", { count: projects.length + 1 })) : projects[0]?.id || createProject(t("canvas.defaultTitle", { count: projects.length + 1 })));
-    }, [createProject, hydrated, mode, projects, t]);
+        if (mode === "recent" && projects[0]) enterProject(projects[0].id);
+        else setCreateProjectOpen(true);
+    }, [hydrated, mode, projects]);
 
     useEffect(() => {
-        if (currentFolderId && !currentFolder) setCurrentFolderId(null);
-    }, [currentFolder, currentFolderId]);
+        if (hydrated && currentFolderId && !currentFolder) setCurrentFolderId(null, true);
+    }, [hydrated, currentFolder, currentFolderId]);
 
-    if (hydrated && (mode === "new" || mode === "recent")) return <main className="flex h-full items-center justify-center bg-background text-sm text-stone-500">{t("canvas.opening")}</main>;
+    if (hydrated && mode === "recent" && projects.length) return <main className="flex h-full items-center justify-center bg-background text-sm text-stone-500">{t("canvas.opening")}</main>;
 
     return (
-        <main className="h-full overflow-auto bg-background text-stone-950 dark:text-stone-100">
-            <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-6 py-10">
-                <header className="flex flex-wrap items-end justify-between gap-4 border-b border-stone-200 pb-6 dark:border-stone-800">
+        <main className="h-full overflow-auto bg-background text-foreground">
+            <div className="flex w-full flex-col gap-6 px-5 py-6 sm:px-8 lg:px-10">
+                <header className="flex flex-wrap items-end justify-between gap-5">
                     <div>
-                        <p className="text-xs text-stone-500">{t("canvas.library")}</p>
-                        <h1 className="mt-3 text-3xl font-semibold">{currentFolder?.title || t("canvas.title")}</h1>
-                        <nav className="mt-4 flex items-center gap-1 text-sm text-stone-500" aria-label={t("canvas.folder.breadcrumb")}>
-                            <button type="button" className={`inline-flex items-center gap-1 rounded px-1.5 py-1 transition hover:bg-black/5 dark:hover:bg-white/10 ${dropTargetId === "root" ? "bg-sky-500/10 text-sky-600 dark:text-sky-400" : ""}`} onClick={() => setCurrentFolderId(null)} onDragOver={(event) => { if (draggedItem) { event.preventDefault(); setDropTargetId("root"); } }} onDrop={(event) => moveDraggedItem(event, null)}>
-                                <Home className="size-3.5" />
-                                {t("canvas.folder.root")}
-                            </button>
-                            {folderPath.map((folder) => (
-                                <span key={folder.id} className="inline-flex items-center gap-1">
-                                    <ChevronRight className="size-3.5" />
-                                    <button type="button" className={`rounded px-1.5 py-1 transition hover:bg-black/5 dark:hover:bg-white/10 ${dropTargetId === folder.id ? "bg-sky-500/10 text-sky-600 dark:text-sky-400" : ""}`} onClick={() => setCurrentFolderId(folder.id)} onDragOver={(event) => { if (draggedItem) { event.preventDefault(); setDropTargetId(folder.id); } }} onDrop={(event) => moveDraggedItem(event, folder.id)}>{folder.title}</button>
-                                </span>
-                            ))}
-                        </nav>
+                        <p className="text-xs text-muted-foreground">{t("canvas.library")}</p>
+                        <h1 className="mt-1 text-2xl font-semibold">{currentFolder?.title || t("canvas.projects")}</h1>
+                        {!currentFolder ? <p className="mt-1 text-sm text-muted-foreground">{t("canvas.libraryDescription")}</p> : null}
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center justify-end gap-2">
                         {visibleSelectedIds.length ? (
                             <>
                                 <Button disabled={!hydrated} icon={<Download className="size-4" />} onClick={() => void exportCanvasProjects(visibleProjects.filter((project) => visibleSelectedIds.includes(project.id)), `${t("canvas.title")}-${visibleSelectedIds.length}`)}>
@@ -184,7 +191,7 @@ export default function CanvasPage() {
                                 </Button>
                             </>
                         ) : null}
-                        {visibleProjects.length ? (
+                        {visibleProjects.length && !keyword.trim() ? (
                             <Button disabled={!hydrated} onClick={() => setDeleteIds(visibleProjects.map((project) => project.id))}>
                                 {t("canvas.deleteAll")}
                             </Button>
@@ -195,17 +202,33 @@ export default function CanvasPage() {
                         <Button disabled={!hydrated} icon={<FileUp className="size-4" />} onClick={() => inputRef.current?.click()}>
                             {t("canvas.import")}
                         </Button>
-                        <Button disabled={!hydrated} type="primary" icon={<Plus className="size-4" />} onClick={createAndEnter}>
+                        <Button disabled={!hydrated} icon={<LayoutTemplate className="size-4" />} onClick={() => navigate({ pathname: "/templates", search: searchParams.toString(), hash: window.location.hash })}>{t("canvas.templates.library")}</Button>
+                        <Button disabled={!hydrated} type="primary" className="!shadow-none" icon={<Plus className="size-4" />} onClick={createAndEnter}>
                             {t("canvas.create")}
                         </Button>
                     </div>
                 </header>
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-4">
+                <nav className="flex flex-wrap items-center gap-1 text-sm text-muted-foreground" aria-label={t("canvas.folder.breadcrumb")}>
+                    <button type="button" className={`inline-flex items-center gap-1 rounded px-1.5 py-1 transition hover:bg-primary/5 dark:hover:bg-white/10 ${dropTargetId === "root" ? "bg-accent text-primary dark:text-sky-400" : ""}`} onClick={() => setCurrentFolderId(null)} onDragOver={(event) => { if (draggedItem) { event.preventDefault(); setDropTargetId("root"); } }} onDrop={(event) => moveDraggedItem(event, null)}>
+                        <Home className="size-3.5" />
+                        {t("canvas.folder.root")}
+                    </button>
+                    {folderPath.map((folder) => (
+                        <span key={folder.id} className="inline-flex items-center gap-1">
+                            <ChevronRight className="size-3.5" />
+                            <button type="button" className={`rounded px-1.5 py-1 transition hover:bg-primary/5 dark:hover:bg-white/10 ${dropTargetId === folder.id ? "bg-accent text-primary dark:text-sky-400" : ""}`} onClick={() => setCurrentFolderId(folder.id)} onDragOver={(event) => { if (draggedItem) { event.preventDefault(); setDropTargetId(folder.id); } }} onDrop={(event) => moveDraggedItem(event, folder.id)}>{folder.title}</button>
+                        </span>
+                    ))}
+                </nav>
+                <Input className="app-search-input w-full sm:!w-72" prefix={<Search className="size-4 text-muted-foreground" />} value={keyword} allowClear placeholder={t("canvas.search")} onChange={(event) => setKeyword(event.target.value)} />
+                </div>
 
                 {!hydrated ? (
-                    <section className="flex min-h-[360px] items-center justify-center border-y border-stone-200 text-sm text-stone-500 dark:border-stone-800">{t("canvas.loading")}</section>
-                ) : visibleFolders.length || visibleProjects.length ? (
-                    <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3" onDragOver={(event) => { if (event.target === event.currentTarget && draggedItem) { event.preventDefault(); setDropTargetId(currentFolderId || "root"); } }} onDrop={(event) => moveDraggedItem(event, currentFolderId)}>
-                        {visibleFolders.map((folder) => (
+                    <section className="flex min-h-[360px] items-center justify-center border-y border-border text-sm text-muted-foreground">{t("canvas.loading")}</section>
+                ) : matchingFolders.length || matchingProjects.length ? (
+                    <div className="flex flex-col gap-7" onDragOver={(event) => { if (event.target === event.currentTarget && draggedItem) { event.preventDefault(); setDropTargetId(currentFolderId || "root"); } }} onDrop={(event) => moveDraggedItem(event, currentFolderId)}>
+                        {matchingFolders.length ? <section><h2 className="mb-3 text-sm font-medium text-muted-foreground">{t("canvas.foldersCount", { count: matchingFolders.length })}</h2><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">{matchingFolders.map((folder) => (
                             <CanvasFolderCard
                                 key={folder.id}
                                 folder={folder}
@@ -226,23 +249,28 @@ export default function CanvasPage() {
                                 onCancel={() => setEditingFolderId(null)}
                                 onDelete={() => deleteFolder(folder)}
                             />
-                        ))}
-                        {visibleProjects.map((project) => (
+                        ))}</div></section> : null}
+                        {matchingProjects.length ? <section><h2 className="mb-3 text-sm font-medium text-muted-foreground">{t("canvas.projectsCount", { count: matchingProjects.length })}</h2><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">{matchingProjects.map((project) => (
                             <CanvasProjectCard key={project.id} project={project} onDragStart={(event, item) => startFolderDrag(event, { type: "project", id: item.id })} onDragEnd={() => { setDraggedItem(null); setDropTargetId(null); }} />
-                        ))}
+                        ))}</div></section> : null}
                     </div>
                 ) : (
-                    <section className="flex min-h-[360px] flex-col items-center justify-center border-y border-stone-200 text-center dark:border-stone-800">
-                        <h2 className="text-xl font-medium">{t("canvas.empty")}</h2>
-                        <p className="mt-3 text-sm text-stone-500">{t("canvas.emptyDescription")}</p>
-                        <Button type="primary" className="mt-6" icon={<Plus className="size-4" />} onClick={createAndEnter}>
-                            {t("canvas.create")}
-                        </Button>
+                    <section className="flex min-h-[440px] flex-col items-center justify-center text-center">
+                        <div className="relative mb-8 h-28 w-40" aria-hidden="true">
+                            <div className="absolute right-3 top-0 h-24 w-28 rotate-6 rounded-xl border border-border bg-muted/40" />
+                            <div className="absolute bottom-0 left-3 flex h-24 w-28 items-center justify-center rounded-xl border border-border bg-background"><Images className="size-9 text-muted-foreground/40" strokeWidth={1.3} /></div>
+                        </div>
+                        <h2 className="text-xl font-medium">{keyword.trim() ? t("canvas.noMatches") : t("canvas.empty")}</h2>
+                        {!keyword.trim() ? <><p className="mt-3 text-sm text-muted-foreground">{t("canvas.emptyDescription")}</p><Button type="primary" className="!mt-6 !shadow-none" icon={<Plus className="size-4" />} onClick={createAndEnter}>{t("canvas.create")}</Button></> : null}
                     </section>
                 )}
             </div>
 
             <input ref={inputRef} type="file" accept="application/zip,.zip" className="hidden" onChange={(event) => void importCanvas(event.target.files?.[0])} />
+            <CanvasCreateProjectDialog open={createProjectOpen} folderId={currentFolderId} onCancel={() => {
+                setCreateProjectOpen(false);
+                if (mode === "new" || mode === "recent") navigate(`/canvas?mode=choose${hasAgentUrlBootstrap(window.location.hash) ? window.location.hash : ""}`, { replace: true });
+            }} onCreated={enterProject} />
             <CanvasDeleteProjectsDialog />
         </main>
     );

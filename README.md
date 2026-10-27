@@ -106,13 +106,13 @@
 ## 核心功能
 
 - 无限画布：多画布项目、节点拖拽缩放、连线、小地图、撤销重做、导入导出。
-- AI 创作：浏览器前台直连你配置的 OpenAI 兼容接口，支持文生图、图生图、参考图编辑、文本问答、音频和视频生成。
+- AI 创作：通过服务端托管的同源代理调用你配置的 OpenAI 兼容渠道，支持文生图、图生图、参考图编辑、文本问答、音频和视频生成。
 - 画布助手：围绕选中节点和上游节点对话、生图，并把结果插回画布。
-- 本地 Agent：通过本机 Canvas Agent 连接 Codex / Claude Code，让 Agent 通过 MCP 操作当前画布；
+- 本地 Agent：通过本机 Canvas Agent 连接 Codex 或 Pi 引擎，让 Agent 通过 MCP 操作当前画布，浏览器经同源网关连接、不持有 Agent token；
 - Codex App 插件：提供 Codex app 插件，安装后会自动注册 MCP 并尝试拉起本地 Agent。
 - 插件系统：支持通过 URL 动态安装 / 启用 / 更新 / 卸载远程节点插件，并提供 TypeScript SDK 自行开发画布节点插件。
 - 自定义接口调用：可自定义生图 / 视频接口的调用方式，灵活适配各类中转站与自建服务。
-- 提示词库：内置 7 个开源提示词来源并支持自定义标准 JSON 来源，由浏览器前端直连并缓存到 IndexedDB。
+- 提示词库：支持工作区私有提示词和自定义标准 JSON 来源，来源由服务端拉取，浏览器保留缓存。
 
 完整功能说明见 [功能介绍](docs/content/docs/overview/features.mdx)。
 
@@ -120,17 +120,21 @@
 
 ## 快速开始
 
-AI API Key、Base URL、画布、素材和生成记录默认保存在浏览器本地。
+应用包含服务端能力：账号、工作区数据、媒体和 AI 渠道凭据都保存在服务器，浏览器只访问同源的 `/api/*`。数据层使用 PostgreSQL + S3 兼容对象存储（默认 RustFS），纯静态托管无法完整运行。
 
 ### 本地开发
 
 ```bash
 git clone git@github.com:basketikun/infinite-canvas.git
 cd infinite-canvas
-cd web
-bun install
-bun run dev
+npm install --global bun@1.3.13
+cd web && npm ci --legacy-peer-deps && cd ..
+cd canvas-agent && npm ci && cd ..
+docker compose -f docker-compose.middleware.yml up -d --wait
+npm run dev
 ```
+
+`npm run dev` 会同时启动 Vite 与 Canvas Agent，访问 `http://127.0.0.1:3000`。中间件默认端口为 PostgreSQL `5433`、RustFS `9010`（控制台 `9011`）。
 
 ### Docker 运行
 
@@ -141,11 +145,11 @@ git switch dev
 docker compose -f docker-compose.local.yml up -d --build
 ```
 
-运行后默认端口3000，可访问 `http://localhost:3000`。
+运行后默认端口 3000，可访问 `http://localhost:3000`。
 
-首次打开后进入右上角配置，填入自己的 OpenAI 兼容 `Base URL` 和 `API Key`。
+首次打开后进入右上角配置，填写自己的 OpenAI 兼容 `Base URL` 和 `API Key`；凭据保存到服务器，浏览器只保留是否已配置的状态。
 
-如果默认的OpenAI接口调用方式与您的API不同，可自定义生图/视频脚本调用。
+如果默认的 OpenAI 接口调用方式与您的 API 不同，可自定义生图/视频脚本调用。
 
 ## 效果展示
 

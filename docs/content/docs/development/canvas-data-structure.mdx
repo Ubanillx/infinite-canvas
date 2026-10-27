@@ -1,20 +1,35 @@
 ---
 title: Canvas Data Structure
-description: Local canvas storage, nodes, media files, and cleanup
+description: Server workspace data, node structure, media files, and cleanup
 ---
 
 # Canvas Data Structure
 
+This page explains where canvas data lives, how nodes and media are shaped, and how cleanup works.
+
 ## Storage
 
-Canvas projects and My Assets are stored with localForage in the `infinite-canvas` database and `app_state` store. Image blobs use `image_files`; other media blobs use `media_files`. Project JSON stores display URLs, `storageKey`, and metadata rather than large base64 payloads.
+The server holds the authoritative data; the browser keeps only a disposable cache:
+
+- Business data is stored per workspace through `GET/PUT /api/data/:domain` with revision-based conditional writes (a conflict returns 409). Domains are `canvas`, `canvas-templates`, `assets`, `image-workbench`, `video-workbench` and `agent-sessions`.
+- The browser mirrors state with zustand persist in `localForage` (database `infinite-canvas`, store `app_state`), keyed as `workspace:<workspaceId>:infinite-canvas:canvas_store` (`asset_store` for assets). This mirror only speeds up startup and covers offline display; it is not authoritative.
+- Media objects are read and written through `PUT/GET/HEAD /api/media/blob/:storageKey`, mapped to the object key `media/<workspaceId>/<sha256(storageKey)>`, with a 100 MiB per-file limit.
+- Media is cached per workspace in `workspace_<workspaceId>_image_files` / `_media_files`; thumbnails live in `_image_previews` (768px longest edge, local only).
+
+Project JSON never stores large base64 payloads. Image, video and audio nodes, agent attachments and assets keep a display URL, a `storageKey`, and metadata; the bytes are read through `storageKey`.
+
+Legacy local data migrates when a workspace is entered: `canvas_store` / `asset_store` in `app_state` are copied into the workspace namespace, and `image_files` / `media_files` move into the workspace stores and are uploaded to the server. A `localStorage` marker keeps the migration to one run per workspace.
 
 ## Project
+
+Each canvas project is a `CanvasProject`; folders are separate `CanvasFolder` records:
 
 ```ts
 type CanvasProject = {
   id: string;
   title: string;
+  description?: string;
+  folderId: string | null;
   createdAt: string;
   updatedAt: string;
   nodes: CanvasNodeData[];
@@ -22,25 +37,54 @@ type CanvasProject = {
   chatSessions: CanvasAssistantSession[];
   activeChatId: string | null;
   backgroundMode: "lines" | "dots" | "blank";
+  showImageInfo: boolean;
   viewport: { x: number; y: number; k: number };
+};
+
+type CanvasFolder = {
+  id: string;
+  title: string;
+  parentId: string | null;
+  createdAt: string;
+  updatedAt: string;
 };
 ```
 
-The viewport stores screen translation in `x` and `y`, and scale in `k`.
+- `folderId` is the parent folder, or `null` for the root. Folders nest, but a folder can never move into itself or a descendant.
+- `description` is shown on library cards; `showImageInfo` toggles image info on the canvas.
+- `viewport` stores screen translation in `x` and `y`, and scale in `k`.
+- Deleted canvases leave a `CanvasDeletedProject` marker (`id` plus `deletedAt`) so snapshot imports can respect deletions.
 
 ## Nodes and edges
 
 ```ts
 type CanvasNodeData = {
   id: string;
-  type: "image" | "text" | "config" | "video";
+  type: CanvasNodeTypeId;
   title: string;
   position: { x: number; y: number };
   width: number;
   height: number;
   metadata?: CanvasNodeMetadata;
 };
+```
 
+`type` is an open string: built-ins are `image`, `text`, `config`, `video`, `audio` and `group`, while plugin nodes use `<pluginId>:<name>`.
+
+Common metadata includes `content`, `composerContent`, `prompt`, `status`, `errorDetails`, `fontSize`, `generationMode` (`text` / `image` / `video` / `audio`), `generationType`, `model`, `reasoningEffort`, `size`, `quality`, `count`, `texts` / `primaryTextId`, `images` / `primaryImageId`, `inputOrder`, `references`, `naturalWidth` / `naturalHeight`, `freeResize`, `storageKey`, `mimeType`, `bytes`, `durationMs`, `videoTaskId` / `videoTaskProvider`, `groupId` and `interactive`.
+
+Node behaviour by kind:
+
+- Image nodes keep the display URL in `content` (usually a `blob:` URL) and the persistent identity in `storageKey`, plus original size, byte size and MIME type.
+- Video and audio nodes keep playable URLs plus `storageKey`, `bytes`, `mimeType` and `durationMs`; unfinished remote videos also store `videoTaskId` / `videoTaskProvider` so polling can resume after a refresh.
+- Text nodes keep text in `content` and size in `fontSize`; multi-text generation stores every candidate in `texts` and points `primaryTextId` at the primary one.
+- Config nodes keep `generationMode`, `model`, `size`, `count` and `inputOrder`; upstream inputs are derived from `connections`.
+- Group nodes record membership through `groupId` while remaining nodes themselves.
+- A multi-image generation stays one image node: `images` creates all slots before the request, each slot tracks its own `status` and `errorDetails`, and the first success becomes `primaryImageId` immediately. Expansion state is UI-only and never persisted.
+
+## Edges
+
+```ts
 type CanvasConnection = {
   id: string;
   fromNodeId: string;
@@ -48,9 +92,7 @@ type CanvasConnection = {
 };
 ```
 
-Node positions and sizes use canvas-world coordinates. Edges store only node IDs; their paths are calculated while rendering. Deleting a node removes its connected edges.
-
-Common metadata includes content, prompt, status, generation mode, model, size, count, natural dimensions, image results, input order, `storageKey`, MIME type, byte size, and for in-progress OpenAI-style videos a `videoTaskId` used to resume status polling after refresh. A multi-image generation remains one image node: `images` creates all requested slots before generation starts and records each slot's `status`, `errorDetails`, and completed image data. `primaryImageId` selects the result mirrored by the node-level `content` and image metadata; the first successful slot becomes primary immediately. Persisted image and video `content` values are normally session-scoped `blob:` URLs, with `storageKey` as the persistent identity. If CORS prevents reading an otherwise displayable image, `content` may remain a potentially expiring remote URL and `storageKey` is omitted.
+Edges store only node IDs; paths are calculated from node positions and sizes while rendering. Deleting a node removes its connected edges, and deleting a group handles its members.
 
 ## Assistant sessions
 
@@ -62,12 +104,33 @@ type CanvasAssistantSession = {
   createdAt: string;
   updatedAt: string;
 };
+
+type CanvasAssistantMessage = {
+  id: string;
+  role: "user" | "assistant" | "system" | "tool" | "error";
+  title?: string;
+  text: string;
+  meta?: string;
+  detail?: unknown;
+  references?: CanvasAssistantReference[];
+};
 ```
 
-Message references and generated images use the same blob-storage rules. They are converted to data URLs temporarily only when an AI endpoint requires base64.
+Referenced media and attachments follow the same media rules: `storageKey` wins when present, and bytes are converted to a data URL only when an endpoint requires base64.
 
 ## Media lifecycle
 
-`uploadImage()` accepts a Blob, data URL, or remote URL. It downloads remote data once, verifies that the Blob decodes as an image, stores it in `image_files` under an `image:<id>` key, and returns an in-memory object URL plus metadata. If CORS blocks byte access but the browser can still display the remote image, it returns that URL without a storage key. Opening a project resolves each stored key into a fresh object URL.
+New images go through `uploadImage(input)`:
 
-Cleanup is reference-based. After deleting nodes, canvases, assets, or assistant sessions, the application collects every still-referenced storage key, removes unreferenced blobs, revokes their object URLs, and removes them from the in-memory cache. This prevents deleting a file still shared by another canvas feature.
+1. Accept a `Blob`, a data URL, or a remote URL; remote data is downloaded once.
+2. Decode the bytes as an image, then create a `storageKey` (`image:<id>`).
+3. Upload through `saveMediaBlob` to `/api/media/blob/:storageKey` and cache a local copy.
+4. Return `{ url, storageKey, width, height, bytes, mimeType }` where `url` is an in-memory object URL.
+
+Reads check the in-memory object URL first, then the local cache; a cache miss refetches from the server and repopulates the cache. Upload failures (for example over 100 MiB) surface as errors instead of silently succeeding on the local machine only.
+
+## Cleanup
+
+- Local: deleting nodes or assets drops the local cache entry and revokes the object URL without touching server objects.
+- Server: each business domain write replaces that domain's media reference list (`media_references`) in the same transaction, covering canvases, templates, assets and generation records.
+- Garbage collection currently exposes only `POST /api/media/gc/dry-run` for workspace owners. The report always returns `deletionEnabled: false` and never deletes candidates; retention, scheduling and real deletion are not enabled yet. See [Canvas media references and safe garbage collection](/docs/progress/canvas-media-lifecycle-plan).

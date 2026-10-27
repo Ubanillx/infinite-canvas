@@ -9,7 +9,7 @@ try {
     if (!asset.ok || !/javascript/.test(asset.headers.get("content-type") || "")) throw new Error("Built asset unavailable");
     const auth = await fetch(`${base}/api/auth/me`);
     const body = await auth.json();
-    if (auth.status !== 401 || typeof body.error !== "string") throw new Error("Authentication/SQLite unavailable");
+    if (auth.status !== 401 || typeof body.error !== "string") throw new Error("Authentication database unavailable");
     const agent = await fetch(`${base}/api/canvas-agent/health`);
     if (!agent.ok || (await agent.json()).ok !== true) throw new Error("Agent proxy unavailable");
 } catch (error) {

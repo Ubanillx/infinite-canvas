@@ -5,12 +5,14 @@ import path from "node:path";
 import { CONFIG_DIR } from "../config.js";
 import type { AgentAttachmentDisplay, AgentCanvasReference, AgentMessageMetadata, AgentSkillReference } from "./types.js";
 
-type MessageMetadataRecord = { version: 1; clientMessageId: string; threadId?: string; turnId?: string; createdAt: number; metadata: AgentMessageMetadata };
+type MessageMetadataRecord = { version: 2; clientMessageId: string; threadId?: string; turnId?: string; createdAt: number; metadata: AgentMessageMetadata };
 type MetadataMessage = { role: string; threadId: string; turnId: string; clientMessageId?: string };
 
-const STORAGE_VERSION = 1;
+const STORAGE_VERSION = 2;
 const MAX_PREVIEW_LENGTH = 500_000;
 const MAX_TEXT_LENGTH = 20_000;
+// 与网页保持一致：图片最多 6 张、文件最多 10 个，合计上限取两者之和。
+const MAX_ATTACHMENTS = 16;
 const MANIFEST_FILE = "manifest.json";
 const MESSAGE_ASSET_PREFIX = "agent-asset:";
 
@@ -125,8 +127,9 @@ export class MessageMetadataStore {
         const manifestFile = path.join(this.directory, MANIFEST_FILE);
         try {
             const manifest = await readJson(manifestFile) as { version?: unknown };
-            if (manifest.version !== STORAGE_VERSION) throw unsupportedVersion(manifest.version);
-            return;
+            if (manifest.version === STORAGE_VERSION) return;
+            if (manifest.version === 1) return await migrateFromVersion1(this.directory);
+            throw unsupportedVersion(manifest.version);
         } catch (error) {
             if (!isMissing(error)) throw error;
         }
@@ -192,6 +195,50 @@ async function readRecords(directory: string) {
     return (await Promise.all(files.map(readRecord))).filter((item): item is MessageMetadataRecord => Boolean(item));
 }
 
+/** 把 v1 存储整体复制一份备份后升级到 v2，任一步失败都保留原目录不动。 */
+async function migrateFromVersion1(directory: string) {
+    const backup = `${directory}.v1-backup-${Date.now()}`;
+    await fs.cp(directory, backup, { recursive: true, errorOnExist: true, force: false });
+    const records = await v1Records(directory);
+    for (const { file, record } of records) await writeJson(file, { ...record, version: STORAGE_VERSION });
+    await writeJson(path.join(directory, MANIFEST_FILE), { version: STORAGE_VERSION });
+}
+
+/** 收集 v1 的 pending 与 threads 记录，文件损坏时直接中止迁移。 */
+async function v1Records(directory: string) {
+    const files = [
+        ...await jsonFiles(path.join(directory, "pending")),
+        ...(await threadDirectories(directory)).flatMap((thread) => thread),
+    ];
+    return await Promise.all(files.map(async (file) => {
+        const value = await readJson(file) as { version?: unknown; clientMessageId?: unknown; metadata?: unknown; threadId?: unknown; turnId?: unknown; createdAt?: unknown };
+        if (value.version !== 1) throw unsupportedVersion(value.version);
+        const clientMessageId = text(value.clientMessageId, 200);
+        const metadata = normalizeMetadata(value.metadata, true);
+        if (!clientMessageId || !metadata) throw new Error(`Message metadata record is invalid: ${file}`);
+        const threadId = text(value.threadId, 200);
+        const turnId = text(value.turnId, 200);
+        return { file, record: { version: 2, clientMessageId, createdAt: Number(value.createdAt) || 0, metadata, ...(threadId ? { threadId } : {}), ...(turnId ? { turnId } : {}) } as MessageMetadataRecord };
+    }));
+}
+
+async function threadDirectories(directory: string) {
+    const root = path.join(directory, "threads");
+    const entries = await fs.readdir(root, { withFileTypes: true }).catch((error) => {
+        if (isMissing(error)) return [];
+        throw error;
+    });
+    return await Promise.all(entries.filter((entry) => entry.isDirectory()).map((entry) => jsonFiles(path.join(root, entry.name))));
+}
+
+async function jsonFiles(directory: string) {
+    const entries = await fs.readdir(directory, { withFileTypes: true }).catch((error) => {
+        if (isMissing(error)) return [];
+        throw error;
+    });
+    return entries.filter((entry) => entry.isFile() && entry.name.endsWith(".json")).map((entry) => path.join(directory, entry.name));
+}
+
 async function readRecord(file: string): Promise<MessageMetadataRecord | undefined> {
     try {
         const value = await readJson(file) as Partial<MessageMetadataRecord>;
@@ -212,7 +259,8 @@ function normalizeMetadata(value: unknown, allowAsset: boolean): AgentMessageMet
     if (value === undefined || value === null) return undefined;
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Message metadata must be an object.");
     const source = value as Record<string, unknown>;
-    const attachments = normalizeList(source.attachments, 6, (item) => normalizeAttachment(item, allowAsset), "attachments");
+    // 图片附件与文件附件各自有上限，元数据结构必须容得下两者之和。
+    const attachments = normalizeList(source.attachments, MAX_ATTACHMENTS, (item) => normalizeAttachment(item, allowAsset), "attachments");
     const canvasReferences = normalizeList(source.canvasReferences, 50, (item) => normalizeCanvasReference(item, allowAsset), "canvas references");
     const skill = normalizeSkill(source.skill);
     if (source.skill !== undefined && !skill) throw new Error("Message skill metadata is invalid.");
@@ -234,9 +282,13 @@ function normalizeAttachment(value: unknown, allowAsset: boolean): AgentAttachme
     const item = value as Record<string, unknown>;
     const id = text(item.id, 200);
     const name = text(item.name, 500);
+    if (!id || !name) return undefined;
+    const fileId = text(item.fileId, 200);
+    // 文件附件没有预览图，只有 fileId；图片附件必须有可展示的地址。
+    if (fileId) return { id, name, kind: "file", fileId, ...numberFields(item) };
     const url = imagePreview(item.url, allowAsset);
-    if (!id || !name || !url) return undefined;
-    return { id, name, url, ...numberFields(item) };
+    if (!url) return undefined;
+    return { id, name, url, kind: "image", ...numberFields(item) };
 }
 
 function normalizeCanvasReference(value: unknown, allowAsset: boolean): AgentCanvasReference | undefined {
@@ -296,7 +348,7 @@ function storageKey(value: string) {
 }
 
 async function persistMetadataPreviews(directory: string, clientMessageId: string, metadata: AgentMessageMetadata) {
-    const attachments = await Promise.all((metadata.attachments || []).map(async (item) => ({ ...item, url: await persistImagePreview(directory, clientMessageId, `attachment:${item.id}`, item.url) })));
+    const attachments = await Promise.all((metadata.attachments || []).map(async (item) => (item.kind === "file" || !item.url ? item : { ...item, url: await persistImagePreview(directory, clientMessageId, `attachment:${item.id}`, item.url) })));
     const canvasReferences = await Promise.all((metadata.canvasReferences || []).map(async (item) => ({
         ...item,
         ...(item.kind === "image" && item.previewUrl ? { previewUrl: await persistImagePreview(directory, clientMessageId, `reference:${item.nodeId}`, item.previewUrl) } : {}),

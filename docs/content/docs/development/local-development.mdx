@@ -5,17 +5,46 @@ description: Frontend-first local development
 
 # Local Development
 
-The main application lives in `web/`. The browser sends AI requests directly to the user's OpenAI-compatible endpoint.
+The main application lives in `web/`; its development server also runs the workspace APIs. Codex/Pi requests from the AI Assistant go through the same-origin server gateway to the local Canvas Agent, so the browser does not receive Agent or channel credentials. Local state and logs are isolated from normal user data under the repository's ignored `.local/` directory.
 
-## Start the frontend
+## Start the middleware
+
+The server needs PostgreSQL and an S3-compatible object store (RustFS by default). From the repository root:
 
 ```bash
-cd web
-bun install
-bun run dev
+docker compose -f docker-compose.middleware.yml up -d --wait
 ```
 
-Open `http://localhost:3000`, then enter your `Base URL`, `API Key`, and model names in Settings. Prompt sources and WebDAV are also accessed directly by the browser.
+PostgreSQL listens on `5433` and RustFS on `9010` (console `9011`), deliberately away from the common 5432/9000 ports. The application ships matching defaults, so no extra configuration is required; see `deploy/middleware.env.example` to override them.
+
+## Set up the development environment
+
+```bash
+npm install --global bun@1.3.13
+cd web && npm ci --legacy-peer-deps
+cd ../canvas-agent && npm ci
+npx --prefix web playwright install chromium
+```
+
+Node.js 22 and Python 3 are also needed for the full test suite. `--legacy-peer-deps` is needed because the current ProComponents beta declares an Ant Design 5 peer while this app uses Ant Design 6.
+
+## Run locally
+
+From the repository root, run `npm run dev` and open `http://127.0.0.1:3000`. Accounts, workspace data and the media index live in PostgreSQL, media objects in RustFS; the browser still only calls same-origin `/api/*` routes. The command starts Vite and Canvas Agent with the same `INFINITE_CANVAS_DATA_DIR`; run `npm run dev:agent` when only the Agent is needed. Server output is appended as JSONL to `.local/dev-server.jsonl`.
+
+## Tests and diagnostics
+
+- `npm test` runs the web, Canvas Agent, and deployment unit suites.
+- `npm run test:e2e` starts a server on port 3100, creates a dedicated PostgreSQL database and RustFS bucket for the run, and deletes both afterwards, so development data is never read or modified. Run one suite at a time to avoid a port 3100 conflict. Install the browser once with `npx --prefix web playwright install chromium`.
+- `npm run test:e2e:ui` opens the Playwright UI runner; `npm run test:report` opens the report under `web/playwright-report` (each e2e run writes its own report to `.local/e2e-*/report/`). Failure traces, screenshots, browser diagnostics, server logs and test data stay under ignored `.local/e2e-*/` and `.local/e2e-*/test-results/`.
+- `npm run logs:check` scans the development server JSONL log and exits non-zero for likely errors; pass a log path to scan another run. Browser E2E also fails on console errors, uncaught exceptions, HTTP errors and non-cancelled failed requests.
+- `npm run doctor` checks the pinned Bun version, installed dependencies, Playwright CLI and local tooling.
+
+These scripts do not make requests to AI providers; provider-backed generation still requires configuring an API endpoint and credentials in the app.
+
+## Debugging and tests
+
+API smoke checks, browser probes, screenshots, interactive steps and log scanning live in [Debugging and Test Tooling](/docs/development/debug-tooling). The usual entry points are `npm run dev:smoke`, `npm run dev:probe` and `npm run logs`.
 
 ## Start the documentation site
 

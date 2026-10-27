@@ -1,16 +1,18 @@
-import { ArrowLeft, ArrowRight, BookOpen, CheckSquare, ClipboardPaste, Download, FolderPlus, History, LoaderCircle, Music2, Plus, SlidersHorizontal, Sparkles, Trash2, Upload, VideoIcon } from "lucide-react";
+import { BookOpen, CheckSquare, ClipboardPaste, Download, FolderPlus, History, LoaderCircle, Music2, Plus, SlidersHorizontal, Sparkles, Trash2, Upload, VideoIcon } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore, type DragEvent } from "react";
-import { App, Button, Checkbox, Drawer, Empty, Input, Modal, Tag, Typography } from "antd";
+import { App, Button, Checkbox, ConfigProvider, Drawer, Image, Input, Modal, Tag, Tooltip, Typography } from "antd";
 import localforage from "localforage";
 import { nanoid } from "nanoid";
 import { saveAs } from "file-saver";
 import { useTranslation } from "react-i18next";
 import { workspaceStoreName } from "@/lib/workspace";
 
+import { ReferenceOrderButtons } from "@/components/workbench/reference-order-buttons";
+import { moveListItem } from "@/lib/utils";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { ModelPicker } from "@/components/model-picker";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
-import { VideoSettingsPanel, normalizeVideoResolutionValue, normalizeVideoSizeValue, videoModeLabel, videoSizeLabel } from "@/components/video-settings-panel";
+import { VideoSettingsPanel, normalizeVideoResolutionValue, normalizeVideoSizeValue, videoModeLabel, videoSecondsLabel, videoSizeLabel } from "@/components/video-settings-panel";
 import { clampVideoSeconds } from "@/lib/media-size";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes, formatDuration } from "@/lib/image-utils";
@@ -25,7 +27,8 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 import i18n from "@/i18n";
-import { loadWorkspaceData, saveWorkspaceData } from "@/services/workspace-data";
+import { saveWorkspaceData } from "@/services/workspace-data";
+import { readWorkspaceLogs } from "@/services/workspace-logs";
 
 type GeneratedVideo = {
     id: string;
@@ -79,6 +82,9 @@ export default function VideoPage() {
     useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const dragDepthRef = useRef(0);
+    const composerRef = useRef<HTMLElement>(null);
+    const composerDragRef = useRef<{ y: number; height: number } | null>(null);
+    const composerMinHeightRef = useRef<number | null>(null);
     const activeLogIdsRef = useRef<Set<string>>(new Set());
     const config = useConfigStore((state) => state.config);
     const effectiveConfig = useEffectiveConfig();
@@ -103,6 +109,7 @@ export default function VideoPage() {
     const [previewLog, setPreviewLog] = useState<GenerationLog | null>(null);
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
     const [referenceDragTarget, setReferenceDragTarget] = useState<"image" | "video" | "audio" | null>(null);
+    const [composerHeight, setComposerHeight] = useState<number | null>(null);
     const [autoRunToken, setAutoRunToken] = useState(0);
     const videoCommand = useWorkbenchAgentStore((state) => state.videoCommand);
     const clearVideoCommand = useWorkbenchAgentStore((state) => state.clearVideoCommand);
@@ -112,6 +119,7 @@ export default function VideoPage() {
 
     const model = effectiveConfig.videoModel || effectiveConfig.model;
     const canGenerate = Boolean(prompt.trim());
+    const configSummary = `${modelOptionLabel(effectiveConfig, model)} · ${normalizeResolution(effectiveConfig.vquality)}p · ${videoSizeLabel(effectiveConfig.size)} · ${videoSecondsLabel(effectiveConfig.videoSeconds)} · ${videoModeLabel(effectiveConfig.videoMode)}`;
 
     useEffect(() => {
         if (!running || !startedAt) return;
@@ -133,31 +141,35 @@ export default function VideoPage() {
         if (selectedFiles.some((file) => file.type.startsWith("image/") && file.size > SEEDANCE_REFERENCE_LIMITS.imageMaxBytes)) message.warning(t("videoWorkbench.imageTooLarge"));
         if (selectedFiles.some((file) => SEEDANCE_VIDEO_MIME_TYPES.includes(file.type) && file.size > SEEDANCE_REFERENCE_LIMITS.videoMaxBytes)) message.warning(t("videoWorkbench.videoTooLarge"));
         if (selectedFiles.some((file) => isSupportedAudioFile(file) && file.size > SEEDANCE_REFERENCE_LIMITS.audioMaxBytes)) message.warning(t("videoWorkbench.audioTooLarge"));
-        const nextReferences = await Promise.all(
-            imageFiles.map(async (file) => {
-                const image = await uploadImage(file);
-                return { id: nanoid(), name: file.name, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
-            }),
-        );
-        const nextVideoReferences = await Promise.all(
-            videoFiles.map(async (file) => {
-                const video = await uploadMediaFile(file, "video-reference");
-                return { id: nanoid(), name: file.name, type: video.mimeType, url: video.url, storageKey: video.storageKey, bytes: video.bytes, width: video.width, height: video.height, durationMs: video.durationMs };
-            }),
-        );
-        const nextAudioReferences = filterAudioReferencesByDuration(
-            audioReferences,
-            await Promise.all(
-                audioFiles.map(async (file) => {
-                    const audio = await uploadMediaFile(file, "audio-reference");
-                    return { id: nanoid(), name: file.name, type: audio.mimeType, url: audio.url, storageKey: audio.storageKey, durationMs: audio.durationMs };
+        try {
+            const nextReferences = await Promise.all(
+                imageFiles.map(async (file) => {
+                    const image = await uploadImage(file);
+                    return { id: nanoid(), name: file.name, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
                 }),
-            ),
-            message.warning,
-        );
-        setReferences((value) => [...value, ...nextReferences].slice(0, SEEDANCE_REFERENCE_LIMITS.images));
-        setVideoReferences((value) => [...value, ...nextVideoReferences].slice(0, SEEDANCE_REFERENCE_LIMITS.videos));
-        setAudioReferences((value) => [...value, ...nextAudioReferences].slice(0, SEEDANCE_REFERENCE_LIMITS.audios));
+            );
+            const nextVideoReferences = await Promise.all(
+                videoFiles.map(async (file) => {
+                    const video = await uploadMediaFile(file, "video-reference");
+                    return { id: nanoid(), name: file.name, type: video.mimeType, url: video.url, storageKey: video.storageKey, bytes: video.bytes, width: video.width, height: video.height, durationMs: video.durationMs };
+                }),
+            );
+            const nextAudioReferences = filterAudioReferencesByDuration(
+                audioReferences,
+                await Promise.all(
+                    audioFiles.map(async (file) => {
+                        const audio = await uploadMediaFile(file, "audio-reference");
+                        return { id: nanoid(), name: file.name, type: audio.mimeType, url: audio.url, storageKey: audio.storageKey, durationMs: audio.durationMs };
+                    }),
+                ),
+                message.warning,
+            );
+            setReferences((value) => [...value, ...nextReferences].slice(0, SEEDANCE_REFERENCE_LIMITS.images));
+            setVideoReferences((value) => [...value, ...nextVideoReferences].slice(0, SEEDANCE_REFERENCE_LIMITS.videos));
+            setAudioReferences((value) => [...value, ...nextAudioReferences].slice(0, SEEDANCE_REFERENCE_LIMITS.audios));
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "媒体保存失败");
+        }
     };
 
     const handleReferenceDragEnter = (event: DragEvent<HTMLDivElement>, target: "image" | "video" | "audio") => {
@@ -195,8 +207,8 @@ export default function VideoPage() {
             );
             setReferences((value) => [...value, ...nextReferences].slice(0, SEEDANCE_REFERENCE_LIMITS.images));
             message.success(t("videoWorkbench.clipboardAdded", { count: nextReferences.length }));
-        } catch {
-            message.error(t("videoWorkbench.clipboardEmpty"));
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : t("videoWorkbench.clipboardEmpty"));
         }
     };
     const generate = async () => {
@@ -304,6 +316,7 @@ export default function VideoPage() {
     };
 
     const createSession = () => {
+        setLogsOpen(false);
         setPrompt("");
         setReferences([]);
         setVideoReferences([]);
@@ -412,236 +425,120 @@ export default function VideoPage() {
         setResults(log.status === "pending" ? [{ id: log.id, status: "pending" }] : log.video ? [{ id: log.video.id, status: "success", video: log.video }] : [{ id: log.id, status: "failed", error: log.error || t("workbench.generationFailed") }]);
     };
 
+    const resizeComposer = (height: number) => {
+        const minimum = composerMinHeightRef.current ?? composerRef.current?.getBoundingClientRect().height ?? 0;
+        const maximum = composerRef.current?.parentElement?.clientHeight ?? window.innerHeight;
+        setComposerHeight(Math.max(minimum, Math.min(maximum, height)));
+    };
+
     return (
-        <div className="flex h-full flex-col overflow-hidden bg-stone-50 text-stone-900 dark:bg-stone-950 dark:text-stone-100">
-            <main className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto p-3 lg:grid-cols-[300px_minmax(0,1fr)] lg:overflow-hidden xl:grid-cols-[320px_minmax(0,1fr)]">
-                <aside className="thin-scrollbar hidden min-h-0 overflow-y-auto rounded-lg border border-stone-200 bg-card p-4 shadow-sm dark:border-stone-800 lg:block">
-                    <LogPanel logs={logs} selectedLogIds={selectedLogIds} activeLogId={previewLog?.id} onSelectedLogIdsChange={setSelectedLogIds} onCreateSession={createSession} onDeleteSelected={() => setDeleteConfirmOpen(true)} onPreviewLog={previewGenerationLog} />
-                </aside>
-
-                <section className="grid gap-3 lg:min-h-0 lg:overflow-hidden xl:grid-cols-[420px_minmax(0,1fr)]">
-                    <div className="thin-scrollbar flex flex-col rounded-lg border border-stone-200 bg-card p-4 shadow-sm dark:border-stone-800 lg:min-h-0 lg:overflow-y-auto">
-                        <div className="flex items-start justify-between gap-3">
-                            <h1 className="text-2xl font-semibold text-stone-950 dark:text-stone-100">{t("videoWorkbench.title")}</h1>
-                            <div className="flex shrink-0 gap-2 lg:hidden">
-                                <Button icon={<History className="size-4" />} onClick={() => setLogsOpen(true)}>
-                                    {t("workbench.logs")}
-                                </Button>
-                                <Button icon={<SlidersHorizontal className="size-4" />} onClick={() => setSettingsOpen(true)}>
-                                    {t("workbench.settings")}
-                                </Button>
+        <ConfigProvider wave={{ disabled: true }} theme={{ components: { Button: { defaultShadow: "none", primaryShadow: "none", dangerShadow: "none" } } }}>
+            <div className={`flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground transition-[margin-right] duration-300 [&_.ant-btn]:!shadow-none ${settingsOpen || logsOpen ? "lg:mr-[420px]" : ""}`}>
+                <main className="thin-scrollbar min-h-0 flex-1 overflow-y-auto px-4 py-3 lg:px-6">
+                    <div className="flex h-full min-h-0 w-full flex-col gap-3">
+                        <header className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+                            <h1 className="text-xl font-semibold">{t("videoWorkbench.title")}</h1>
+                            <p className="text-xs text-muted-foreground">{t("videoWorkbench.galleryHint")}</p>
+                        </header>
+                        <section aria-label={t("workbench.logs")}>
+                            <div className="mb-1 flex items-center justify-between gap-3">
+                                <h2 className="text-base font-semibold">{t("workbench.logs")} <span className="ml-1 font-normal text-muted-foreground">{logs.length}</span></h2>
+                                <Button type="text" icon={<History className="size-4" />} onClick={() => { setSettingsOpen(false); setLogsOpen(true); }}>{t("videoWorkbench.manageLogs")}</Button>
                             </div>
-                        </div>
-
-                        <div className="mt-6 space-y-5">
-                            <div>
-                                <div className="mb-2 flex items-center justify-between gap-3">
-                                    <span className="text-base font-semibold">{t("workbench.prompt")}</span>
-                                    <div className="flex gap-2">
-                                        <Button size="small" icon={<BookOpen className="size-3.5" />} onClick={() => setPromptDialogOpen(true)}>
-                                            {t("workbench.viewPrompts")}
-                                        </Button>
-                                        <Button size="small" icon={<FolderPlus className="size-3.5" />} onClick={() => setAssetPickerOpen(true)}>
-                                            {t("workbench.viewAssets")}
-                                        </Button>
+                            <div className="thin-scrollbar flex gap-2.5 overflow-x-auto pb-1">
+                                <Button icon={<Plus className="size-4" />} onClick={createSession} className="!h-9 !shrink-0 !gap-2 !rounded-lg !border-border !px-3 !text-sm !font-medium !text-foreground hover:!border-input hover:!bg-muted/40">{t("videoWorkbench.newCreation")}</Button>
+                                {logs.map((log) => (
+                                    <button key={log.id} type="button" onClick={() => previewGenerationLog(log)} className={`flex h-16 w-56 shrink-0 items-center gap-2.5 rounded-lg border p-2 text-left transition-colors focus-visible:bg-muted/40 focus-visible:outline-none ${previewLog?.id === log.id ? "border-border bg-muted/60" : "border-border bg-card hover:bg-muted/40"}`}>
+                                        <span className="flex size-12 shrink-0 items-center justify-center rounded-md bg-muted/50"><VideoIcon className="size-5 text-muted-foreground" /></span>
+                                        <span className="min-w-0"><span className="line-clamp-2 block text-sm font-medium">{log.title}</span><span className="mt-1 block truncate text-xs text-muted-foreground">{log.time} · {t(`workbench.${log.status === "success" ? "success" : log.status === "pending" ? "generating" : "failed"}`)}</span></span>
+                                    </button>
+                                ))}
+                                {!logs.length ? <div className="flex h-9 items-center px-2 text-sm text-muted-foreground">{t("workbench.noLogs")}</div> : null}
+                            </div>
+                        </section>
+                        <div className={`grid min-h-[280px] min-w-0 flex-1 gap-4 lg:min-h-0 lg:grid-rows-[minmax(0,1fr)] ${settingsOpen || logsOpen ? "lg:grid-cols-[280px_minmax(0,1fr)]" : "lg:grid-cols-[340px_minmax(0,1fr)]"}`}>
+                            <section className="flex min-h-0 min-w-0 flex-col" aria-label={t("videoWorkbench.referenceAssets")}>
+                                <div className="mb-2 flex h-8 items-center justify-between gap-2">
+                                    <h2 className="text-base font-semibold">{t("videoWorkbench.referenceAssets")}</h2>
+                                    <div className="flex items-center gap-1">
+                                        <Tooltip title={t("workbench.clipboard")}><Button type="text" icon={<ClipboardPaste className="size-4" />} aria-label={t("workbench.clipboard")} onClick={() => void addReferencesFromClipboard()} /></Tooltip>
+                                        <Button type="text" icon={<Upload className="size-4" />} onClick={() => fileInputRef.current?.click()}>{t("workbench.upload")}</Button>
                                     </div>
                                 </div>
-                                <Input.TextArea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={7} placeholder={t("videoWorkbench.promptPlaceholder")} />
-                            </div>
-
-                            <div className="min-w-0">
-                                <div className="mb-2 flex items-center justify-between gap-3">
-                                    <span className="text-base font-semibold">{t("videoWorkbench.references")}</span>
-                                    <div className="flex gap-2">
-                                        <Button size="small" icon={<ClipboardPaste className="size-3.5" />} onClick={() => void addReferencesFromClipboard()}>
-                                            {t("workbench.clipboard")}
-                                        </Button>
-                                        <Button size="small" icon={<Upload className="size-3.5" />} onClick={() => fileInputRef.current?.click()}>
-                                            {t("workbench.upload")}
-                                        </Button>
+                                <div className="thin-scrollbar flex min-h-[280px] flex-1 flex-col gap-4 overflow-y-auto rounded-lg border border-border bg-card p-3">
+                                    <div className="min-w-0">
+                                        <h3 className="mb-2 text-sm font-medium">{t("videoWorkbench.references")} <span className="font-normal text-muted-foreground">{references.length}</span></h3>
+                                        <div className={`flex min-h-24 min-w-0 flex-wrap content-start gap-2 rounded-md border p-2 transition-colors ${referenceDragTarget === "image" ? "border-input bg-muted/40" : "border-border bg-muted/10"}`} onDragEnter={(event) => handleReferenceDragEnter(event, "image")} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; }} onDragLeave={handleReferenceDragLeave} onDrop={handleReferenceDrop}>
+                                            {references.map((item, index) => <div key={item.id} className="group relative size-20 shrink-0 overflow-hidden rounded-md"><Image src={previewUrlFor(item.storageKey) || item.dataUrl} preview={{ src: item.dataUrl }} alt={item.name} width={80} height={80} style={{ objectFit: "cover" }} /><span className="pointer-events-none absolute left-1 top-1 rounded border border-border bg-card/90 px-1 text-[10px] text-foreground">{seedanceReferenceLabel("image", index)}</span><ReferenceOrderButtons index={index} total={references.length} flat onMove={(offset) => setReferences((value) => moveListItem(value, index, offset))} /><button type="button" className="absolute right-1 top-1 flex size-6 items-center justify-center rounded border border-border bg-card/90 text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100" onClick={() => setReferences((value) => value.filter((ref) => ref.id !== item.id))} aria-label={t("videoWorkbench.removeImage")}><Trash2 className="size-3.5" /></button></div>)}
+                                            {!references.length ? <div className="flex min-h-16 w-full items-center justify-center px-2 text-center text-xs text-muted-foreground">{referenceDragTarget === "image" ? t("videoWorkbench.dropReferences") : t("videoWorkbench.noImages")}</div> : null}
+                                        </div>
+                                    </div>
+                                    <div className="min-w-0">
+                                        <h3 className="mb-2 text-sm font-medium">{t("videoWorkbench.videoReferences")} <span className="font-normal text-muted-foreground">{videoReferences.length}</span></h3>
+                                        <div className={`flex min-h-24 min-w-0 flex-wrap content-start gap-2 rounded-md border p-2 transition-colors ${referenceDragTarget === "video" ? "border-input bg-muted/40" : "border-border bg-muted/10"}`} onDragEnter={(event) => handleReferenceDragEnter(event, "video")} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; }} onDragLeave={handleReferenceDragLeave} onDrop={handleReferenceDrop}>
+                                            {videoReferences.map((item, index) => <div key={item.id} className="group relative h-20 w-32 shrink-0 overflow-hidden rounded-md bg-black"><video src={item.url} className="size-full object-cover" muted preload="metadata" /><span className="pointer-events-none absolute left-1 top-1 rounded border border-border bg-card/90 px-1 text-[10px] text-foreground">{seedanceReferenceLabel("video", index)}</span><ReferenceOrderButtons index={index} total={videoReferences.length} flat onMove={(offset) => setVideoReferences((value) => moveListItem(value, index, offset))} /><button type="button" className="absolute right-1 top-1 flex size-6 items-center justify-center rounded border border-border bg-card/90 text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100" onClick={() => setVideoReferences((value) => value.filter((ref) => ref.id !== item.id))} aria-label={t("videoWorkbench.removeVideo")}><Trash2 className="size-3.5" /></button></div>)}
+                                            {!videoReferences.length ? <div className="flex min-h-16 w-full items-center justify-center px-2 text-center text-xs text-muted-foreground">{referenceDragTarget === "video" ? t("videoWorkbench.dropReferences") : t("videoWorkbench.noVideos")}</div> : null}
+                                        </div>
+                                    </div>
+                                    <div className="min-w-0">
+                                        <h3 className="mb-2 text-sm font-medium">{t("videoWorkbench.audioReferences")} <span className="font-normal text-muted-foreground">{audioReferences.length}</span></h3>
+                                        <div className={`flex min-h-24 min-w-0 flex-wrap content-start gap-2 rounded-md border p-2 transition-colors ${referenceDragTarget === "audio" ? "border-input bg-muted/40" : "border-border bg-muted/10"}`} onDragEnter={(event) => handleReferenceDragEnter(event, "audio")} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; }} onDragLeave={handleReferenceDragLeave} onDrop={handleReferenceDrop}>
+                                            {audioReferences.map((item, index) => <div key={item.id} className={`group relative flex w-48 shrink-0 flex-col justify-center gap-2 rounded-md border border-border bg-card px-2 ${audioReferences.length > 1 ? "h-28 pb-7" : "h-20"}`}><div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground"><Music2 className="size-4 shrink-0" /><span className="shrink-0 rounded bg-muted px-1 text-[10px] text-foreground">{seedanceReferenceLabel("audio", index)}</span><span className="truncate">{item.name}</span></div><audio src={item.url} controls className="h-8 w-full" preload="metadata" /><ReferenceOrderButtons index={index} total={audioReferences.length} flat onMove={(offset) => setAudioReferences((value) => moveListItem(value, index, offset))} /><button type="button" className="absolute right-1 top-1 flex size-6 items-center justify-center rounded border border-border bg-card/90 text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100" onClick={() => setAudioReferences((value) => value.filter((ref) => ref.id !== item.id))} aria-label={t("videoWorkbench.removeAudio")}><Trash2 className="size-3.5" /></button></div>)}
+                                            {!audioReferences.length ? <div className="flex min-h-16 w-full items-center justify-center px-2 text-center text-xs text-muted-foreground">{referenceDragTarget === "audio" ? t("videoWorkbench.dropReferences") : t("videoWorkbench.noAudio")}</div> : null}
+                                        </div>
                                     </div>
                                 </div>
-                                <div
-                                    className={`hover-scrollbar hover-scrollbar-hint flex min-h-24 w-full min-w-0 max-w-full gap-2 overflow-x-scroll overflow-y-hidden rounded-lg border border-dashed p-2 pb-3 overscroll-x-contain transition-colors ${referenceDragTarget === "image" ? "border-stone-900 bg-stone-100/80 dark:border-stone-100 dark:bg-stone-900/80" : "border-stone-300 dark:border-stone-700"}`}
-                                    onDragEnter={(event) => handleReferenceDragEnter(event, "image")}
-                                    onDragOver={(event) => {
-                                        event.preventDefault();
-                                        event.dataTransfer.dropEffect = "copy";
-                                    }}
-                                    onDragLeave={handleReferenceDragLeave}
-                                    onDrop={handleReferenceDrop}
-                                >
-                                    {references.map((item, index) => (
-                                        <div key={item.id} className="group relative size-20 shrink-0 overflow-hidden rounded-md border border-stone-200 dark:border-stone-800">
-                                            <img src={previewUrlFor(item.storageKey) || item.dataUrl} alt={item.name} className="size-full object-cover" />
-                                            <span className="absolute left-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white">{seedanceReferenceLabel("image", index)}</span>
-                                            <ReferenceOrderButtons index={index} total={references.length} onMove={(offset) => setReferences((value) => moveListItem(value, index, offset))} />
-                                            <button type="button" className="absolute right-1 top-1 hidden size-6 items-center justify-center rounded bg-black/60 text-white group-hover:flex" onClick={() => setReferences((value) => value.filter((ref) => ref.id !== item.id))} aria-label={t("videoWorkbench.removeImage")}>
-                                                <Trash2 className="size-3.5" />
-                                            </button>
-                                        </div>
-                                    ))}
-                                    {!references.length ? <div className="flex min-w-full items-center justify-center text-sm text-stone-500">{referenceDragTarget === "image" ? t("videoWorkbench.dropReferences") : t("videoWorkbench.noImages")}</div> : null}
-                                </div>
-                            </div>
-
-                            <div className="min-w-0">
-                                <div className="mb-2 flex items-center justify-between gap-3">
-                                    <span className="text-base font-semibold">{t("videoWorkbench.videoReferences")}</span>
-                                    <Button size="small" icon={<Upload className="size-3.5" />} onClick={() => fileInputRef.current?.click()}>
-                                        {t("workbench.upload")}
-                                    </Button>
-                                </div>
-                                <div
-                                    className={`hover-scrollbar hover-scrollbar-hint flex min-h-24 w-full min-w-0 max-w-full gap-2 overflow-x-scroll overflow-y-hidden rounded-lg border border-dashed p-2 pb-3 overscroll-x-contain transition-colors ${referenceDragTarget === "video" ? "border-stone-900 bg-stone-100/80 dark:border-stone-100 dark:bg-stone-900/80" : "border-stone-300 dark:border-stone-700"}`}
-                                    onDragEnter={(event) => handleReferenceDragEnter(event, "video")}
-                                    onDragOver={(event) => {
-                                        event.preventDefault();
-                                        event.dataTransfer.dropEffect = "copy";
-                                    }}
-                                    onDragLeave={handleReferenceDragLeave}
-                                    onDrop={handleReferenceDrop}
-                                >
-                                    {videoReferences.map((item, index) => (
-                                        <div key={item.id} className="group relative h-20 w-32 shrink-0 overflow-hidden rounded-md border border-stone-200 bg-black dark:border-stone-800">
-                                            <video src={item.url} className="size-full object-cover" muted preload="metadata" />
-                                            <span className="absolute left-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white">{seedanceReferenceLabel("video", index)}</span>
-                                            <ReferenceOrderButtons index={index} total={videoReferences.length} onMove={(offset) => setVideoReferences((value) => moveListItem(value, index, offset))} />
-                                            <button type="button" className="absolute right-1 top-1 hidden size-6 items-center justify-center rounded bg-black/60 text-white group-hover:flex" onClick={() => setVideoReferences((value) => value.filter((ref) => ref.id !== item.id))} aria-label={t("videoWorkbench.removeVideo")}>
-                                                <Trash2 className="size-3.5" />
-                                            </button>
-                                        </div>
-                                    ))}
-                                    {!videoReferences.length ? <div className="flex min-w-full items-center justify-center text-sm text-stone-500">{referenceDragTarget === "video" ? t("videoWorkbench.dropReferences") : t("videoWorkbench.noVideos")}</div> : null}
-                                </div>
-                            </div>
-
-                            <div className="min-w-0">
-                                <div className="mb-2 flex items-center justify-between gap-3">
-                                    <span className="text-base font-semibold">{t("videoWorkbench.audioReferences")}</span>
-                                    <Button size="small" icon={<Upload className="size-3.5" />} onClick={() => fileInputRef.current?.click()}>
-                                        {t("workbench.upload")}
-                                    </Button>
-                                </div>
-                                <div
-                                    className={`hover-scrollbar hover-scrollbar-hint flex min-h-24 w-full min-w-0 max-w-full gap-2 overflow-x-scroll overflow-y-hidden rounded-lg border border-dashed p-2 pb-3 overscroll-x-contain transition-colors ${referenceDragTarget === "audio" ? "border-stone-900 bg-stone-100/80 dark:border-stone-100 dark:bg-stone-900/80" : "border-stone-300 dark:border-stone-700"}`}
-                                    onDragEnter={(event) => handleReferenceDragEnter(event, "audio")}
-                                    onDragOver={(event) => {
-                                        event.preventDefault();
-                                        event.dataTransfer.dropEffect = "copy";
-                                    }}
-                                    onDragLeave={handleReferenceDragLeave}
-                                    onDrop={handleReferenceDrop}
-                                >
-                                    {audioReferences.map((item, index) => (
-                                        <div key={item.id} className="group relative flex h-20 w-48 shrink-0 flex-col justify-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-2 dark:border-stone-800 dark:bg-stone-900">
-                                            <div className="flex min-w-0 items-center gap-2 text-xs text-stone-500 dark:text-stone-400">
-                                                <Music2 className="size-4 shrink-0" />
-                                                <span className="shrink-0 rounded bg-stone-200 px-1 text-[10px] text-stone-700 dark:bg-stone-800 dark:text-stone-200">{seedanceReferenceLabel("audio", index)}</span>
-                                                <span className="truncate">{item.name}</span>
-                                            </div>
-                                            <audio src={item.url} controls className="h-8 w-full" preload="metadata" />
-                                            <ReferenceOrderButtons index={index} total={audioReferences.length} onMove={(offset) => setAudioReferences((value) => moveListItem(value, index, offset))} />
-                                            <button type="button" className="absolute right-1 top-1 hidden size-6 items-center justify-center rounded bg-black/60 text-white group-hover:flex" onClick={() => setAudioReferences((value) => value.filter((ref) => ref.id !== item.id))} aria-label={t("videoWorkbench.removeAudio")}>
-                                                <Trash2 className="size-3.5" />
-                                            </button>
-                                        </div>
-                                    ))}
-                                    {!audioReferences.length ? <div className="flex min-w-full items-center justify-center text-center text-sm text-stone-500">{referenceDragTarget === "audio" ? t("videoWorkbench.dropReferences") : t("videoWorkbench.noAudio")}</div> : null}
-                                </div>
-                            </div>
-
-                            <div className="flex items-center justify-between rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm dark:border-stone-800 dark:bg-stone-900 sm:hidden">
-                                <span className="truncate text-stone-500 dark:text-stone-400">
-                                    {modelOptionLabel(effectiveConfig, model)} · {normalizeResolution(effectiveConfig.vquality)}p · {videoSizeLabel(effectiveConfig.size)} · {normalizeVideoSeconds(effectiveConfig.videoSeconds)}s · {videoModeLabel(effectiveConfig.videoMode)}
-                                </span>
-                                <Button size="small" type="text" icon={<SlidersHorizontal className="size-4" />} onClick={() => setSettingsOpen(true)}>
-                                    {t("workbench.adjust")}
-                                </Button>
-                            </div>
-
-                            <div className="hidden gap-4 sm:grid sm:grid-cols-2">
-                                <GenerationSettings config={effectiveConfig} model={model} updateConfig={updateConfig} openConfigDialog={openConfigDialog} />
-                            </div>
-                        </div>
-
-                        <div className="mt-auto pt-6">
-                            <Button type="primary" size="large" block icon={<Sparkles className="size-4" />} loading={running} disabled={!canGenerate || running} onClick={() => void generate()}>
-                                {t("workbench.generate")}
-                            </Button>
+                            </section>
+                            <section className="flex min-h-0 min-w-0 flex-col" aria-label={t("workbench.results")}>
+                                <div className="mb-2 flex h-8 items-center justify-between gap-3"><h2 className="text-base font-semibold">{t("workbench.results")}</h2>{running ? <Tag className="m-0">{t("workbench.waiting", { time: formatDuration(elapsedMs) })}</Tag> : null}</div>
+                                {results.length ? <div className="thin-scrollbar flex min-h-[280px] flex-1 flex-col gap-3 overflow-y-auto">{results.map((result) => result.status === "success" && result.video ? <ResultVideoCard key={result.id} video={result.video} onDownload={downloadVideo} onSaveAsset={saveResultToAssets} /> : result.status === "failed" ? <FailedVideoCard key={result.id} error={result.error || t("workbench.generationFailed")} onRetry={retryResult} /> : <PendingVideoCard key={result.id} />)}</div> : <div className="flex min-h-[280px] flex-1 flex-col items-center justify-center rounded-lg border border-border bg-card px-6 text-center"><VideoIcon className="mb-3 size-10 text-muted-foreground" /><h3 className="text-base font-medium">{t("videoWorkbench.empty")}</h3><p className="mt-1 text-sm text-muted-foreground">{t("videoWorkbench.emptyHint")}</p></div>}
+                            </section>
                         </div>
                     </div>
-
-                    <div className="thin-scrollbar rounded-lg border border-stone-200 bg-card p-4 shadow-sm dark:border-stone-800 lg:min-h-0 lg:overflow-y-auto lg:p-5">
-                        <div className="mb-4 flex items-center justify-between gap-3">
-                            <h2 className="text-xl font-semibold">{t("workbench.results")}</h2>
-                            {running ? <Tag className="m-0 px-2 py-1">{t("workbench.waiting", { time: formatDuration(elapsedMs) })}</Tag> : null}
+                </main>
+                <section ref={composerRef} style={{ height: composerHeight ?? undefined }} className="thin-scrollbar relative shrink-0 overflow-y-auto border-t border-border bg-card px-4 py-3 lg:px-6" aria-label={t("videoWorkbench.creationArea")}>
+                    <div role="separator" tabIndex={0} aria-orientation="horizontal" aria-label={t("videoWorkbench.resizePrompt")} title={t("videoWorkbench.resizePrompt")} className="absolute inset-x-0 top-0 z-10 h-2 cursor-ns-resize touch-none focus-visible:outline-2 focus-visible:outline-ring" onPointerDown={(event) => { const height = composerRef.current?.getBoundingClientRect().height ?? 0; composerMinHeightRef.current ??= height; composerDragRef.current = { y: event.clientY, height }; event.currentTarget.setPointerCapture(event.pointerId); }} onPointerMove={(event) => { if (composerDragRef.current) resizeComposer(composerDragRef.current.height + composerDragRef.current.y - event.clientY); }} onPointerUp={(event) => { composerDragRef.current = null; event.currentTarget.releasePointerCapture(event.pointerId); }} onPointerCancel={() => { composerDragRef.current = null; }} onKeyDown={(event) => { if (event.key === "ArrowUp" || event.key === "ArrowDown") { event.preventDefault(); composerMinHeightRef.current ??= composerRef.current?.getBoundingClientRect().height ?? 0; resizeComposer((composerRef.current?.getBoundingClientRect().height ?? 0) + (event.key === "ArrowUp" ? 24 : -24)); } }} />
+                    <div className="flex h-full min-h-[128px] w-full flex-col">
+                        <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 sm:flex-nowrap">
+                            <div className="flex min-w-0 items-center gap-3"><label htmlFor="video-prompt" className="text-sm font-semibold">{t("videoWorkbench.describe")}</label><div className="flex items-center gap-1 border-l border-border pl-2"><Tooltip title={t("workbench.viewPrompts")}><Button type="text" className="!size-8 !rounded-md !text-muted-foreground hover:!bg-muted/50 hover:!text-foreground" icon={<BookOpen className="size-4" />} aria-label={t("workbench.viewPrompts")} onClick={() => setPromptDialogOpen(true)} /></Tooltip><Tooltip title={t("workbench.viewAssets")}><Button type="text" className="!size-8 !rounded-md !text-muted-foreground hover:!bg-muted/50 hover:!text-foreground" icon={<FolderPlus className="size-4" />} aria-label={t("workbench.viewAssets")} onClick={() => setAssetPickerOpen(true)} /></Tooltip></div></div>
+                            <div className="flex min-w-0 flex-1 items-center justify-end gap-2"><span className="mr-1 hidden min-w-0 max-w-80 flex-1 truncate text-xs text-muted-foreground sm:block">{configSummary}</span><Button type="text" aria-pressed={settingsOpen} className={`!h-9 !shrink-0 !gap-2 !rounded-lg !px-3 !text-sm !text-muted-foreground hover:!bg-muted/50 hover:!text-foreground ${settingsOpen ? "!bg-muted/50" : ""}`} icon={<SlidersHorizontal className="size-4" />} onClick={() => { setLogsOpen(false); setSettingsOpen(true); }}>{t("workbench.settings")}</Button><Button type="primary" className="!h-9 !min-w-28 !shrink-0 !gap-2 !rounded-lg !px-4 !text-sm !font-medium disabled:!border-transparent disabled:!bg-muted/60 disabled:!text-muted-foreground/50" icon={<Sparkles className="size-4" />} loading={running} disabled={!canGenerate || running} onClick={() => void generate()}>{t("workbench.generate")}</Button></div>
                         </div>
-                        {results.length ? (
-                            <div className="grid gap-4">
-                                {results.map((result) => (result.status === "success" && result.video ? <ResultVideoCard key={result.id} video={result.video} onDownload={downloadVideo} onSaveAsset={saveResultToAssets} /> : result.status === "failed" ? <FailedVideoCard key={result.id} error={result.error || t("workbench.generationFailed")} onRetry={retryResult} /> : <PendingVideoCard key={result.id} />))}
-                            </div>
-                        ) : (
-                            <div className="flex min-h-[320px] flex-col items-center justify-center rounded-lg border border-dashed border-stone-300 text-center dark:border-stone-700 lg:min-h-[560px]">
-                                <VideoIcon className="mb-4 size-11 text-stone-400" />
-                                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("videoWorkbench.empty")} />
-                            </div>
-                        )}
+                        <Input.TextArea id="video-prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={4} placeholder={t("videoWorkbench.promptPlaceholder")} className="app-prompt-input !min-h-[96px] !flex-1" />
                     </div>
                 </section>
-            </main>
-            <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*,video/mp4,video/quicktime,audio/mpeg,audio/wav,audio/x-wav,.mp3,.wav"
-                multiple
-                className="hidden"
-                onChange={(event) => {
-                    void addReferences(event.target.files);
-                    event.target.value = "";
-                }}
-            />
-            <Drawer title={t("workbench.logs")} placement="bottom" size="large" open={logsOpen} onClose={() => setLogsOpen(false)}>
-                <LogPanel logs={logs} selectedLogIds={selectedLogIds} activeLogId={previewLog?.id} onSelectedLogIdsChange={setSelectedLogIds} onCreateSession={createSession} onDeleteSelected={() => setDeleteConfirmOpen(true)} onPreviewLog={previewGenerationLog} />
-            </Drawer>
-            <Drawer title={t("workbench.settings")} placement="bottom" height="82vh" open={settingsOpen} onClose={() => setSettingsOpen(false)}>
-                <div className="grid grid-cols-2 gap-3 pb-4">
-                    <GenerationSettings config={effectiveConfig} model={model} updateConfig={updateConfig} openConfigDialog={openConfigDialog} />
-                </div>
-            </Drawer>
-            <PromptSelectDialog open={promptDialogOpen} onOpenChange={setPromptDialogOpen} onSelect={setPrompt} />
-            <AssetPickerModal open={assetPickerOpen} defaultTab="my-assets" onInsert={(payload) => void insertPickedAsset(payload)} onClose={() => setAssetPickerOpen(false)} />
-            <Modal title={t("workbench.deleteLogs")} open={deleteConfirmOpen} onCancel={() => setDeleteConfirmOpen(false)} onOk={deleteSelectedLogs} okText={t("common.delete")} okButtonProps={{ danger: true }} cancelText={t("common.cancel")}>
-                {t("workbench.deleteLogsConfirm", { count: selectedLogIds.length })}
-            </Modal>
-        </div>
+                <input ref={fileInputRef} type="file" accept="image/*,video/mp4,video/quicktime,audio/mpeg,audio/wav,audio/x-wav,.mp3,.wav" multiple className="hidden" onChange={(event) => { void addReferences(event.target.files); event.target.value = ""; }} />
+                <Drawer title={t("workbench.logs")} extra={<span className="text-sm text-muted-foreground">{logs.length}</span>} placement="right" size="min(420px, 100vw)" mask={false} open={logsOpen} onClose={() => setLogsOpen(false)} classNames={{ body: "thin-scrollbar [&_.ant-btn]:!shadow-none" }} styles={{ wrapper: { boxShadow: "none" }, section: { borderLeft: "1px solid var(--border)" } }}><LogPanel logs={logs} selectedLogIds={selectedLogIds} activeLogId={previewLog?.id} onSelectedLogIdsChange={setSelectedLogIds} onCreateSession={createSession} onDeleteSelected={() => setDeleteConfirmOpen(true)} onPreviewLog={previewGenerationLog} /></Drawer>
+                <Drawer title={t("videoWorkbench.generationSettings")} placement="right" size="min(420px, 100vw)" mask={false} open={settingsOpen} onClose={() => setSettingsOpen(false)} classNames={{ body: "thin-scrollbar [&_.ant-btn]:!shadow-none" }} styles={{ wrapper: { boxShadow: "none" }, section: { borderLeft: "1px solid var(--border)" } }}><GenerationSettings config={effectiveConfig} model={model} updateConfig={updateConfig} openConfigDialog={openConfigDialog} onClose={() => setSettingsOpen(false)} /></Drawer>
+                <PromptSelectDialog open={promptDialogOpen} onOpenChange={setPromptDialogOpen} onSelect={setPrompt} flat />
+                <AssetPickerModal open={assetPickerOpen} defaultTab="my-assets" onInsert={(payload) => void insertPickedAsset(payload)} onClose={() => setAssetPickerOpen(false)} flat />
+                <Modal title={t("workbench.deleteLogs")} open={deleteConfirmOpen} onCancel={() => setDeleteConfirmOpen(false)} onOk={deleteSelectedLogs} okText={t("common.delete")} okButtonProps={{ danger: true }} cancelText={t("common.cancel")} classNames={{ footer: "[&_.ant-btn]:!shadow-none" }} styles={{ container: { boxShadow: "none", border: "1px solid var(--border)" } }}>{t("workbench.deleteLogsConfirm", { count: selectedLogIds.length })}</Modal>
+            </div>
+        </ConfigProvider>
     );
 }
-
-function GenerationSettings({ config, model, updateConfig, openConfigDialog }: { config: AiConfig; model: string; updateConfig: UpdateAiConfig; openConfigDialog: (shouldPromptContinue?: boolean) => void }) {
+function GenerationSettings({ config, model, updateConfig, openConfigDialog, onClose }: { config: AiConfig; model: string; updateConfig: UpdateAiConfig; openConfigDialog: (shouldPromptContinue?: boolean) => void; onClose: () => void }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
 
     return (
-        <>
-            <label className="col-span-2 block min-w-0 sm:col-span-1">
-                <span className="mb-1.5 block text-sm font-semibold sm:mb-2 sm:text-base">{t("workbench.model")}</span>
-                <ModelPicker config={config} value={model} onChange={(value) => updateConfig("videoModel", value)} capability="video" fullWidth onMissingConfig={() => openConfigDialog(false)} />
-            </label>
-            <div className="col-span-2">
-                <VideoSettingsPanel config={config} onConfigChange={(key, value) => updateConfig(key, value)} theme={theme} showTitle={false} className="space-y-4" />
+        <div className="space-y-6 pb-4">
+            <div>
+                <div className="mb-2 text-sm font-semibold">{t("workbench.model")}</div>
+                <ModelPicker config={config} value={model} onChange={(value) => updateConfig("videoModel", value)} capability="video" fullWidth flat onMissingConfig={() => openConfigDialog(false)} />
             </div>
-        </>
+            <VideoSettingsPanel config={config} onConfigChange={(key, value) => updateConfig(key, value)} theme={theme} showTitle={false} className="space-y-4" subtleSelection />
+            <Button block size="large" onClick={onClose}>{t("videoWorkbench.finishSettings")}</Button>
+        </div>
     );
 }
 
 function ResultVideoCard({ video, onDownload, onSaveAsset }: { video: GeneratedVideo; onDownload: (video: GeneratedVideo) => void; onSaveAsset: (video: GeneratedVideo) => void }) {
     const { t } = useTranslation();
     return (
-        <div className="overflow-hidden rounded-lg border border-stone-200 bg-background dark:border-stone-800">
+        <div className="overflow-hidden rounded-lg border border-border bg-card">
             <video src={video.url} controls className="aspect-video w-full bg-black object-contain" />
-            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t border-stone-200 px-3 py-2.5 dark:border-stone-800">
-                <div className="flex min-w-0 flex-wrap gap-x-2 gap-y-1 text-xs text-stone-500 dark:text-stone-400">
+            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t border-border px-3 py-2.5">
+                <div className="flex min-w-0 flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground">
                     <span>
                         {video.width}x{video.height}
                     </span>
@@ -649,10 +546,10 @@ function ResultVideoCard({ video, onDownload, onSaveAsset }: { video: GeneratedV
                     <span>{formatDuration(video.durationMs)}</span>
                 </div>
                 <div className="flex shrink-0 gap-1">
-                    <Button size="small" icon={<FolderPlus className="size-3.5" />} onClick={() => onSaveAsset(video)}>
+                    <Button icon={<FolderPlus className="size-4" />} onClick={() => onSaveAsset(video)}>
                         {t("common.addToAssets")}
                     </Button>
-                    <Button size="small" icon={<Download className="size-3.5" />} onClick={() => onDownload(video)}>
+                    <Button icon={<Download className="size-4" />} onClick={() => onDownload(video)}>
                         {t("common.download")}
                     </Button>
                 </div>
@@ -664,8 +561,8 @@ function ResultVideoCard({ video, onDownload, onSaveAsset }: { video: GeneratedV
 function PendingVideoCard() {
     const { t } = useTranslation();
     return (
-        <div className="relative aspect-video overflow-hidden rounded-lg border border-dashed border-stone-300 bg-stone-50 dark:border-stone-700 dark:bg-stone-900">
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-sm text-stone-500 dark:text-stone-400">
+        <div className="relative aspect-video overflow-hidden rounded-lg border border-border bg-card">
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
                 <LoaderCircle className="size-6 animate-spin" />
                 <span>{t("workbench.generating")}</span>
             </div>
@@ -676,15 +573,15 @@ function PendingVideoCard() {
 function FailedVideoCard({ error, onRetry }: { error: string; onRetry: () => void }) {
     const { t } = useTranslation();
     return (
-        <div className="overflow-hidden rounded-lg border border-red-200 bg-red-50 dark:border-red-950 dark:bg-red-950/20">
+        <div className="overflow-hidden rounded-lg border border-border bg-card">
             <div className="flex aspect-video flex-col items-center justify-center gap-3 p-5 text-center">
-                <div className="text-sm font-medium text-red-600 dark:text-red-300">{t("workbench.failed")}</div>
-                <Typography.Paragraph ellipsis={{ rows: 4 }} className="!mb-0 !text-xs !text-red-500 dark:!text-red-300">
+                <div className="text-sm font-medium text-destructive">{t("workbench.failed")}</div>
+                <Typography.Paragraph ellipsis={{ rows: 4 }} className="!mb-0 !text-xs !text-muted-foreground">
                     {error}
                 </Typography.Paragraph>
             </div>
-            <div className="flex justify-end border-t border-red-200 p-3 dark:border-red-950">
-                <Button size="small" danger onClick={onRetry}>
+            <div className="flex justify-end border-t border-border p-3">
+                <Button onClick={onRetry}>
                     {t("workbench.retry")}
                 </Button>
             </div>
@@ -715,26 +612,22 @@ function LogPanel({
 
     return (
         <>
-            <div className="mb-3 flex items-center justify-between gap-3">
-                <h2 className="text-base font-semibold">{t("workbench.logs")}</h2>
-                <Tag className="m-0">{logs.length}</Tag>
-            </div>
             <div className="mb-4 flex flex-wrap gap-2">
-                <Button size="small" icon={<Plus className="size-3.5" />} onClick={onCreateSession}>
+                <Button className="!h-9 !rounded-lg !border-border !px-3 hover:!bg-muted/40" icon={<Plus className="size-4" />} onClick={onCreateSession}>
                     {t("workbench.new")}
                 </Button>
-                <Button size="small" icon={<CheckSquare className="size-3.5" />} disabled={!logs.length} onClick={toggleAll}>
+                <Button className="!h-9 !rounded-lg !border-border !px-3 hover:!bg-muted/40" icon={<CheckSquare className="size-4" />} disabled={!logs.length} onClick={toggleAll}>
                     {allSelected ? t("common.cancel") : t("workbench.selectAll")}
                 </Button>
-                <Button size="small" danger icon={<Trash2 className="size-3.5" />} disabled={!selectedLogIds.length} onClick={onDeleteSelected}>
+                <Button className="!h-9 !rounded-lg !px-3" danger icon={<Trash2 className="size-4" />} disabled={!selectedLogIds.length} onClick={onDeleteSelected}>
                     {t("common.delete")}
                 </Button>
             </div>
-            <div className="space-y-3">
+            <div className="space-y-2">
                 {logs.map((log) => (
                     <LogCard key={log.id} log={log} selected={selectedLogIds.includes(log.id)} active={activeLogId === log.id} onSelectedChange={(checked) => onSelectedLogIdsChange(checked ? [...selectedLogIds, log.id] : selectedLogIds.filter((id) => id !== log.id))} onClick={() => onPreviewLog(log)} />
                 ))}
-                {!logs.length ? <div className="flex min-h-48 items-center justify-center rounded-lg border border-dashed border-stone-300 text-center text-sm text-stone-500 dark:border-stone-700">{t("workbench.noLogs")}</div> : null}
+                {!logs.length ? <div className="flex min-h-48 items-center justify-center rounded-lg border border-border bg-card text-center text-sm text-muted-foreground">{t("workbench.noLogs")}</div> : null}
             </div>
         </>
     );
@@ -743,45 +636,29 @@ function LogPanel({
 function LogCard({ log, selected, active, onSelectedChange, onClick }: { log: GenerationLog; selected: boolean; active: boolean; onSelectedChange: (checked: boolean) => void; onClick: () => void }) {
     const { t } = useTranslation();
     return (
-        <button type="button" className={`block w-full rounded-lg border p-2 text-left transition ${active ? "border-stone-900 bg-blue-50 dark:border-stone-100 dark:bg-blue-950/20" : "border-stone-200 bg-background hover:bg-stone-50 dark:border-stone-800 dark:hover:bg-stone-900"}`} onClick={onClick}>
-            <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2">
-                <Checkbox className="mt-0.5" checked={selected} onClick={(event) => event.stopPropagation()} onChange={(event) => onSelectedChange(event.target.checked)} />
-                <div className="min-w-0">
-                    <div className="truncate text-sm font-semibold leading-5">{log.title}</div>
-                    <div className="mt-2 flex flex-wrap gap-1">
-                        <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none">{log.size}</Tag>
-                        <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none">{log.resolution}p</Tag>
-                        <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none">{log.seconds}s</Tag>
-                    </div>
-                </div>
-                <div className="grid justify-items-end gap-2">
-                    <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none" color={log.status === "success" ? "blue" : log.status === "pending" ? "processing" : "red"}>
-                        {t(`workbench.${log.status === "success" ? "success" : log.status === "pending" ? "generating" : "failed"}`)}
-                    </Tag>
-                    <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none" color="green">
-                        {formatDuration(log.durationMs)}
-                    </Tag>
-                </div>
-            </div>
-        </button>
+        <div className={`flex items-start gap-3 rounded-lg border border-border p-3 transition-colors ${active ? "bg-muted/60" : "bg-card hover:bg-muted/30"}`}>
+            <Checkbox className="mt-0.5" checked={selected} onChange={(event) => onSelectedChange(event.target.checked)} />
+            <button type="button" className="min-w-0 flex-1 text-left focus-visible:rounded-md focus-visible:bg-muted/40 focus-visible:outline-none" onClick={onClick}>
+                <span className="block truncate text-sm font-medium">{log.title}</span>
+                <span className="mt-2 flex flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                    <span>{log.time}</span><span>{log.size}</span><span>{log.resolution}p</span><span>{log.seconds}s</span>
+                    <span>{t(`workbench.${log.status === "success" ? "success" : log.status === "pending" ? "generating" : "failed"}`)}</span><span>{formatDuration(log.durationMs)}</span>
+                </span>
+            </button>
+        </div>
     );
 }
 
 async function readStoredLogs(preferRemote = true) {
     if (typeof window === "undefined") return [];
-    try {
-        if (preferRemote) {
-            const remote = await loadWorkspaceData<{ logs?: GenerationLog[] }>("video-workbench");
-            if (remote?.logs) return (await Promise.all(remote.logs.map(normalizeLog))).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-        }
-        const logs: GenerationLog[] = [];
-        await logStore.iterate<GenerationLog, void>((value) => {
-            logs.push(value);
-        });
-        return (await Promise.all(logs.map(normalizeLog))).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-    } catch {
-        return [];
-    }
+    const logs = preferRemote ? await readWorkspaceLogs<GenerationLog>("video-workbench", logStore) : await readLocalLogs();
+    return (await Promise.all(logs.map(normalizeLog))).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+}
+
+async function readLocalLogs() {
+    const logs: GenerationLog[] = [];
+    await logStore.iterate<GenerationLog, void>((log) => { logs.push(log); });
+    return logs;
 }
 
 async function normalizeLog(log: Partial<GenerationLog>): Promise<GenerationLog> {
@@ -861,24 +738,6 @@ function filterAudioReferencesByDuration(existing: ReferenceAudio[], next: Refer
     return accepted;
 }
 
-function moveListItem<T>(items: T[], index: number, offset: number) {
-    const targetIndex = index + offset;
-    if (targetIndex < 0 || targetIndex >= items.length) return items;
-    const next = [...items];
-    [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
-    return next;
-}
-
-function ReferenceOrderButtons({ index, total, onMove }: { index: number; total: number; onMove: (offset: number) => void }) {
-    if (total <= 1) return null;
-    return (
-        <div className="absolute inset-x-1 bottom-1 flex justify-between">
-            <Button size="small" className="!h-6 !w-6 !min-w-6 !rounded-full !bg-white/85 !p-0 !shadow-sm" icon={<ArrowLeft className="size-3" />} disabled={index <= 0} onClick={() => onMove(-1)} />
-            <Button size="small" className="!h-6 !w-6 !min-w-6 !rounded-full !bg-white/85 !p-0 !shadow-sm" icon={<ArrowRight className="size-3" />} disabled={index >= total - 1} onClick={() => onMove(1)} />
-        </div>
-    );
-}
-
 function normalizeLogConfig(log: Partial<GenerationLog>): GenerationLogConfig {
     return {
         model: log.config?.model || log.model || "",
@@ -944,10 +803,6 @@ function normalizeVideoSeconds(value: string) {
     if (String(value).trim() === "-1") return "-1";
     const seconds = Math.floor(Number(value) || 6);
     return String(Math.max(4, Math.min(30, seconds)));
-}
-
-function normalizeVideoSize(value: string) {
-    return normalizeVideoSizeValue(value);
 }
 
 function normalizeResolution(value: string) {

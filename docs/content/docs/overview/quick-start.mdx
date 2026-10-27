@@ -5,34 +5,41 @@ description: Run Infinite Canvas in a few steps
 
 # Quick Start
 
-To try the project, deploy or start the `web/` frontend.
-
-## Deploy with Vercel
-
-Import the repository into Vercel. The root `vercel.json` builds `web/`. AI requests are sent directly from the browser to your OpenAI-compatible endpoint, so no additional application server is required.
+Infinite Canvas is not a static frontend: accounts, workspace data, media and AI channel credentials are handled by the server, and the data layer needs PostgreSQL plus S3-compatible object storage (RustFS by default). Start those two services first, otherwise sign-in, saving and generation will not work.
 
 ## Run locally
 
 ```bash
 git clone git@github.com:basketikun/infinite-canvas.git
-cd infinite-canvas/web
-bun install
-bun run dev
+cd infinite-canvas
+npm install --global bun@1.3.13
+cd web && npm ci --legacy-peer-deps && cd ..
+cd canvas-agent && npm ci && cd ..
+docker compose -f docker-compose.middleware.yml up -d --wait
+npm run dev
 ```
 
-Open `http://localhost:3000`.
+Open `http://127.0.0.1:3000`.
+
+PostgreSQL listens on `5433` and RustFS on `9010` (console `9011`); the application ships matching defaults. `npm run dev` starts both Vite and Canvas Agent. Running `bun run dev` inside `web/` is fine for frontend work, but that dev server also depends on the middleware and serves the same-origin `/api/*` routes for the browser.
 
 ## Run with Docker
 
+Use the containerized stack (web, Canvas Agent, PostgreSQL, RustFS) when you want everything at once:
+
 ```bash
-docker build -t infinite-canvas .
-docker run --rm -p 3000:3000 infinite-canvas
+docker compose -f docker-compose.local.yml up -d --build
 ```
+
+The default binding is `127.0.0.1:3000`. Put an HTTPS reverse proxy in front of it in production; see [Docker Deployment](/docs/overview/docker).
 
 ## First-time setup
 
-- Open Settings and enter your `Base URL`, `API Key`, and model names.
-- Open `/prompts` to fetch prompt repositories directly from the browser and cache them in IndexedDB.
-- Configure WebDAV if you want to synchronize canvases, assets, and generation history across devices.
+- Open Settings and enter your `Base URL`, `API Key`, and model names. Credentials are stored on the server; the browser only learns whether they are configured.
+- Add standard JSON prompt sources in Settings; the server proxies those fetches and the browser keeps a cache.
+- WebDAV only supports manual snapshot upload and explicit snapshot import, never two-way automatic sync.
 
-Canvas projects and My Assets are primarily stored in the browser. The API key is also stored locally and used by the browser to call OpenAI-compatible endpoints directly.
+## Notes
+
+- Canvases, assets and generation records are stored per workspace on the server, with a local browser cache.
+- Static hosting (for example deploying only `web/` to Vercel) cannot provide the `/api/*` routes: only the page shell loads, so sign-in, saving and generation fail. Full functionality needs a server-capable deployment.

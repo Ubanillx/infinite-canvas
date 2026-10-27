@@ -1,6 +1,6 @@
 import type { AgentCanvasReference, AgentSkillReference } from "@/stores/use-agent-store";
 
-export const agentInlineTokenClass = "mx-0.5 inline-block h-7 whitespace-nowrap rounded-md border px-1.5 align-baseline text-sm leading-[26px]";
+export const agentInlineTokenClass = "mx-0.5 inline-block max-w-full whitespace-nowrap rounded-md border px-1.5 align-baseline text-xs leading-6";
 export const agentInlineTokenMediaClass = "mr-1 inline-block size-5 rounded object-cover align-middle";
 export const agentInlineTokenIconClass = "mr-1 inline-block size-4 align-middle opacity-65";
 

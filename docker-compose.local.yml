@@ -7,8 +7,32 @@ services:
       context: .
       dockerfile: Dockerfile
       target: runtime
+    # extends 会带上基础服务的 depends_on，但被依赖的服务必须在本文件同样声明。
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rustfs:
+        condition: service_healthy
+
+  postgres:
+    extends:
+      file: docker-compose.yml
+      service: postgres
+
+  rustfs:
+    extends:
+      file: docker-compose.yml
+      service: rustfs
+
+  rustfs-init:
+    extends:
+      file: docker-compose.yml
+      service: rustfs-init
 
 volumes:
   infinite-canvas-data:
   infinite-canvas-agent:
   infinite-canvas-codex:
+  infinite-canvas-postgres:
+  infinite-canvas-rustfs:
+  infinite-canvas-rustfs-logs:

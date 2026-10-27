@@ -7,9 +7,10 @@ description: Major features available in the current project
 
 ## Canvas projects
 
-- Create, rename, duplicate, delete, import, and export canvas projects.
-- Persist projects in the browser and optionally synchronize them with WebDAV.
+- Create, rename, move, duplicate, delete, import, and export canvas projects, organized with nested folders.
+- Store projects per workspace on the server (`/api/data/canvas`); the browser only keeps a local cache.
 - Keep viewport, background, nodes, connections, and assistant sessions with each project.
+- Save a canvas as a template, create a canvas from a template, or insert a template into the current canvas.
 
 ## Infinite canvas
 
@@ -19,7 +20,7 @@ description: Major features available in the current project
 
 ## Nodes and workflows
 
-- Text, image, video, and generation-configuration nodes.
+- Text, image, video, audio, generation-configuration, and group nodes, plus plugin node types shaped as `<pluginId>:<name>`.
 - Connect text prompts and reference media to generation nodes.
 - Generate or rewrite text, create images, edit images from references, and create videos.
 - Preserve original image ratios by default and organize batch results as connected nodes.
@@ -34,9 +35,9 @@ description: Major features available in the current project
 
 ## Canvas Agent
 
-- Connect local Codex through Canvas Agent and MCP without giving a web server direct access to browser state.
+- Connect local Codex or Pi through Canvas Agent and MCP without giving a web server direct access to browser state.
 - Read the active canvas, selection, nodes, edges, generation status, and apply structured operations.
-- Use Codex from the browser side panel with streaming responses, history, approvals, permissions, diagnostics, and local Skills.
+- Use Codex or Pi from the browser side panel with streaming responses, history, approvals, permissions, diagnostics, and local Skills.
 - Isolate active canvases and turns across multiple browser tabs.
 
 See [Codex App Plugin](/docs/overview/codex-app-plugin) for installation and usage.
@@ -47,16 +48,18 @@ Canvas plugins can contribute node types, rendering, inspectors, serialization, 
 
 ## Prompts and assets
 
-- Use seven built-in prompt sources from the [Image Prompts](https://github.com/yukkcat/image-prompts) registry, with independent enablement, manual refresh, and scheduled refresh.
-- Add, edit, and remove custom standard JSON sources while retaining the last successful cache when refresh fails.
+- Add, edit, and remove custom standard JSON sources with independent enablement, manual refresh, and scheduled refresh; the server proxies each fetch.
+- Keep the last successful cache when a refresh fails, and show source status with the last success time.
 - Search across enabled sources, filter by tags, inspect prompt details, copy prompts, and insert them into the canvas.
-- Store reusable images, videos, audio, and prompt assets per workspace with local browser caches.
+- Store reusable images, videos, and text assets per workspace with local browser caches. New assets can be created as text or image in the library; videos are saved from canvas nodes or the workbenches.
 
-See [Third-party Prompt Sources](/docs/overview/third-party-prompt-repositories) for the complete built-in list.
+No third-party prompt source is bundled any more: a fresh configuration starts with an empty source list, and sources are added on demand as standard JSON URLs.
+
+See [Third-party Prompt Sources](/docs/overview/third-party-prompt-repositories) for the source format and public repositories.
 
 ## Configuration and synchronization
 
-- Export and import channel, model, generation, prompt-source, and WebDAV settings.
+- Change AI channels, generation preferences, prompt sources, and WebDAV settings in Settings; every change saves automatically to the server, and a failed save keeps a retryable error.
 - Store AI channels and write-only API credentials on the server; the browser receives only redacted configuration.
 - Store canvases, assets and records per authenticated workspace, with local browser caches.
 - Upload workspace WebDAV snapshots and explicitly select a snapshot to import; existing local records take precedence and canvas deletion markers are retained.

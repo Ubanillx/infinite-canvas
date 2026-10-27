@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="380" viewBox="0 0 480 380" fill="none">
+  <defs>
+    <radialGradient id="space" cx=".46" cy=".42" r=".77">
+      <stop stop-color="#313635"/><stop offset=".5" stop-color="#1b2528"/><stop offset="1" stop-color="#101a20"/>
+    </radialGradient>
+    <radialGradient id="atmosphere">
+      <stop stop-color="#eda05b" stop-opacity=".2"/><stop offset=".55" stop-color="#bd713d" stop-opacity=".08"/><stop offset="1" stop-color="#bd713d" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glass" cx=".3" cy=".24" r=".85">
+      <stop stop-color="#fff1cc"/><stop offset=".13" stop-color="#f4c68d"/><stop offset=".35" stop-color="#ca854c"/><stop offset=".58" stop-color="#8a583c"/><stop offset=".79" stop-color="#413a32"/><stop offset=".94" stop-color="#333c3b"/><stop offset="1" stop-color="#ae885d"/>
+    </radialGradient>
+    <radialGradient id="reflection" cx=".25" cy=".18" r=".78">
+      <stop stop-color="#fff9e6" stop-opacity=".9"/><stop offset=".3" stop-color="#ffe5bb" stop-opacity=".12"/><stop offset=".7" stop-color="#ffe5bb" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="170" y1="125" x2="310" y2="265" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fff2ca" stop-opacity=".85"/><stop offset=".35" stop-color="#f0b677" stop-opacity=".15"/><stop offset=".7" stop-color="#8d7557" stop-opacity=".2"/><stop offset="1" stop-color="#ffd299" stop-opacity=".8"/>
+    </linearGradient>
+    <linearGradient id="orbit" x1="68" y1="200" x2="406" y2="200" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#9b7653" stop-opacity=".05"/><stop offset=".2" stop-color="#d39b66" stop-opacity=".6"/><stop offset=".48" stop-color="#fff0c6"/><stop offset=".75" stop-color="#dcaa72" stop-opacity=".7"/><stop offset="1" stop-color="#b18053" stop-opacity=".08"/>
+    </linearGradient>
+    <linearGradient id="ribbon" x1="110" y1="260" x2="350" y2="120" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#e6ab72" stop-opacity=".03"/><stop offset=".4" stop-color="#ffc68a" stop-opacity=".23"/><stop offset=".7" stop-color="#ffe3ae" stop-opacity=".07"/><stop offset="1" stop-color="#e7b47a" stop-opacity=".01"/>
+    </linearGradient>
+    <filter id="bloom" x="-50%" y="-100%" width="200%" height="300%"><feGaussianBlur stdDeviation="3"/></filter>
+    <filter id="shadow" x="-40%" y="-40%" width="180%" height="200%"><feDropShadow dx="10" dy="20" stdDeviation="15" flood-color="#060e13" flood-opacity=".7"/></filter>
+    <filter id="grain" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="3" stitchTiles="stitch"/>
+      <feColorMatrix type="saturate" values="0"/>
+      <feComponentTransfer><feFuncA type="linear" slope=".035"/></feComponentTransfer>
+      <feBlend in="SourceGraphic" mode="soft-light"/>
+    </filter>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" stroke="#c6d0cc" stroke-opacity=".035" stroke-width=".5"/></pattern>
+    <clipPath id="sphere"><circle cx="240" cy="188" r="75"/></clipPath>
+  </defs>
+
+  <path fill="url(#space)" d="M0 0h480v380H0z"/>
+  <path fill="url(#grid)" d="M0 0h480v380H0z"/>
+  <ellipse cx="235" cy="190" rx="213" ry="180" fill="url(#atmosphere)"/>
+
+  <g stroke="#d3b58b" stroke-width=".6">
+    <circle cx="240" cy="188" r="139" stroke-opacity=".1"/>
+    <circle cx="240" cy="188" r="152" stroke-opacity=".08" stroke-dasharray="1 7"/>
+    <path d="M240 29v8m0 302v8M81 188h8m302 0h8" stroke-opacity=".35"/>
+    <path d="M129 77l5 5m212 212 5 5M129 299l5-5M346 82l5-5" stroke-opacity=".25"/>
+  </g>
+
+  <g transform="rotate(-28 240 188)">
+    <ellipse cx="240" cy="188" rx="170" ry="55" stroke="url(#orbit)" stroke-width=".7" opacity=".6"/>
+    <ellipse cx="240" cy="188" rx="155" ry="44" stroke="url(#orbit)" stroke-width="1.2"/>
+    <ellipse cx="240" cy="188" rx="155" ry="44" stroke="#efbe83" stroke-width="3" opacity=".2" filter="url(#bloom)"/>
+    <path d="M85 188a155 44 0 0 1 310 0v8a155 44 0 0 0-310 0z" fill="url(#ribbon)"/>
+  </g>
+
+  <circle cx="240" cy="188" r="75" fill="url(#glass)" filter="url(#shadow)"/>
+  <g clip-path="url(#sphere)">
+    <g stroke="#ffe0ab" stroke-width=".65" opacity=".18" transform="rotate(-28 240 188)">
+      <ellipse cx="240" cy="188" rx="75" ry="22"/><ellipse cx="240" cy="170" rx="72" ry="21"/>
+      <ellipse cx="240" cy="207" rx="72" ry="21"/><ellipse cx="240" cy="225" rx="64" ry="18"/>
+      <ellipse cx="240" cy="152" rx="64" ry="18"/>
+      <ellipse cx="240" cy="188" rx="25" ry="75"/><ellipse cx="240" cy="188" rx="52" ry="75"/>
+    </g>
+    <circle cx="240" cy="188" r="75" fill="url(#reflection)"/>
+    <path d="M180 153c12-24 42-37 70-29" stroke="#fff3d2" stroke-width="1.1" stroke-linecap="round" opacity=".7"/>
+    <path d="M295 220c-8 19-23 31-41 35" stroke="#e6b37c" stroke-width=".8" stroke-linecap="round" opacity=".6"/>
+  </g>
+  <circle cx="240" cy="188" r="74.7" stroke="url(#rim)" stroke-width=".8"/>
+
+  <!-- The near half of the orbit crosses in front of the glass sphere. -->
+  <g transform="rotate(-28 240 188)">
+    <path d="M85 188a155 44 0 0 0 310 0v8a155 44 0 0 1-310 0z" fill="url(#ribbon)"/>
+    <path d="M85 188a155 44 0 0 0 310 0" stroke="url(#orbit)" stroke-width="5" opacity=".22" filter="url(#bloom)"/>
+    <path d="M85 188a155 44 0 0 0 310 0" stroke="url(#orbit)" stroke-width="1.3"/>
+    <path d="M70 188a170 55 0 0 0 340 0" stroke="url(#orbit)" stroke-width=".5" opacity=".65"/>
+    <circle cx="355" cy="218" r="3" fill="#ffe1b3"/>
+    <circle cx="355" cy="218" r="7" stroke="#e5ba83" stroke-width=".5" opacity=".4"/>
+  </g>
+
+  <g stroke="#d8c8af" stroke-width=".6" opacity=".35">
+    <path d="M24 43v9m-4-4h8M448 324v9m-4-4h8"/>
+    <path d="M306 131l37-25h43"/><circle cx="306" cy="131" r="2" fill="#c7a477"/>
+  </g>
+  <g fill="#e7d2b0" opacity=".5"><circle cx="93" cy="100" r=".8"/><circle cx="375" cy="275" r=".8"/><circle cx="404" cy="153" r=".6"/></g>
+  <path fill="transparent" filter="url(#grain)" d="M0 0h480v380H0z"/>
+</svg>

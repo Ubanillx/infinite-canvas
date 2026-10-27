@@ -1,0 +1,85 @@
+---
+title: Agent File Attachments and Artifact Import
+description: Let the in-canvas Codex read any attachment like the desktop app and return results to the canvas
+---
+
+# Agent File Attachments and Artifact Import
+
+This document records the design and limits for extending the canvas AI assistant from image-only attachments to arbitrary files plus artifact import.
+
+## Problem
+
+The side panel previously accepted images only, because four places hard-coded image handling: the frontend used `accept="image/*"` and filtered `image/*`, attachments travelled as Data URLs inside a 30 MB JSON body, Canvas Agent only wrote `data:image/` to a temporary file and passed it as `localImage`, and `canvas_create_attachment_nodes` accepted images only.
+
+Codex app-server `turn/start.input` supports only `text`, `image`, `localImage`, `skill`, and `mention`; there is no generic file item. What makes the Codex desktop app read attachments is that the file sits in the working directory and the model reads it. This plan therefore adds no protocol, it just puts files into the workspace reliably and names their paths in the prompt.
+
+## Options considered
+
+- Option A: attachments in a temporary directory plus a prompt list. Smallest change, but still bound to the 30 MB JSON body and base64 bloat, and files cannot be reused.
+- **Option B (implemented)**: a local file center with streaming uploads, `fileId` reuse, and artifact import.
+- Option C: server object storage with signed downloads. Needed for cross-device access, but the largest change and not implemented yet.
+
+## Implementation
+
+### File center
+
+`canvas-agent/src/agent/file-center.ts`, one instance per workspace, stored under `<workspacePath>/.infinite-canvas/files/`:
+
+```txt
+files/
+  index.json          { version: 1, files: [ ... ] }
+  <fileId>/<original name>
+```
+
+- Upload is `POST /agent/files?name=` and the body is raw bytes, routed before the JSON parser. Upload does not bind a conversation; sending binds each `fileId` to the actual thread.
+- Bytes are written before the index entry; failures roll back the whole directory. Index writes use a temporary file plus rename, and unknown versions are refused rather than overwritten.
+- Reads are by `fileId` only (`GET /agent/files/:fileId/content`), never by arbitrary path.
+- The original name is used for display and storage only, stripped of separators and control characters.
+
+### Prompt
+
+`withAttachmentContext` appends a file section after the image list, with `fileId`, name, type, size, and the absolute path, plus a hint that `canvas_import_artifact` returns results to the canvas. File bodies are never inlined, which keeps context small.
+
+### Artifact import
+
+New MCP tool `canvas_import_artifact({ path, mode?, title?, x?, y?, gap?, direction? })`:
+
+1. Agent resolves the real path, requires it to be inside the current workspace, a regular file, not a symlink, and at most 50 MiB.
+2. MIME and extension decide `image` or `text`; other types are rejected with a reason.
+3. The file is copied into the file center and delivered through `tool_call` over SSE.
+4. The page reads the bytes: images go through `uploadImage` and become image nodes, text becomes a text node, then `applyOps` runs and canvas state is reported back.
+
+### Message metadata v2
+
+File attachments have no preview URL, only a `fileId`, so storage moves to v2. The upgrade first copies the whole directory to `message-metadata.v1-backup-<timestamp>`, rewrites each record, then writes `manifest.json v2`; any failure aborts and leaves the original files untouched.
+
+## Limits
+
+| Item | Value | Failure behavior |
+|---|---|---|
+| Single file | 100 MiB | 413 before writing |
+| Files per message | 10 | Extra files are ignored with a notice |
+| Files per turn | 300 MiB | Send blocked |
+| Workspace total | 2 GiB | 507 with a cleanup hint |
+| Artifact per import | 50 MiB | Tool returns an error to the model |
+| Bound file retention | 30 days | Message marks the file unavailable |
+| Unbound files | 24 hours | Swept |
+| Sweep throttling | At most hourly | Logged, never blocks a request |
+
+## Security
+
+- File reads are by `fileId` only, so path traversal is impossible.
+- Artifacts must be regular files inside the workspace; other workspaces are refused.
+- The existing token and Origin allowlist still apply, and binaries never reach the logs.
+- Files live inside the workspace, so `workspace-write` sandbox reads need no extra approval; running commands still follows the current permission mode.
+
+## Platform differences
+
+- The Pi engine has no shell and no file reader, so its upload entry is hidden and requests carrying `fileId` are rejected.
+- Under Docker the file center lives in the `/home/node/.infinite-canvas` volume, so files survive restarts but are not shared across devices (that needs Option C).
+
+## Future work
+
+1. A file node type so PDFs and archives can land on the canvas directly; it also touches node rendering, thumbnails, resource derivation, and template previews.
+2. Move images into the file center as well, dropping the 28 MB JSON limit and simplifying `turnAttachments`.
+3. Option C: sync files to object storage with signed downloads and a v2 server-side manifest.

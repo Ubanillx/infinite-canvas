@@ -3,6 +3,7 @@
 ## Overview
 
 - [Quick Start](/docs/overview/quick-start)
+- [Codex App Plugin](/docs/overview/codex-app-plugin)
 - [Features](/docs/overview/features)
 - [Deploy on Render](/docs/overview/render)
 - [Docker Deployment](/docs/overview/docker)
@@ -17,8 +18,10 @@
 ## Development and Data
 
 - [Local Development](/docs/development/local-development)
+- [Debugging and Test Tooling](/docs/development/debug-tooling)
 - [Canvas Data Structure](/docs/development/canvas-data-structure)
 - [How the Local Codex Connection Works](/docs/development/local-codex-canvas)
+- [Interface Design System](/docs/development/theme-system)
 
 ## Business
 
@@ -33,10 +36,15 @@
 ## Project Progress
 
 - [Changelog](/docs/progress/changelog)
+- [Local Agent Integration Plan](/docs/progress/local-agent-integration-plan)
+- [Prompt Chip Input Plan](/docs/progress/prompt-chip-input-plan)
+- [Canvas Template Plan](/docs/progress/canvas-template-plan)
+- [Canvas Media References and Safe Garbage Collection Plan](/docs/progress/canvas-media-lifecycle-plan)
 - [Pending Tests](/docs/progress/pending-test)
 - [TODO](/docs/progress/todo)
 
 ## Notes
 
-- Workspace data is server-backed with browser caches; WebDAV uses manual snapshot upload/import.
+- The application needs PostgreSQL and S3-compatible object storage (RustFS by default). Workspace data lives on the server; browsers keep caches only.
 - AI keys are server-managed; browsers use authenticated same-origin proxies and snapshots exclude server credentials.
+- Prompt sources are fetched by the server; WebDAV uses manual snapshot upload and explicit import.

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { BookOpen, Bot, Download, Home, Images, Menu, PanelLeftClose, PanelLeftOpen, Plus, Redo2, Trash2, Undo2, Upload } from "lucide-react";
+import { ArrowLeft, BookOpen, Bot, Download, Home, Images, LayoutTemplate, Menu, PanelLeftClose, PanelLeftOpen, Plus, Redo2, RefreshCw, Save, Scan, Trash2, Undo2, Upload } from "lucide-react";
 import { Button, Dropdown, Modal, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
@@ -8,6 +8,7 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { useCanvasSidePanelStore } from "@/stores/use-canvas-side-panel-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { DOCS_URL } from "@/constant/env";
+import { getActiveWorkspace } from "@/lib/workspace";
 
 export function CanvasTopBar({
     title,
@@ -24,6 +25,10 @@ export function CanvasTopBar({
     onCreateProject,
     onDeleteProject,
     onExportProject,
+    onSaveTemplate,
+    onSaveSelectionTemplate,
+    onUpdateTemplate,
+    onInsertTemplate,
     onImportImage,
     onOpenPlugins,
     onUndo,
@@ -46,12 +51,16 @@ export function CanvasTopBar({
     onCreateProject: () => void;
     onDeleteProject: () => void;
     onExportProject: () => void;
+    onSaveTemplate: () => void;
+    onSaveSelectionTemplate?: () => void;
+    onUpdateTemplate: () => void;
+    onInsertTemplate: () => void;
     onImportImage: () => void;
     onOpenPlugins: () => void;
     onUndo: () => void;
     onRedo: () => void;
     agentOpen: boolean;
-    compactAgentStatus: { connected: boolean; enabled: boolean; activity: string };
+    compactAgentStatus: { connected: boolean; enabled: boolean; activity: string; engine: "codex" | "pi" };
     onToggleAgent: () => void;
 }) {
     const colorTheme = useThemeStore((state) => state.theme);
@@ -59,6 +68,7 @@ export function CanvasTopBar({
     const theme = canvasThemes[colorTheme];
     const titleRef = useRef<HTMLDivElement>(null);
     const [shortcutsOpen, setShortcutsOpen] = useState(false);
+    const readOnly = getActiveWorkspace()?.role === "viewer";
     const sidePanelOpen = useCanvasSidePanelStore((state) => state.panelOpen);
     const toggleSidePanel = useCanvasSidePanelStore((state) => state.togglePanel);
 
@@ -73,14 +83,19 @@ export function CanvasTopBar({
 
     return (
         <>
-            <div className="pointer-events-none absolute left-0 right-0 top-0 z-50 flex h-16 items-center justify-between pl-1 pr-4">
-                <div className="pointer-events-auto flex min-w-0 items-center gap-2">
+            <div className="pointer-events-none fixed inset-x-0 top-0 z-[70] flex min-h-16 flex-wrap items-center justify-between gap-x-3 gap-y-1 py-2 pl-1 pr-4 sm:absolute sm:z-50">
+                <div className="pointer-events-auto flex min-w-0 flex-[1_1_360px] items-center gap-2">
+                    <Tooltip title={t("canvas.backToLibrary")}>
+                        <button type="button" onClick={onProjects} aria-label={t("canvas.backToLibrary")} className="grid size-7 shrink-0 place-items-center rounded-full transition hover:bg-black/5 dark:hover:bg-white/10" style={{ color: theme.node.text }}>
+                            <ArrowLeft className="size-4" />
+                        </button>
+                    </Tooltip>
                     <Tooltip title={sidePanelOpen ? t("canvas.collapsePanel") : t("canvas.expandPanel")}>
                         <button
                             type="button"
                             onClick={toggleSidePanel}
                             aria-label={sidePanelOpen ? t("canvas.collapsePanel") : t("canvas.expandPanel")}
-                            className="grid size-7 place-items-center rounded-full transition hover:bg-black/5 dark:hover:bg-white/10"
+                            className="grid size-7 shrink-0 place-items-center rounded-full transition hover:bg-black/5 dark:hover:bg-white/10"
                             style={{ color: theme.node.text }}
                         >
                             {sidePanelOpen ? <PanelLeftClose className="size-4" /> : <PanelLeftOpen className="size-4" />}
@@ -90,22 +105,30 @@ export function CanvasTopBar({
                         trigger={["click"]}
                         menu={{
                             items: [
-                                { key: "home", icon: <Home className="size-4" />, label: t("canvas.home"), onClick: onHome },
-                                { key: "docs", icon: <BookOpen className="size-4" />, label: t("canvas.docs"), onClick: () => window.open(DOCS_URL, "_blank", "noopener,noreferrer") },
-                                { key: "projects", icon: <Images className="size-4" />, label: t("canvas.projects"), onClick: onProjects },
+                                { type: "group", label: <MenuGroupLabel text={t("canvas.menu.navigate")} />, children: [
+                                    { key: "home", icon: <Home className="size-4" />, label: t("canvas.home"), onClick: onHome },
+                                    { key: "docs", icon: <BookOpen className="size-4" />, label: t("canvas.docs"), onClick: () => window.open(DOCS_URL, "_blank", "noopener,noreferrer") },
+                                    { key: "projects", icon: <Images className="size-4" />, label: t("canvas.projects"), onClick: onProjects },
+                                ] },
                                 { type: "divider" },
-                                { key: "new", icon: <Plus className="size-4" />, label: t("canvas.create"), onClick: onCreateProject },
-                                { key: "delete", danger: true, icon: <Trash2 className="size-4" />, label: t("canvas.deleteCurrent"), onClick: onDeleteProject },
+                                { type: "group", label: <MenuGroupLabel text={t("canvas.menu.canvas")} />, children: [
+                                    { key: "new", icon: <Plus className="size-4" />, label: t("canvas.create"), onClick: onCreateProject },
+                                    { key: "delete", danger: true, icon: <Trash2 className="size-4" />, label: t("canvas.deleteCurrent"), onClick: onDeleteProject },
+                                ] },
                                 { type: "divider" },
-                                { key: "import", icon: <Upload className="size-4" />, label: t("canvas.importAsset"), onClick: onImportImage },
-                                { key: "export", icon: <Download className="size-4" />, label: t("canvas.exportCurrent"), onClick: onExportProject },
+                                { type: "group", label: <MenuGroupLabel text={t("canvas.menu.files")} />, children: [
+                                    { key: "import", icon: <Upload className="size-4" />, label: t("canvas.importAsset"), onClick: onImportImage },
+                                    { key: "export", icon: <Download className="size-4" />, label: t("canvas.exportCurrent"), onClick: onExportProject },
+                                ] },
                                 { type: "divider" },
-                                { key: "undo", disabled: !canUndo, icon: <Undo2 className="size-4" />, label: <MenuLabel text={t("canvas.undo")} shortcut="⌘ Z" />, onClick: onUndo },
-                                { key: "redo", disabled: !canRedo, icon: <Redo2 className="size-4" />, label: <MenuLabel text={t("canvas.redo")} shortcut="⌘ ⇧ Z / ⌘ Y" />, onClick: onRedo },
+                                { type: "group", label: <MenuGroupLabel text={t("canvas.menu.edit")} />, children: [
+                                    { key: "undo", disabled: !canUndo, icon: <Undo2 className="size-4" />, label: <MenuLabel text={t("canvas.undo")} shortcut="⌘ Z" />, onClick: onUndo },
+                                    { key: "redo", disabled: !canRedo, icon: <Redo2 className="size-4" />, label: <MenuLabel text={t("canvas.redo")} shortcut="⌘ ⇧ Z / ⌘ Y" />, onClick: onRedo },
+                                ] },
                             ],
                         }}
                     >
-                        <button type="button" className="grid size-7 place-items-center rounded-full transition hover:bg-black/5 dark:hover:bg-white/10" style={{ color: theme.node.text }} aria-label={t("canvas.openMenu")}>
+                        <button type="button" className="grid size-7 shrink-0 place-items-center rounded-full transition hover:bg-black/5 dark:hover:bg-white/10" style={{ color: theme.node.text }} aria-label={t("canvas.openMenu")}>
                             <Menu className="size-4" />
                         </button>
                     </Dropdown>
@@ -121,7 +144,7 @@ export function CanvasTopBar({
                                     if (event.key === "Enter") onFinishTitleEditing();
                                     if (event.key === "Escape") onCancelTitleEditing();
                                 }}
-                                className="max-w-[280px] bg-transparent p-0 text-left text-lg font-semibold tracking-normal outline-none"
+                                className="min-w-0 max-w-[280px] bg-transparent p-0 text-left text-lg font-semibold tracking-normal outline-none"
                                 style={{ color: theme.node.text }}
                             />
                         ) : (
@@ -138,17 +161,28 @@ export function CanvasTopBar({
                     <CompactAgentStatus status={compactAgentStatus} onClick={onToggleAgent} />
                 </div>
 
-                <div className="pointer-events-auto flex items-center gap-1.5">
+                <div className="pointer-events-auto ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1.5">
+                    <Dropdown trigger={["click"]} placement="bottomRight" menu={{ items: [
+                        { key: "template", disabled: readOnly, icon: <Save className="size-4" />, label: t("canvas.templates.v2.saveAsNew"), onClick: onSaveTemplate },
+                        { key: "template-selection", disabled: !onSaveSelectionTemplate || readOnly, icon: <Scan className="size-4" />, label: t("canvas.templates.v2.saveSelection"), onClick: onSaveSelectionTemplate },
+                        { key: "template-update", disabled: readOnly, icon: <RefreshCw className="size-4" />, label: t("canvas.templates.v2.update"), onClick: onUpdateTemplate },
+                        { key: "template-insert", disabled: readOnly, icon: <Plus className="size-4" />, label: t("canvas.templates.v2.insert"), onClick: onInsertTemplate },
+                    ] }}>
+                        <button type="button" className="grid size-7 place-items-center rounded-md transition hover:bg-black/5 dark:hover:bg-white/10" style={{ color: theme.node.text }} aria-label={t("canvas.templates.actions")} title={t("canvas.templates.actions")}>
+                            <LayoutTemplate className="size-4" />
+                        </button>
+                    </Dropdown>
                     <UserStatusActions variant="canvas" onOpenShortcuts={() => setShortcutsOpen(true)} onOpenPlugins={onOpenPlugins} />
                     <span className="h-6 w-px" style={{ background: theme.toolbar.border }} />
                     <Button
                         type="text"
                         className="!h-10 !rounded-xl !px-3 !font-medium"
-                        style={{ background: agentOpen ? theme.toolbar.activeBg : theme.toolbar.panel, color: theme.node.text, boxShadow: "0 10px 30px rgba(28,25,23,.10)" }}
+                        style={{ background: agentOpen ? theme.toolbar.activeBg : theme.toolbar.panel, color: theme.node.text, boxShadow: "0 2px 8px rgba(28,25,23,.05)" }}
                         icon={<Bot className="size-4" />}
                         onClick={onToggleAgent}
+                        aria-label={t("canvas.aiAssistant")}
                     >
-                        Agent
+                        <span className="hidden sm:inline">{t("canvas.aiAssistant")}</span>
                     </Button>
                 </div>
             </div>
@@ -175,6 +209,10 @@ export function CanvasTopBar({
     );
 }
 
+function MenuGroupLabel({ text }: { text: string }) {
+    return <span className="text-[11px] font-medium text-muted-foreground">{text}</span>;
+}
+
 function MenuLabel({ text, shortcut }: { text: string; shortcut: string }) {
     return (
         <span className="flex min-w-36 items-center justify-between gap-8">
@@ -184,15 +222,16 @@ function MenuLabel({ text, shortcut }: { text: string; shortcut: string }) {
     );
 }
 
-function CompactAgentStatus({ status, onClick }: { status: { connected: boolean; enabled: boolean; activity: string }; onClick: () => void }) {
+function CompactAgentStatus({ status, onClick }: { status: { connected: boolean; enabled: boolean; activity: string; engine: "codex" | "pi" }; onClick: () => void }) {
     const colorTheme = useThemeStore((state) => state.theme);
     const theme = canvasThemes[colorTheme];
     const { t } = useTranslation();
-    const label = status.connected ? t("canvas.agentConnected") : status.enabled ? t("canvas.agentConnecting", { activity: status.activity || t("canvas.connecting") }) : t("canvas.agentDisconnected");
+    const engine = t(status.engine === "pi" ? "agent.panel.enginePi" : "agent.panel.engineCodex");
+    const label = status.connected ? t("canvas.agentConnected", { engine }) : status.enabled ? t("canvas.agentConnecting", { engine, activity: status.activity || t("canvas.connecting") }) : t("canvas.agentDisconnected", { engine });
     const dotColor = status.connected ? "#22c55e" : status.enabled ? "#f59e0b" : theme.node.muted;
     return (
-        <button type="button" className="flex h-8 items-center gap-1.5 text-xs transition hover:opacity-75" style={{ color: status.connected ? "#16a34a" : status.enabled ? "#d97706" : theme.node.muted }} onClick={onClick} title={t("canvas.openAgent")}>
-            <span className="size-2 rounded-full" style={{ background: dotColor }} />
+        <button type="button" className="flex h-8 min-w-0 items-center gap-1.5 text-xs transition hover:opacity-75" style={{ color: status.connected ? "#16a34a" : status.enabled ? "#d97706" : theme.node.muted }} onClick={onClick} title={t("canvas.openAgent")}>
+            <span className="size-2 shrink-0 rounded-full" style={{ background: dotColor }} />
             <span className="max-w-[140px] truncate">{label}</span>
         </button>
     );

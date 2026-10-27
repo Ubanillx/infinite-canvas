@@ -8,13 +8,15 @@ import { cn } from "@/lib/utils";
 import { PromptCard } from "./prompt-card";
 import { usePromptList } from "./use-prompt-list";
 
-export function PromptSelectDialog({ open, onOpenChange, onSelect }: { open: boolean; onOpenChange: (open: boolean) => void; onSelect: (prompt: string) => void }) {
+export function PromptSelectDialog({ open, onOpenChange, onSelect, flat = false }: { open: boolean; onOpenChange: (open: boolean) => void; onSelect: (prompt: string) => void; flat?: boolean }) {
     const { message } = App.useApp();
     const { t } = useTranslation();
     const [keyword, setKeyword] = useState("");
     const [selectedTags, setSelectedTags] = useState<string[]>([]);
     const [selectedCategory, setSelectedCategory] = useState(ALL_PROMPTS_OPTION);
     const { query, items, tags: promptTags, categories: promptCategories } = usePromptList({ keyword, tags: selectedTags, category: selectedCategory, enabled: open });
+    const showCategories = promptCategories.length > 1;
+    const showTags = promptTags.length > 1;
     const toggleTag = (tag: string) => {
         if (tag === ALL_PROMPTS_OPTION) return setSelectedTags([]);
         setSelectedTags((items) => (items.includes(tag) ? items.filter((item) => item !== tag) : [...items, tag]));
@@ -27,6 +29,9 @@ export function PromptSelectDialog({ open, onOpenChange, onSelect }: { open: boo
     useEffect(() => {
         if (query.isError) message.error(query.error instanceof Error ? query.error.message : t("prompts.loadFailed"));
     }, [message, query.error, query.isError, t]);
+    useEffect(() => {
+        if (query.data && !promptCategories.includes(selectedCategory)) setSelectedCategory(ALL_PROMPTS_OPTION);
+    }, [promptCategories, query.data, selectedCategory]);
 
     const handleListScroll = (event: UIEvent<HTMLDivElement>) => {
         const target = event.currentTarget;
@@ -34,19 +39,13 @@ export function PromptSelectDialog({ open, onOpenChange, onSelect }: { open: boo
     };
 
     return (
-        <Modal title={t("prompts.library")} open={open} onCancel={() => onOpenChange(false)} footer={null} width={880} centered>
-            <div className="grid h-[62dvh] min-h-0 gap-5 sm:grid-cols-[200px_minmax(0,1fr)]" data-canvas-no-zoom onWheelCapture={(event) => event.stopPropagation()}>
-                <aside className="thin-scrollbar min-h-0 overflow-y-auto border-r border-stone-200 pr-4 dark:border-stone-800">
-                    <div className="mb-2 text-xs font-semibold uppercase tracking-widest text-stone-400 dark:text-stone-500">{t("prompts.category")}</div>
-                    <div className="flex flex-wrap gap-1.5">
-                        {promptCategories.map((category) => (
-                            <Tag.CheckableTag key={category} checked={selectedCategory === category} className={cn("prompt-filter-tag", selectedCategory === category && "is-active")} onChange={() => setSelectedCategory(category)}>
-                                {category === ALL_PROMPTS_OPTION ? t("common.all") : category}
-                            </Tag.CheckableTag>
-                        ))}
-                    </div>
-                    <div className="mb-2 mt-5 text-xs font-semibold uppercase tracking-widest text-stone-400 dark:text-stone-500">{t("prompts.tags")}</div>
-                    <div className="flex flex-wrap gap-1.5">
+        <Modal title={t("prompts.library")} open={open} onCancel={() => onOpenChange(false)} footer={null} width={flat ? "min(1360px, calc(100vw - 48px))" : 880} centered classNames={flat ? { root: "image-workbench-overlay", body: "[&_button]:!shadow-none [&_.ant-card]:!shadow-none [&_.ant-card:hover]:!translate-y-0" } : undefined} styles={flat ? { container: { boxShadow: "none", border: "1px solid var(--border)" } } : undefined}>
+            <div className={cn("grid min-h-0 gap-5", flat ? "h-[min(76dvh,900px)]" : "h-[62dvh]", (showCategories || showTags) && (flat ? "sm:grid-cols-[220px_minmax(0,1fr)]" : "sm:grid-cols-[200px_minmax(0,1fr)]"))} data-canvas-no-zoom onWheelCapture={(event) => event.stopPropagation()}>
+                {showCategories || showTags ? <aside className="thin-scrollbar min-h-0 overflow-y-auto border-r border-stone-200 pr-4 dark:border-stone-800">
+                    {showCategories ? <><div className="mb-2 text-xs font-semibold uppercase tracking-widest text-stone-400 dark:text-stone-500">{t("prompts.category")}</div><div className="flex flex-wrap gap-1.5">
+                        {promptCategories.map((category) => <Tag.CheckableTag key={category} checked={selectedCategory === category} className={cn("prompt-filter-tag", selectedCategory === category && "is-active")} onChange={() => setSelectedCategory(category)}>{category === ALL_PROMPTS_OPTION ? t("common.all") : category}</Tag.CheckableTag>)}
+                    </div></> : null}
+                    {showTags ? <><div className={cn("mb-2 text-xs font-semibold uppercase tracking-widest text-stone-400 dark:text-stone-500", showCategories && "mt-5")}>{t("prompts.tags")}</div><div className="flex flex-wrap gap-1.5">
                         {promptTags.map((tag) => {
                             const active = tag === ALL_PROMPTS_OPTION ? selectedTags.length === 0 : selectedTags.includes(tag);
                             return (
@@ -55,10 +54,10 @@ export function PromptSelectDialog({ open, onOpenChange, onSelect }: { open: boo
                                 </Tag.CheckableTag>
                             );
                         })}
-                    </div>
-                </aside>
+                    </div></> : null}
+                </aside> : null}
                 <section className="flex min-h-0 min-w-0 flex-col">
-                    <Input size="large" prefix={<Search className="size-4 text-stone-400" />} value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder={t("prompts.searchTitle")} />
+                    <Input className="app-search-input" size="large" prefix={<Search className="size-4 text-muted-foreground" />} value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder={t("prompts.searchTitle")} />
                     <div className="thin-scrollbar mt-4 min-h-0 flex-1 overflow-y-auto pr-2" data-canvas-no-zoom onScroll={handleListScroll} onWheelCapture={(event) => event.stopPropagation()}>
                         {query.isLoading ? (
                             <div className="flex h-40 items-center justify-center">

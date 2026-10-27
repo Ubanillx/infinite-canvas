@@ -1,12 +1,27 @@
 import { imageReferenceLabel } from "@/lib/image-reference-prompt";
 import i18n from "@/i18n";
 import { seedanceReferenceLabel } from "@/lib/seedance-video";
-import { getNodeDefinition } from "@/lib/canvas/node-registry";
+import { getNodeDefinition, getNodePluginId } from "@/lib/canvas/node-registry";
+import { getCanvasConnectionIndex, getCanvasNodeIndex } from "@/lib/canvas/canvas-graph-index";
 import { getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
 import { imageToDataUrl } from "@/services/image-storage";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 
 export type CanvasResourceKind = "image" | "video" | "audio" | "text";
+const BUILTIN_RESOURCE_TYPES = new Set<string>(Object.values(CanvasNodeType));
+
+// Only resource derivations may reuse these nodes; rendering and Agent snapshots need live geometry.
+export function reuseCanvasResourceNodes(previous: CanvasNodeData[], nodes: CanvasNodeData[]) {
+    if (previous === nodes) return previous;
+    if (previous.length !== nodes.length) return nodes;
+    for (let index = 0; index < nodes.length; index += 1) {
+        const node = nodes[index];
+        const before = previous[index];
+        if (node === before) continue;
+        if (node.id !== before.id || node.type !== before.type || node.title !== before.title || node.metadata !== before.metadata || !BUILTIN_RESOURCE_TYPES.has(node.type) || getNodePluginId(node.type) !== "builtin") return nodes;
+    }
+    return previous;
+}
 
 export type CanvasResourceReference = {
     id: string;
@@ -28,7 +43,7 @@ export function buildCanvasResourceReferences(nodes: CanvasNodeData[]) {
 }
 
 export async function resolveCanvasReferenceImages(references: CanvasResourceReference[], nodes: CanvasNodeData[]) {
-    const nodesById = new Map(nodes.map((node) => [node.id, node]));
+    const nodesById = getCanvasNodeIndex(nodes).byId;
     return Promise.all(references.filter((reference) => reference.kind === "image").map(async (reference) => {
         const node = nodesById.get(reference.nodeId);
         if (!node) throw new Error(i18n.t("agent.composer.mentions.resourceMissing", { title: reference.title }));
@@ -56,7 +71,7 @@ export function getMentionResourceNodes(nodeId: string, nodes: CanvasNodeData[],
     if (configInputs.length) return configInputs;
     const ownInputs = expandGroupResourceNodes(getContextInputNodes(nodeId, nodes, connections), nodes);
     if (ownInputs.length) return ownInputs;
-    const node = nodes.find((item) => item.id === nodeId);
+    const node = getCanvasNodeIndex(nodes).byId.get(nodeId);
     return node && isResourceNode(node) ? [node] : [];
 }
 
@@ -69,14 +84,15 @@ export function getGenerationResourceNodes(nodeId: string, nodes: CanvasNodeData
 }
 
 function getContextInputNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
-    return connections
-        .filter((connection) => connection.toNodeId === nodeId)
-        .map((connection) => nodes.find((node) => node.id === connection.fromNodeId))
+    const nodeById = getCanvasNodeIndex(nodes).byId;
+    return (getCanvasConnectionIndex(connections).incoming.get(nodeId) || [])
+        .map((connection) => nodeById.get(connection.fromNodeId))
         .filter((node): node is CanvasNodeData => Boolean(node && isCanvasReferenceNode(node, nodes)));
 }
 
 function getConnectedConfigInputNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
-    const configConnection = connections.find((connection) => connection.fromNodeId === nodeId && nodes.find((node) => node.id === connection.toNodeId)?.type === CanvasNodeType.Config);
+    const nodeById = getCanvasNodeIndex(nodes).byId;
+    const configConnection = getCanvasConnectionIndex(connections).outgoing.get(nodeId)?.find((connection) => nodeById.get(connection.toNodeId)?.type === CanvasNodeType.Config);
     if (!configConnection) return [];
     return getContextInputNodes(configConnection.toNodeId, nodes, connections).filter((node) => node.id !== nodeId);
 }
@@ -95,7 +111,7 @@ function expandGroupResourceNodes(inputNodes: CanvasNodeData[], nodes: CanvasNod
 }
 
 export function getGroupResourceNodes(groupId: string, nodes: CanvasNodeData[]) {
-    return nodes.filter((node) => node.metadata?.groupId === groupId && isResourceNode(node));
+    return (getCanvasNodeIndex(nodes).byGroup.get(groupId) || []).filter(isResourceNode);
 }
 
 function labelResourceNodes(nodes: CanvasNodeData[], active: boolean) {

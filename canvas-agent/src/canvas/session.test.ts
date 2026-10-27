@@ -1,6 +1,9 @@
 import { EventEmitter } from "node:events";
 import type { ServerResponse } from "node:http";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { CanvasSession } from "./session.js";
@@ -107,6 +110,46 @@ test("图片附件只允许发起 turn 的标签页读取和落入画布", async
     assert.throws(() => session.getTurnAttachment("second", "attachment-1"), /发起标签页/);
     assert.equal(first.event("tool_call"), undefined);
     assert.equal(second.event("tool_call"), undefined);
+});
+
+test("产物导入只接受工作区内的文本文件并交给当前画布", async (t) => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "canvas-session-artifact-"));
+    t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+    await fs.writeFile(path.join(workspace, "summary.md"), "# 摘要\n内容");
+    const session = new CanvasSession("", "codex", workspace);
+    const first = connect(session, "first");
+    t.after(() => first.close());
+    session.markConversationRunning("");
+    session.setCodexState({ busy: true, threadId: "thread-1", turnId: "turn-1" });
+
+    const result = session.callTool("canvas_import_artifact", { path: path.join(workspace, "summary.md"), title: "摘要" });
+    const call = await waitForEvent(first, "tool_call");
+    const files = (field(call, "input") as { files: Array<Record<string, unknown>> }).files;
+    assert.equal(field(call, "name"), "canvas_import_artifact");
+    assert.equal(files.length, 1);
+    assert.equal(files[0].kind, "text");
+    assert.equal(files[0].title, "摘要");
+    assert.equal(files[0].name, "summary.md");
+    assert.equal(field(files[0], "path"), undefined);
+
+    session.resolveResult("first", { requestId: String(field(call, "requestId")), result: { ok: true } });
+    const imported = (await result) as { files: Array<{ fileId: string; kind: string }> };
+    assert.equal(imported.files[0].kind, "text");
+    assert.ok(imported.files[0].fileId);
+});
+
+test("产物导入拒绝工作区外文件与无工作区的会话", async (t) => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "canvas-session-artifact-"));
+    const outside = path.join(os.tmpdir(), `outside-artifact-${Date.now()}.md`);
+    await fs.writeFile(outside, "x");
+    t.after(() => Promise.all([fs.rm(workspace, { recursive: true, force: true }), fs.rm(outside, { force: true })]));
+    const session = new CanvasSession("", "codex", workspace);
+    const first = connect(session, "first");
+    t.after(() => first.close());
+
+    await assert.rejects(session.callTool("canvas_import_artifact", { path: outside }), /当前工作区内/);
+    await assert.rejects(new CanvasSession().callTool("canvas_import_artifact", { path: outside }), /没有已连接画布/);
+    assert.equal(first.event("tool_call"), undefined);
 });
 
 test("tool result is accepted only from the request client", async (t) => {
@@ -221,9 +264,9 @@ test("new clients receive the current Codex state and later updates", (t) => {
     t.after(() => client.close());
 
     const hello = client.event("hello");
-    assert.equal(field(hello, "protocolVersion"), 6);
+    assert.equal(field(hello, "protocolVersion"), 8);
     assert.deepEqual(field(hello, "workspace"), { activeThreadId: "thread-2" });
-    assert.deepEqual(field(hello, "conversation"), { revision: 1, conversationId: "thread-2", threadId: "thread-2", status: "ready", mcpStatuses: {} });
+    assert.deepEqual(field(hello, "conversation"), { engine: "codex", revision: 1, conversationId: "thread-2", threadId: "thread-2", status: "ready", mcpStatuses: {} });
     assert.deepEqual(field(hello, "codex"), { busy: true, threadId: "thread-2", turnId: "turn-1" });
     assert.deepEqual(field(hello, "pendingApprovals"), [{ requestId: "approval-1", threadId: "thread-2" }]);
 
@@ -253,6 +296,20 @@ test("对话 revision 单调递增且 MCP 全部进入终态前保持 preparing"
     assert.equal(ready.status, "ready");
     assert.equal(ready.threadId, "thread-1");
     revisions.slice(1).forEach((revision, index) => assert.ok(revision > revisions[index]));
+});
+
+test("Pi 会话与 Codex 预热状态按引擎归属", () => {
+    const session = new CanvasSession();
+    session.beginConversation({ engine: "pi" });
+    const pi = session.completePiConversation("pi-thread");
+    assert.equal(pi.engine, "pi");
+    assert.equal(pi.conversationId, "pi-thread");
+    assert.equal(pi.status, "ready");
+    const codex = session.beginConversation({ threadId: "codex-thread" });
+    assert.equal(codex.engine, "codex");
+    assert.equal(codex.status, "preparing");
+    assert.deepEqual(codex.mcpStatuses, {});
+    assert.equal(new CanvasSession("pi-thread", "pi").conversationStateSnapshot.engine, "pi");
 });
 
 test("可选 MCP 失败进入 warning，画布 MCP 失败进入 failed", () => {
@@ -530,9 +587,18 @@ test("切换活动线程会清除上一线程的实时快照", (t) => {
     assert.deepEqual(client.events("agent_event"), []);
 });
 
+/** 等待首个指定类型的 SSE 事件，用于异步准备后再派发工具调用。 */
+async function waitForEvent(client: FakeSseResponse, type: string) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+        const event = client.event(type);
+        if (event !== undefined) return event;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error(`没有收到 ${type} 事件`);
+}
+
 /** 创建用于测试的画布 SSE 连接。 */
-function connect(session: CanvasSession, clientId: string, activeThreadId = "") {
-    const response = new FakeSseResponse();
+function connect(session: CanvasSession, clientId: string, activeThreadId = "") {    const response = new FakeSseResponse();
     session.openEvents(new URL(`http://127.0.0.1/events?clientId=${clientId}`), response as unknown as ServerResponse, activeThreadId);
     return response;
 }

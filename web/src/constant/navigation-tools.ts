@@ -1,9 +1,18 @@
-import { FileText, ImagePlus, Images, Maximize2, Settings2, Video } from "lucide-react";
+import { Cloud, Database, FileText, ImagePlus, Images, KeyRound, LayoutTemplate, Settings2, Shapes, SlidersHorizontal, Video, Waypoints } from "lucide-react";
+import type { ConfigTabKey } from "@/stores/use-config-store";
+
+export const configSections = [
+    { slug: "channels", label: "config.tabs.channels", icon: KeyRound },
+    { slug: "preferences", label: "config.tabs.preferences", icon: SlidersHorizontal },
+    { slug: "prompt-sources", label: "config.tabs.promptSources", icon: Waypoints },
+    { slug: "webdav", label: "config.tabs.webdav", icon: Cloud },
+    { slug: "local-storage", label: "config.tabs.localStorage", icon: Database },
+] as const satisfies ReadonlyArray<{ slug: ConfigTabKey; label: string; icon: typeof Settings2 }>;
 
 export const navigationTools = [
     {
         slug: "canvas",
-        icon: Maximize2,
+        icon: Shapes,
     },
     {
         slug: "image",
@@ -18,6 +27,10 @@ export const navigationTools = [
         icon: FileText,
     },
     {
+        slug: "templates",
+        icon: LayoutTemplate,
+    },
+    {
         slug: "assets",
         icon: Images,
     },
@@ -28,3 +41,9 @@ export const navigationTools = [
 ] as const;
 
 export type NavigationToolSlug = (typeof navigationTools)[number]["slug"];
+
+export const navigationGroups = [
+    { key: "create", tools: navigationTools.slice(0, 3) },
+    { key: "resources", tools: navigationTools.slice(3, 6) },
+    { key: "settings", tools: navigationTools.slice(6) },
+] as const;

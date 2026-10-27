@@ -16,20 +16,25 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "debug": "tsx src/index.ts --debug",
-    "test": "tsx --test src/config.test.ts src/canvas/operations.test.ts src/canvas/session.test.ts src/agent/codex-client.test.ts src/agent/codex-history.test.ts src/agent/message-metadata.test.ts src/skills/store.test.ts src/utils/agent-runtime.test.ts",
+    "test": "tsx --test src/config.test.ts src/canvas/operations.test.ts src/canvas/session.test.ts src/agent/codex-client.test.ts src/agent/codex-history.test.ts src/agent/file-center.test.ts src/agent/message-metadata.test.ts src/agent/pi/pi.test.ts src/skills/store.test.ts src/utils/agent-runtime.test.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "prepack": "npm run build"
   },
   "dependencies": {
+    "@earendil-works/pi-agent-core": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-coding-agent": "1.4.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "@openai/codex": "0.146.0",
+    "@openai/codex": "0.164.0",
     "express": "^5.2.1",
     "gray-matter": "^4.0.3",
     "strip-ansi": "7.2.0",
+    "typebox": "1.3.27",
     "winston": "^3.19.0",
     "yaml": "^2.9.0",
-    "zod": "^3.25.76"
+    "zod": "^3.25.76",
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
@@ -38,7 +43,7 @@
     "typescript": "^5.9.3"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.19.0"
   },
   "publishConfig": {
     "access": "public"

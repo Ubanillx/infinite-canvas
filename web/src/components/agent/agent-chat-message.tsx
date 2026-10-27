@@ -13,7 +13,7 @@ import { AgentCanvasReferencePreview, canvasReferenceIcon, canvasReferenceKindLa
 import { agentInlineTokenClass, agentInlineTokenIconClass, agentInlineTokenMediaClass, agentReferenceMarker, parseAgentInlineTokens } from "./agent-chat-inline-tokens";
 
 const streamdownProps = () => ({
-    className: "agent-streamdown",
+    className: "agent-streamdown [&_p]:!my-2 [&_ul]:!list-disc [&_ul]:!pl-5 [&_ol]:!list-decimal [&_ol]:!pl-5 [&_li]:!my-1.5",
     controls: { code: { copy: true, download: false }, table: { copy: true, download: false, fullscreen: false } },
     linkSafety: { enabled: true, renderModal: (props: LinkSafetyModalProps) => <AgentLinkModal {...props} /> },
     lineNumbers: false,
@@ -87,7 +87,7 @@ function localFilePath(value: string) {
     return /^\/(?:Users|home|private|tmp|Volumes|var\/folders)\//.test(pathname) ? decodeURIComponent(pathname) : "";
 }
 
-export type AgentChatAttachment = { id: string; name: string; url: string };
+export type AgentChatAttachment = { id: string; name: string; url: string; kind?: "image" | "file"; fileId?: string; size?: number; uploadState?: "uploading" | "ready" | "failed"; progress?: number };
 export type AgentChatMessageItem = {
     id: string;
     role: "user" | "assistant" | "system" | "tool" | "error";
@@ -121,17 +121,17 @@ export function AgentChatMessage({ item, theme, onRejectTool, onApproveTool }: {
         return <AgentToolCard title={item.title || tr("toolCall")} text={item.text} detail={item.detail} theme={theme} />;
     }
     return (
-        <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+        <div data-agent-message={item.role} className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
             <div
-                className={isUser ? "min-w-0 max-w-[82%] py-1 text-right text-sm leading-6" : "min-w-0 w-full text-left text-sm leading-6"}
-                style={{ color }}
+                className={isUser ? "min-w-0 max-w-[92%] rounded-xl px-3.5 py-2.5 text-left text-sm leading-7" : "min-w-0 w-full text-left text-sm leading-7"}
+                style={{ color, background: isUser ? `color-mix(in srgb, ${theme.node.text} 4%, transparent)` : undefined }}
             >
                 {isUser ? (
                     <AgentUserMessageContent text={item.text} references={item.canvasReferences || []} skill={item.skill} theme={theme} />
                 ) : (
                     <Streamdown {...streamdownProps()} animated={streamdownAnimation} isAnimating={!!item.streamId}>{item.text}</Streamdown>
                 )}
-                {item.attachments?.length ? <AgentMessageAttachments attachments={item.attachments} alignRight={isUser} /> : null}
+                {item.attachments?.length ? <AgentMessageAttachments attachments={item.attachments} alignRight={isUser} theme={theme} /> : null}
                 {item.meta ? <div className={`mt-1 text-[11px] tabular-nums opacity-55 ${isUser ? "text-right" : ""}`}>{item.meta}</div> : null}
             </div>
         </div>
@@ -142,6 +142,7 @@ function AgentUserMessageContent({ text, references, skill, theme }: { text: str
     const tokens = parseAgentInlineTokens(text, references, skill);
     return (
         <div className="whitespace-pre-wrap break-words">
+            {skill && !tokens.some((token) => token.type === "skill") ? <div className="mb-1.5"><AgentSkillMention skill={skill} theme={theme} /></div> : null}
             {tokens.map((token, index) => token.type === "text"
                 ? token.value
                 : token.type === "skill"
@@ -152,7 +153,7 @@ function AgentUserMessageContent({ text, references, skill, theme }: { text: str
 }
 
 function AgentSkillMention({ skill, theme }: { skill: AgentSkillReference; theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
-    return <span className={agentInlineTokenClass} style={{ background: theme.toolbar.panel, borderColor: theme.node.stroke, color: theme.node.text }} title={skill.path}>/{skill.displayName || skill.name}</span>;
+    return <span className={`${agentInlineTokenClass} truncate align-middle`} style={{ background: theme.toolbar.activeBg, borderColor: theme.node.stroke, color: theme.node.text }} title={`/${skill.name}`}>/{skill.displayName || skill.name}</span>;
 }
 
 function AgentCanvasMention({ reference, theme }: { reference: AgentCanvasReference; theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
@@ -247,19 +248,19 @@ export function AgentToolCard({ title, text, detail, theme }: { title: string; t
     if (kind === "command") return <AgentCommandGroup items={[{ id: title, text, detail }]} theme={theme} />;
     const state = toolCardState(title, text, detail);
     const view = userDetail(detail);
-    const showText = title !== "读取画布" || text !== "已读取当前画布内容";
-    const className = "group min-w-0 rounded-xl border px-3 py-2.5 text-left";
-    const style = { borderColor: theme.node.stroke, background: "transparent", color: theme.node.text };
+    const showText = Boolean(text.trim()) && text !== state.label && (title !== "读取画布" || text !== "已读取当前画布内容");
+    const className = "group min-w-0 py-1 text-left";
+    const style = { color: theme.node.text };
     const content = (
         <>
-            <div className="flex min-w-0 items-center gap-2 text-sm leading-5">
+            <div className="flex min-w-0 items-center gap-2 text-xs leading-5">
                 <span className="shrink-0" style={{ color: state.color }}>{toolIcon(kind, state.icon)}</span>
                 <span className="min-w-0 truncate font-medium">{title}</span>
-                <span className="shrink-0 text-[11px]" style={{ color: state.color }}>{state.label}</span>
-                {view ? <ChevronDown className="ml-auto size-3.5 shrink-0 transition-transform group-open:rotate-180" style={{ color: theme.node.muted }} /> : null}
+                <span className="ml-auto shrink-0 text-[11px]" style={{ color: state.isError ? state.color : theme.node.muted }}>{state.label}</span>
+                {view ? <ChevronDown className="size-3.5 shrink-0 transition-transform group-open:rotate-180" style={{ color: theme.node.muted }} /> : null}
             </div>
             {showText ? (
-                <div className={`mt-1 whitespace-pre-wrap break-words pl-6 text-sm leading-5 ${kind === "command" ? "font-mono text-[12px]" : ""}`} style={{ color: state.isError ? state.color : theme.node.muted }}>
+                <div className="mt-1 whitespace-pre-wrap break-words pl-6 text-xs leading-5" style={{ color: state.isError ? state.color : theme.node.muted }}>
                     {text}
                 </div>
             ) : null}
@@ -268,7 +269,7 @@ export function AgentToolCard({ title, text, detail, theme }: { title: string; t
     if (!view) return <div className={className} style={style}>{content}</div>;
     return (
         <details className={className} style={style}>
-            <summary className="list-none cursor-pointer">{content}</summary>
+            <summary className="list-none cursor-pointer rounded-md focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-4">{content}</summary>
             <div className="ml-6"><AgentDetailBlock detail={view} theme={theme} /></div>
         </details>
     );
@@ -492,24 +493,39 @@ function AgentDetailBlock({ detail, theme }: { detail: UserDetail; theme: (typeo
     );
 }
 
-function AgentMessageAttachments({ attachments, alignRight }: { attachments: AgentChatAttachment[]; alignRight?: boolean }) {
+function AgentMessageAttachments({ attachments, alignRight, theme }: { attachments: AgentChatAttachment[]; alignRight?: boolean; theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
     const { t } = useTranslation();
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+    const images = attachments.filter((item) => item.kind !== "file" && item.url);
+    const files = attachments.filter((item) => item.kind === "file");
     return (
         <>
-            <div className={`mt-1.5 flex flex-wrap gap-1.5 ${alignRight ? "justify-end" : "justify-start"}`}>
-                {attachments.map((item) => (
-                    <img
-                        key={item.id}
-                        src={item.url}
-                        alt={item.name}
-                        title={t("agent.message.viewLarge")}
-                        className="size-10 cursor-zoom-in rounded-lg object-cover"
-                        draggable={false}
-                        onClick={() => setPreviewUrl(item.url)}
-                    />
-                ))}
-            </div>
+            {images.length ? (
+                <div className={`mt-1.5 flex flex-wrap gap-1.5 ${alignRight ? "justify-end" : "justify-start"}`}>
+                    {images.map((item) => (
+                        <img
+                            key={item.id}
+                            src={item.url}
+                            alt={item.name}
+                            title={t("agent.message.viewLarge")}
+                            className="size-10 cursor-zoom-in rounded-lg object-cover"
+                            draggable={false}
+                            onClick={() => setPreviewUrl(item.url)}
+                        />
+                    ))}
+                </div>
+            ) : null}
+            {files.length ? (
+                <div className={`mt-1.5 flex flex-wrap gap-1.5 ${alignRight ? "justify-end" : "justify-start"}`}>
+                    {files.map((item) => (
+                        <span key={item.id} className="inline-flex max-w-56 items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px] leading-4" style={{ borderColor: theme.node.stroke, color: theme.node.muted }} title={item.name}>
+                            <FileText className="size-3.5 shrink-0" />
+                            <span className="truncate">{item.name}</span>
+                            {item.size ? <span className="shrink-0 opacity-60">{formatAttachmentSize(item.size)}</span> : null}
+                        </span>
+                    ))}
+                </div>
+            ) : null}
             {previewUrl ? (
                 <div className="hidden">
                     <Image src={previewUrl} alt={t("agent.message.attachmentPreview")} preview={{ visible: true, src: previewUrl, onVisibleChange: (visible) => !visible && setPreviewUrl(null) }} />
@@ -517,6 +533,10 @@ function AgentMessageAttachments({ attachments, alignRight }: { attachments: Age
             ) : null}
         </>
     );
+}
+
+function formatAttachmentSize(bytes: number) {
+    return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)}MB` : `${Math.max(1, Math.ceil(bytes / 1024))}KB`;
 }
 
 function toolCardState(title: string, text: string, detail?: unknown) {

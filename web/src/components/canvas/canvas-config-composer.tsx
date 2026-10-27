@@ -4,6 +4,7 @@ import { Button, Image } from "antd";
 import { FileText, Group, Image as ImageIcon, Music2, Video, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { placeCaretAtEnd, removeActiveMention, textBeforeCaret } from "@/lib/canvas/contenteditable";
 import i18n from "@/i18n";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -287,17 +288,6 @@ function serializeNodes(nodes: NodeListOf<ChildNode>) {
     return result;
 }
 
-function removeActiveMention() {
-    const selection = window.getSelection();
-    if (!selection?.rangeCount) return;
-    const range = selection.getRangeAt(0);
-    const text = textBeforeCaret();
-    const match = /@([^\s@]*)$/.exec(text);
-    if (!match) return;
-    range.setStart(range.startContainer, Math.max(0, range.startOffset - (match[1] || "").length - 1));
-    range.deleteContents();
-}
-
 function deleteAdjacentReference(key: string) {
     const selection = window.getSelection();
     if (!selection?.rangeCount || !selection.isCollapsed) return false;
@@ -330,30 +320,6 @@ function findReferenceSibling(node: Node, previous: boolean, includeSelf = false
     let current: Node | null = includeSelf ? node : previous ? node.previousSibling : node.nextSibling;
     while (current && current.nodeType === Node.TEXT_NODE && !(current.textContent || "").trim()) current = previous ? current.previousSibling : current.nextSibling;
     return current instanceof HTMLElement && current.dataset.referenceNodeId ? current : null;
-}
-
-function textBeforeCaret() {
-    const selection = window.getSelection();
-    if (!selection?.rangeCount) return "";
-    const range = selection.getRangeAt(0).cloneRange();
-    const editor = closestEditor(range.startContainer);
-    if (!editor) return "";
-    range.setStart(editor, 0);
-    return range.toString();
-}
-
-function closestEditor(node: Node) {
-    const element = node instanceof Element ? node : node.parentElement;
-    return element?.closest("[contenteditable='true']") || null;
-}
-
-function placeCaretAtEnd(element: HTMLElement) {
-    const range = document.createRange();
-    range.selectNodeContents(element);
-    range.collapse(false);
-    const selection = window.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(range);
 }
 
 function parseComposerTokens(value: string): Token[] {

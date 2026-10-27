@@ -1,8 +1,8 @@
 import { forwardRef, useMemo, useRef, useState } from "react";
 import type { CSSProperties, MouseEvent, PointerEvent, TextareaHTMLAttributes } from "react";
 import { createPortal } from "react-dom";
-import { FileText, Image as ImageIcon, Music2, Video } from "lucide-react";
 
+import { CanvasResourcePreview } from "./canvas-resource-preview";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { isImeComposing, isPlainEnterKey } from "@/lib/keyboard-event";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -222,10 +222,13 @@ function MentionMenu({ textarea, caretIndex, references, activeIndex, theme, onS
     const gap = 6;
     // Anchor the menu to the pixel position of the @ caret instead of the textarea edge.
     // The canvas may be scaled: rect uses scaled coordinates while mirror measurements use layout coordinates, so apply the scale.
-    const scale = textarea.offsetWidth ? rect.width / textarea.offsetWidth : 1;
+    const width = textarea.offsetWidth;
+    const scale = width ? rect.width / width : 1;
     const computed = window.getComputedStyle(textarea);
     const lineHeight = (parseFloat(computed.lineHeight) || parseFloat(computed.fontSize) * 1.4 || 20) * scale;
-    const caret = getCaretPoint(textarea, caretIndex);
+    const layoutKey = MIRROR_STYLE_PROPS.map((prop) => computed[prop]).join("\n");
+    // Moving the active suggestion does not change the textarea's intrinsic caret layout.
+    const caret = useMemo(() => getCaretPoint(textarea, caretIndex, computed), [textarea, caretIndex, textarea.value, layoutKey]);
     const caretLeft = rect.left + (caret.left - textarea.scrollLeft) * scale;
     const caretTop = rect.top + (caret.top - textarea.scrollTop) * scale;
     const left = clamp(caretLeft, boundary.left + 8, boundary.right - menuWidth - 8);
@@ -267,7 +270,7 @@ function MentionMenu({ textarea, caretIndex, references, activeIndex, theme, onS
                         selectReference(reference);
                     }}
                 >
-                    <ReferencePreview reference={reference} />
+                    <CanvasResourcePreview reference={reference} />
                     <span className="min-w-0 flex-1">
                         <span className="block font-medium">{reference.label}</span>
                         <span className="block truncate opacity-65">{reference.text || reference.title}</span>
@@ -279,17 +282,6 @@ function MentionMenu({ textarea, caretIndex, references, activeIndex, theme, onS
     );
 }
 
-function ReferencePreview({ reference }: { reference: CanvasResourceReference }) {
-    if (reference.kind === "image" && reference.previewUrl) return <img src={reference.previewUrl} alt="" className="size-9 rounded-md object-cover" />;
-    if (reference.kind === "video" && reference.previewUrl) return <video src={reference.previewUrl} className="size-9 rounded-md bg-black object-cover" muted preload="metadata" />;
-    const Icon = reference.kind === "audio" ? Music2 : reference.kind === "video" ? Video : reference.kind === "image" ? ImageIcon : FileText;
-    return (
-        <span className="grid size-9 shrink-0 place-items-center rounded-md bg-black/10">
-            <Icon className="size-4" />
-        </span>
-    );
-}
-
 function clamp(value: number, min: number, max: number) {
     if (max < min) return min;
     return Math.min(Math.max(value, min), max);
@@ -298,8 +290,7 @@ function clamp(value: number, min: number, max: number) {
 // Mirror the textarea layout in a div to measure the caret at index in unscaled layout coordinates.
 const MIRROR_STYLE_PROPS = ["boxSizing", "width", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth", "fontStyle", "fontVariant", "fontWeight", "fontStretch", "fontSize", "lineHeight", "fontFamily", "textAlign", "textIndent", "letterSpacing", "wordSpacing", "tabSize", "textTransform"] as const;
 
-function getCaretPoint(textarea: HTMLTextAreaElement, index: number) {
-    const computed = window.getComputedStyle(textarea);
+function getCaretPoint(textarea: HTMLTextAreaElement, index: number, computed: CSSStyleDeclaration) {
     const mirror = document.createElement("div");
     const style = mirror.style;
     style.position = "absolute";

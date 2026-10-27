@@ -60,6 +60,8 @@ Codex / 浏览器侧边栏
 
 用户在网页右侧面板输入提示词后，浏览器把请求发送到 `Canvas Agent` 的 `/agent/codex/turn` 接口。`Canvas Agent` 会在本机启动或复用 `codex app-server --stdio`，并给这个 Codex 会话注入同一套 `infinite-canvas` MCP 工具。
 
+面板还可以切换到 Pi 引擎：此时请求走 `/agent/pi/*`，由 `Canvas Agent` 直接用服务端已保存的文本渠道调用模型，不再拉起 `codex app-server`，但工具链路和画布操作完全一致。
+
 所以即使入口在浏览器右侧面板，真正改动画布时仍然会回到同一条工具链路：
 
 ```txt
@@ -76,7 +78,12 @@ Codex -> MCP -> Canvas Agent -> 浏览器画布
 http://127.0.0.1:17371
 ```
 
-启动后会生成 `Connect token`，网页连接时必须携带 token。浏览器连接后会建立一条 SSE 长连接：
+启动后会生成 `Connect token`，网页连接时必须携带 token。浏览器有两条连接路径：
+
+- 默认（同源网关）：浏览器访问 `/api/canvas-agent/*`，服务端读取 `~/.infinite-canvas/canvas-agent.json` 里的地址与 token，注入 `x-canvas-agent-token` 后再转发到本机 Agent。容器部署时只暴露这条路径，Agent 端口不对外。
+- 手动连接：在面板里填写本机地址和 token，或用 `#agentUrl=<地址>&agentToken=<token>` 打开画布，浏览器直接访问该地址。
+
+两条路径都会建立一条 SSE 长连接：
 
 ```txt
 GET /events?token=xxx&clientId=xxx

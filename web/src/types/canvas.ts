@@ -45,6 +45,7 @@ export type CanvasNodeText = {
 };
 
 export type CanvasNodeMetadata = {
+    templateInput?: { name: string; description: string; required: boolean };
     content?: string;
     composerContent?: string;
     prompt?: string;

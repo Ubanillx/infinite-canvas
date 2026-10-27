@@ -91,8 +91,8 @@ export function useAgentBridge(params: AgentBridgeParams) {
 
     useEffect(() => {
         setAgentCanvasContext({ snapshot: agentSnapshot, applyOps: applyAgentOps, undoOps: undoAgentOps, canUndo: Boolean(agentUndoSnapshot) });
-        return () => setAgentCanvasContext(null);
     }, [agentSnapshot, applyAgentOps, agentUndoSnapshot, setAgentCanvasContext, undoAgentOps]);
+    useEffect(() => () => setAgentCanvasContext(null), [setAgentCanvasContext]);
 
     return { applyAgentOps };
 }

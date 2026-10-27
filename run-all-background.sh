@@ -3,32 +3,14 @@ set -Eeuo pipefail
 
 root_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 agent_dir="$root_dir/canvas-agent"
-runtime_dir="${RUNTIME_DIR:-/tmp/infinite-canvas-$UID}"
+action="${1:-start}"
+source "$root_dir/scripts/run-common.sh"
+resolve_runtime_tools
+prepare_runtime_dir
 agent_pid_file="$runtime_dir/canvas-agent.pid"
 web_pid_file="$runtime_dir/preview.pid"
 agent_log="$runtime_dir/canvas-agent.log"
 web_log="$runtime_dir/build-and-preview.log"
-action="${1:-start}"
-if [[ -n "${BUN_BIN:-}" ]]; then
-    bun_bin="$BUN_BIN"
-else
-    bun_bin="$(command -v bun || true)"
-fi
-if [[ -n "${NODE_BIN:-}" ]]; then
-    node_bin="$NODE_BIN"
-else
-    node_bin=""
-    # Prefer the user's nvm Node so the bundled/local Codex versions and auth
-    # environment remain consistent after non-interactive restarts.
-    for candidate in "$HOME"/.nvm/versions/node/*/bin/node; do
-        [[ -x "$candidate" ]] && node_bin="$candidate"
-    done
-    [[ -n "$node_bin" ]] || node_bin="$(command -v node || true)"
-fi
-
-[[ -x "$bun_bin" ]] || bun_bin="$HOME/.bun/bin/bun"
-mkdir -p -m 700 "$runtime_dir"
-chmod 700 "$runtime_dir"
 
 pid_command() {
     ps -p "$1" -o args= 2>/dev/null || true
@@ -112,10 +94,7 @@ start_services() {
     [[ -x node_modules/.bin/tsc ]] || "$bun_bin" install --frozen-lockfile --network-concurrency 4
     "$bun_bin" run build
 
-    if [[ -f "$HOME/.infinite-canvas/canvas-agent.json" ]]; then
-        chmod 700 "$HOME/.infinite-canvas"
-        chmod 600 "$HOME/.infinite-canvas/canvas-agent.json"
-    fi
+    protect_agent_config
 
     old_agent_pid="$(known_agent_pid || true)"
     [[ -z "$old_agent_pid" ]] || stop_known_pid "$old_agent_pid" Agent

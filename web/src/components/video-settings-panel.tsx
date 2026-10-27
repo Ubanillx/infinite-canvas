@@ -2,6 +2,7 @@ import { type ReactNode } from "react";
 import { Slider, Switch } from "antd";
 import { useTranslation } from "react-i18next";
 
+import { SettingGroup } from "@/components/settings/setting-group";
 import i18n from "@/i18n";
 import { ImageSettingsTheme } from "@/components/image-settings-panel";
 import { type CanvasTheme } from "@/lib/canvas-theme";
@@ -30,11 +31,12 @@ type VideoSettingsPanelProps = {
     theme: CanvasTheme;
     showTitle?: boolean;
     className?: string;
+    subtleSelection?: boolean;
 };
 
-export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5" }: VideoSettingsPanelProps) {
+export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5", subtleSelection = false }: VideoSettingsPanelProps) {
     const { t } = useTranslation();
-    if (isSeedanceVideoConfig(config)) return <SeedanceVideoSettingsPanel config={config} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
+    if (isSeedanceVideoConfig(config)) return <SeedanceVideoSettingsPanel config={config} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} subtleSelection={subtleSelection} />;
     const seconds = Number(clampVideoSeconds(config.videoSeconds || "6"));
     const videoMode = normalizeVideoModeValue(config.videoMode);
     const resolution = parseVideoResolution(config.vquality);
@@ -56,18 +58,18 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                 <SettingGroup title={t("settingsPanels.video.quality")} color={theme.node.muted}>
                     <div className="grid grid-cols-4 gap-2.5">
                         {resolutionOptions.map((item) => (
-                            <OptionPill key={item.value} selected={resolution === item.value} theme={theme} onClick={() => selectResolution(item.value)}>
+                            <OptionPill key={item.value} selected={resolution === item.value} theme={theme} subtle={subtleSelection} onClick={() => selectResolution(item.value)}>
                                 {item.label}
                             </OptionPill>
                         ))}
-                        <ResolutionInput value={resolution} theme={theme} onChange={selectResolution} />
+                        <ResolutionInput value={resolution} theme={theme} subtle={subtleSelection} onChange={selectResolution} />
                     </div>
                 </SettingGroup>
                 <SettingGroup title={t("settingsPanels.video.size")} color={theme.node.muted}>
                     <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2.5">
-                        <DimensionInput prefix="W" value={dimensions.width} disabled={selectedRatio === "auto"} theme={theme} onChange={(value) => updateDimension("width", value, dimensions, onConfigChange)} />
+                        <DimensionInput prefix="W" value={dimensions.width} disabled={selectedRatio === "auto"} theme={theme} subtle={subtleSelection} onChange={(value) => updateDimension("width", value, dimensions, onConfigChange)} />
                         <span className="text-lg opacity-45">↔</span>
-                        <DimensionInput prefix="H" value={dimensions.height} disabled={selectedRatio === "auto"} theme={theme} onChange={(value) => updateDimension("height", value, dimensions, onConfigChange)} />
+                        <DimensionInput prefix="H" value={dimensions.height} disabled={selectedRatio === "auto"} theme={theme} subtle={subtleSelection} onChange={(value) => updateDimension("height", value, dimensions, onConfigChange)} />
                     </div>
                 </SettingGroup>
                 <SettingGroup title={t("settingsPanels.video.ratio")} color={theme.node.muted}>
@@ -77,7 +79,7 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                                 key={item.value}
                                 type="button"
                                 className="flex h-[72px] cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border bg-transparent text-sm transition hover:opacity-80"
-                                style={{ borderColor: selectedRatio === item.value ? theme.node.text : theme.node.stroke, color: theme.node.text }}
+                                style={{ borderColor: selectedRatio === item.value && !subtleSelection ? theme.node.text : theme.node.stroke, background: selectedRatio === item.value && subtleSelection ? theme.toolbar.activeBg : "transparent", color: theme.node.text }}
                                 onMouseDown={(event) => event.stopPropagation()}
                                 onClick={() => applySize(resolution, item.value)}
                             >
@@ -90,14 +92,14 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                 <SettingGroup title={t("settingsPanels.video.seconds")} color={theme.node.muted}>
                     <div className="flex items-center gap-3" onMouseDown={(event) => event.stopPropagation()}>
                         <Slider className="min-w-0 flex-1" min={VIDEO_SECONDS_MIN} max={VIDEO_SECONDS_MAX} step={1} value={seconds} onChange={(value) => onConfigChange("videoSeconds", String(Array.isArray(value) ? value[0] : value))} />
-                        <SecondsInput value={seconds} theme={theme} onCommit={(value) => onConfigChange("videoSeconds", String(value))} />
+                        <SecondsInput value={seconds} theme={theme} subtle={subtleSelection} onCommit={(value) => onConfigChange("videoSeconds", String(value))} />
                         <span className="shrink-0 text-sm" style={{ color: theme.node.muted }}>s</span>
                     </div>
                 </SettingGroup>
                 <SettingGroup title={t("settingsPanels.video.mode")} color={theme.node.muted}>
                     <div className="grid grid-cols-2 gap-2.5">
                         {videoModeOptions.map((item) => (
-                            <OptionPill key={item.value} selected={videoMode === item.value} theme={theme} onClick={() => onConfigChange("videoMode", item.value)}>
+                            <OptionPill key={item.value} selected={videoMode === item.value} theme={theme} subtle={subtleSelection} onClick={() => onConfigChange("videoMode", item.value)}>
                                 {t(`settingsPanels.video.modes.${item.labelKey}`)}
                             </OptionPill>
                         ))}
@@ -108,7 +110,7 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
     );
 }
 
-function SeedanceVideoSettingsPanel({ config, onConfigChange, theme, showTitle, className }: VideoSettingsPanelProps) {
+function SeedanceVideoSettingsPanel({ config, onConfigChange, theme, showTitle, className, subtleSelection = false }: VideoSettingsPanelProps) {
     const { t } = useTranslation();
     const resolution = normalizeSeedanceResolution(config.vquality);
     const ratio = normalizeSeedanceRatio(config.size);
@@ -123,7 +125,7 @@ function SeedanceVideoSettingsPanel({ config, onConfigChange, theme, showTitle, 
                 <SettingGroup title={t("settingsPanels.video.resolution")} color={theme.node.muted}>
                     <div className="grid grid-cols-3 gap-2.5">
                         {seedanceResolutionOptions.map((item) => (
-                            <OptionPill key={item.value} selected={resolution === item.value} theme={theme} onClick={() => onConfigChange("vquality", item.value)}>
+                            <OptionPill key={item.value} selected={resolution === item.value} theme={theme} subtle={subtleSelection} onClick={() => onConfigChange("vquality", item.value)}>
                                 {item.label}
                             </OptionPill>
                         ))}
@@ -136,7 +138,7 @@ function SeedanceVideoSettingsPanel({ config, onConfigChange, theme, showTitle, 
                                 key={item.value}
                                 type="button"
                                 className="flex h-[68px] cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border bg-transparent px-1 text-sm transition hover:opacity-80"
-                                style={{ borderColor: ratio === item.value ? theme.node.text : theme.node.stroke, color: theme.node.text }}
+                                style={{ borderColor: ratio === item.value && !subtleSelection ? theme.node.text : theme.node.stroke, background: ratio === item.value && subtleSelection ? theme.toolbar.activeBg : "transparent", color: theme.node.text }}
                                 onMouseDown={(event) => event.stopPropagation()}
                                 onClick={() => onConfigChange("size", item.value)}
                             >
@@ -150,12 +152,12 @@ function SeedanceVideoSettingsPanel({ config, onConfigChange, theme, showTitle, 
                 <SettingGroup title={t("settingsPanels.video.duration")} color={theme.node.muted}>
                     <div className="grid grid-cols-4 gap-2.5">
                         {seedanceDurationOptions.map((value) => (
-                            <OptionPill key={value} selected={duration === value} theme={theme} onClick={() => onConfigChange("videoSeconds", String(value))}>
+                            <OptionPill key={value} selected={duration === value} theme={theme} subtle={subtleSelection} onClick={() => onConfigChange("videoSeconds", String(value))}>
                                 {value === -1 ? t("settingsPanels.video.smart") : `${value}s`}
                             </OptionPill>
                         ))}
                     </div>
-                    <NumberInput value={String(duration)} min={-1} max={15} theme={theme} onChange={(value) => onConfigChange("videoSeconds", value)} />
+                    <NumberInput value={String(duration)} min={-1} max={15} theme={theme} subtle={subtleSelection} onChange={(value) => onConfigChange("videoSeconds", value)} />
                 </SettingGroup>
                 <SettingGroup title={t("settingsPanels.video.output")} color={theme.node.muted}>
                     <div className="grid gap-2 rounded-xl border p-2.5" style={{ borderColor: theme.node.stroke }}>
@@ -206,28 +208,17 @@ function updateDimension(key: "width" | "height", value: number | null, dimensio
     onConfigChange("size", `${key === "width" ? next : dimensions.width}x${key === "height" ? next : dimensions.height}`);
 }
 
-function OptionPill({ selected, disabled = false, theme, onClick, children }: { selected: boolean; disabled?: boolean; theme: CanvasTheme; onClick: () => void; children: ReactNode }) {
+function OptionPill({ selected, disabled = false, theme, onClick, children, subtle = false }: { selected: boolean; disabled?: boolean; theme: CanvasTheme; onClick: () => void; children: ReactNode; subtle?: boolean }) {
     return (
-        <button type="button" disabled={disabled} className="h-9 cursor-pointer rounded-full border px-2 text-sm transition hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-35" style={{ background: "transparent", borderColor: selected ? theme.node.text : theme.node.stroke, color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()} onClick={onClick}>
+        <button type="button" disabled={disabled} aria-pressed={selected} className="h-9 cursor-pointer rounded-full border px-2 text-sm transition-colors hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-35" style={{ background: selected && subtle ? theme.toolbar.activeBg : "transparent", borderColor: selected && !subtle ? theme.node.text : theme.node.stroke, color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()} onClick={onClick}>
             {children}
         </button>
     );
 }
 
-function SettingGroup({ title, color, children }: { title: string; color: string; children: ReactNode }) {
+function ResolutionInput({ value, theme, subtle, onChange }: { value: string; theme: CanvasTheme; subtle: boolean; onChange: (value: string) => void }) {
     return (
-        <div className="space-y-2.5">
-            <div className="text-xs font-medium" style={{ color }}>
-                {title}
-            </div>
-            {children}
-        </div>
-    );
-}
-
-function ResolutionInput({ value, theme, onChange }: { value: string; theme: CanvasTheme; onChange: (value: string) => void }) {
-    return (
-        <label className="flex h-9 overflow-hidden rounded-full border text-sm" style={{ borderColor: theme.node.stroke, color: theme.node.text }}>
+        <label className={`flex h-9 overflow-hidden border text-sm ${subtle ? "rounded-lg bg-muted/20 transition-colors focus-within:bg-muted/40" : "rounded-full"}`} style={{ borderColor: theme.node.stroke, color: theme.node.text }}>
             <input type="number" min={1} className="min-w-0 flex-1 bg-transparent px-3 text-center outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" value={value} onChange={(event) => onChange(event.target.value)} onMouseDown={(event) => event.stopPropagation()} />
             <span className="grid w-7 place-items-center pr-1" style={{ color: theme.node.muted }}>
                 p
@@ -236,7 +227,7 @@ function ResolutionInput({ value, theme, onChange }: { value: string; theme: Can
     );
 }
 
-function SecondsInput({ value, theme, onCommit }: { value: number; theme: CanvasTheme; onCommit: (value: number) => void }) {
+function SecondsInput({ value, theme, subtle, onCommit }: { value: number; theme: CanvasTheme; subtle: boolean; onCommit: (value: number) => void }) {
     const commit = (input: HTMLInputElement) => {
         const next = Number(clampVideoSeconds(input.value));
         input.value = String(next);
@@ -244,7 +235,7 @@ function SecondsInput({ value, theme, onCommit }: { value: number; theme: Canvas
     };
 
     return (
-        <label className="flex h-9 w-[68px] shrink-0 overflow-hidden rounded-xl text-sm" style={{ background: theme.node.fill, color: theme.node.text }}>
+        <label className={`flex h-9 w-[68px] shrink-0 overflow-hidden text-sm ${subtle ? "rounded-lg border bg-muted/20 transition-colors focus-within:bg-muted/40" : "rounded-xl"}`} style={{ background: subtle ? undefined : theme.node.fill, borderColor: subtle ? theme.node.stroke : undefined, color: theme.node.text }}>
             <input
                 type="number"
                 min={VIDEO_SECONDS_MIN}
@@ -262,9 +253,9 @@ function SecondsInput({ value, theme, onCommit }: { value: number; theme: Canvas
     );
 }
 
-function DimensionInput({ prefix, value, disabled, theme, onChange }: { prefix: string; value: number; disabled: boolean; theme: CanvasTheme; onChange: (value: number | null) => void }) {
+function DimensionInput({ prefix, value, disabled, theme, subtle, onChange }: { prefix: string; value: number; disabled: boolean; theme: CanvasTheme; subtle: boolean; onChange: (value: number | null) => void }) {
     return (
-        <label className="flex h-9 overflow-hidden rounded-xl text-sm" style={{ background: theme.node.fill, color: theme.node.text, opacity: disabled ? 0.55 : 1 }}>
+        <label className={`flex h-9 overflow-hidden text-sm ${subtle ? "rounded-lg border bg-muted/20 transition-colors focus-within:bg-muted/40" : "rounded-xl"}`} style={{ background: subtle ? undefined : theme.node.fill, borderColor: subtle ? theme.node.stroke : undefined, color: theme.node.text, opacity: disabled ? 0.55 : 1 }}>
             <span className="grid w-9 place-items-center" style={{ color: theme.node.muted }}>
                 {prefix}
             </span>
@@ -281,8 +272,8 @@ function SizePreview({ width, height, color }: { width: number; height: number; 
     return <span className="rounded-[3px] border-2" style={{ width: previewWidth, height: previewHeight, borderColor: color }} />;
 }
 
-function NumberInput({ value, min, max, theme, onChange }: { value: string; min: number; max: number; theme: CanvasTheme; onChange: (value: string) => void }) {
-    return <input type="number" min={min} max={max} className="h-9 rounded-full border bg-transparent px-3 text-center text-sm outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" style={{ borderColor: theme.node.stroke, color: theme.node.text, WebkitTextFillColor: theme.node.text }} value={value} onChange={(event) => onChange(event.target.value)} onMouseDown={(event) => event.stopPropagation()} />;
+function NumberInput({ value, min, max, theme, subtle, onChange }: { value: string; min: number; max: number; theme: CanvasTheme; subtle: boolean; onChange: (value: string) => void }) {
+    return <input type="number" min={min} max={max} className={`h-9 border px-3 text-center text-sm outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none ${subtle ? "rounded-lg bg-muted/20 transition-colors focus:bg-muted/40" : "rounded-full bg-transparent"}`} style={{ borderColor: theme.node.stroke, color: theme.node.text, WebkitTextFillColor: theme.node.text }} value={value} onChange={(event) => onChange(event.target.value)} onMouseDown={(event) => event.stopPropagation()} />;
 }
 
 

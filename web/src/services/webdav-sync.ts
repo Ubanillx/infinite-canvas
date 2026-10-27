@@ -165,9 +165,7 @@ function buildWebdavUrl(config: WebdavSyncConfig, path: string) {
 }
 
 function buildWebdavRequestUrl(config: WebdavSyncConfig, path: string) {
-    const directUrl = buildWebdavUrl(config, path);
-    if (config.url.trim() !== "/api/webdav") throw new Error(webdavText("connectionFailed"));
-    return directUrl;
+    return buildWebdavUrl({ ...config, url: "/api/webdav" }, path);
 }
 
 function normalizePath(path: string) {
@@ -179,13 +177,13 @@ function assertWebdavConfig(config: WebdavSyncConfig) {
 }
 
 function webdavRootConfig(config: WebdavSyncConfig) {
-    return config.url.trim() === "/api/webdav" ? { ...config, directory: "" } : config;
+    return { ...config, directory: "" };
 }
 
 async function throwWebdavError(response: Response, fallback: string): Promise<never> {
     const detail = await response.text().catch(() => "");
     if (response.status === 401) {
-        if (detail.includes("Workspace authentication required")) throw new Error(webdavText("workspaceAuthenticationFailed"));
+        if (detail.includes("Workspace selection required")) throw new Error(webdavText("workspaceSelectionRequired"));
         throw new Error(webdavText("authenticationFailed"));
     }
     if (response.status === 403) {

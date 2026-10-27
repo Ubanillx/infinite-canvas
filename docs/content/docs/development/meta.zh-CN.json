@@ -4,7 +4,9 @@
   "defaultOpen": true,
   "pages": [
     "local-development",
+    "debug-tooling",
     "canvas-data-structure",
-    "local-codex-canvas"
+    "local-codex-canvas",
+    "theme-system"
   ]
 }

@@ -1,0 +1,15 @@
+export const lightPalette = {
+    background: "#fafafa",
+    surface: "#fefefe",
+    soft: "#f4f4f0",
+    hover: "#efefeb",
+    border: "#e9e9e4",
+    text: "#292b28",
+    mutedText: "#676963",
+    faintText: "#92948e",
+    primary: "#30332f",
+    primaryHover: "#20221f",
+    primaryText: "#ffffff",
+    shadow: "0 1px 2px rgba(42, 43, 38, 0.03), 0 8px 24px rgba(42, 43, 38, 0.04)",
+    shadowHover: "0 3px 8px rgba(42, 43, 38, 0.04), 0 14px 30px rgba(42, 43, 38, 0.06)",
+} as const;

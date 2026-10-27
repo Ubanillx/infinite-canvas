@@ -11,8 +11,9 @@ export const AGENT_PROMPT = fs.readFileSync(new URL("../agent-instructions.md", 
 const initializedWorkspaces = new Set<string>();
 const requestWorkspaceStates = new Map<string, SiteWorkspaceConfig>();
 
-export type SiteWorkspaceConfig = { workspacePath: string; activeThreadId?: string; pinnedThreadIds?: string[] };
-export type CanvasAgentConfig = { url: string; token: string; origins?: string[]; workspace?: SiteWorkspaceConfig };
+export type AgentEngine = "codex" | "pi";
+export type SiteWorkspaceConfig = { workspacePath: string; activeThreadId?: string; engine?: AgentEngine; activeThreads?: Partial<Record<AgentEngine, string>>; pinnedThreadIds?: string[] };
+export type CanvasAgentConfig = { url: string; token: string; origins?: string[]; workspace?: SiteWorkspaceConfig; workspaces?: Record<string, SiteWorkspaceConfig> };
 
 /** 读取本地 Canvas Agent 配置，不存在时生成默认配置。 */
 export function loadConfig(create = false): CanvasAgentConfig {
@@ -63,7 +64,7 @@ export function ensureRequestWorkspace(config: CanvasAgentConfig, workspaceId?: 
         return current;
     }
     const workspacePath = path.join(CONFIG_DIR, "codex-workspaces", normalized);
-    const workspace: SiteWorkspaceConfig = { workspacePath };
+    const workspace: SiteWorkspaceConfig = { ...config.workspaces?.[normalized], workspacePath };
     requestWorkspaceStates.set(normalized, workspace);
     initializeWorkspace(workspacePath);
     return workspace;
@@ -76,6 +77,8 @@ export function updateRequestWorkspace(config: CanvasAgentConfig, workspaceId: s
     const current = ensureRequestWorkspace(config, normalized);
     const next = { ...current, ...patch, workspacePath: current.workspacePath };
     requestWorkspaceStates.set(normalized, next);
+    config.workspaces = { ...config.workspaces, [normalized]: next };
+    saveConfig(config);
     initializeWorkspace(next.workspacePath);
     return next;
 }
@@ -85,7 +88,7 @@ export function updateSiteWorkspace(config: CanvasAgentConfig, patch: Partial<Si
     const current = ensureSiteWorkspace(config);
     const workspacePath = patch.workspacePath ? resolveWorkspacePath(patch.workspacePath) : current.workspacePath;
     const next = { ...current, ...patch, workspacePath };
-    config.workspace = { workspacePath: next.workspacePath, activeThreadId: next.activeThreadId, pinnedThreadIds: next.pinnedThreadIds };
+    config.workspace = next;
     initializeWorkspace(workspacePath);
     saveConfig(config);
     return config.workspace;

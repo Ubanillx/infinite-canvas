@@ -1,0 +1,20 @@
+{
+  "name": "infinite-canvas-dev",
+  "private": true,
+  "scripts": {
+    "dev": "bun scripts/local.mjs dev",
+    "dev:agent": "bun scripts/local.mjs agent",
+    "dev:server": "node scripts/dev-run.mjs",
+    "dev:smoke": "node scripts/dev-smoke.mjs",
+    "dev:probe": "node scripts/dev-probe.mjs",
+    "dev:browse": "node scripts/dev-browse.mjs",
+    "dev:shot": "node scripts/dev-shot.mjs",
+    "test": "bun scripts/local.mjs test",
+    "test:e2e": "bun scripts/local.mjs e2e",
+    "test:e2e:ui": "bun scripts/local.mjs e2e --ui",
+    "test:report": "node scripts/local.mjs report",
+    "logs": "node scripts/dev-logs.mjs",
+    "logs:check": "bun scripts/local.mjs logs",
+    "doctor": "bun scripts/local.mjs doctor"
+  }
+}

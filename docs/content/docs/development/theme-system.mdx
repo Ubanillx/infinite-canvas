@@ -1,0 +1,46 @@
+---
+title: Interface Design System
+description: Shared theme, layout, and interaction rules
+---
+
+# Interface Design System
+
+The application uses neutral semantic tokens for shared UI and a separate canvas theme for the editor surface. Light mode uses near-white surfaces, warm-gray boundaries, and charcoal text; dark mode is adapted independently. Do not copy colors or sample data from a mockup into the product.
+
+## Light mode tokens
+
+- `background`: `#fafafa`, the page and application background; the sidebar uses `#fbfbfb`.
+- `surface`: `#fefefe`, cards, popovers, and panels.
+- `soft`: `#f4f4f0`, selected and secondary surfaces.
+- `hover`: `#efefeb`, hover feedback.
+- `border`: `#e9e9e4`, quiet boundaries.
+- `text`: `#292b28`, primary text.
+- `mutedText`: `#676963`, secondary text.
+- `primary`: `#30332f`, primary controls and active marks.
+
+Use semantic classes such as `bg-background`, `bg-card`, `bg-muted`, `text-foreground`, `text-muted-foreground`, and `border-border` in shared UI. Treat `web/src/lib/light-palette.ts` and theme variables as the color source of truth rather than defining another palette per page.
+
+## Page layout
+
+- Canvas, prompt, and asset libraries share a directory rhythm: title and short description on the left, primary actions on the right, then search, filters, and content. Lists and studios use available width; reading forms and dialogs may have content-based width limits.
+- Group content by folder, project, or type. Empty states explain the next step instead of showing sample cards. Toolbars wrap on narrow screens without covering controls or overflowing horizontally.
+- Image and video studios give priority to references, results, and the prompt. Settings and history open in side panels as needed; the main area makes room for an open panel, and settings are directly visible without nested disclosure.
+
+## Components and feedback
+
+- Distinguish cards, fields, and selections with thin borders and slight surface changes. Avoid broad shadows, decorative dot grids, high-contrast outlines, and expanding click shadows; a small soft shadow is acceptable where a floating layer needs separation.
+- antd input controls (`Input`, `Input.TextArea`, `InputNumber`, `Select`) use only slight surface changes and thin borders across default, hover, and focus: no 2px expanding focus ring, and no near-white outline in dark mode. These colors live in the component tokens in `web/src/lib/app-theme.ts`; individual components do not override them.
+- Ordinary forms, such as the prompt editor, use those global states directly without inline border or shadow overrides. The image and video studio prompt fields need a full-width tinted surface, so they reuse the shared `app-prompt-input` class, which only layers the surface steps while borders and focus still come from the global tokens.
+- Search fields across the app use slight surface changes for default, hover, and focus states without prominent borders or shadows; focus must remain perceptible.
+- Make primary actions clear without oversizing them. Group related actions nearby instead of displaying every function at once; controls remain easy to click and icon-only actions have accessible names.
+- Button presses use only a slight brightness change, without expanding waves or press shadows. Destructive actions keep their semantic color, and keyboard focus remains perceptible.
+- Give inputs usable space. The prompt resizes by dragging its edge without a separate handle placeholder. Show the parameter summary as secondary text beside Generate; keep keyboard focus perceptible.
+- Preserve image proportions in thumbnails. In asset pickers and resource cards, clicking an image opens a preview; inserting or deleting uses a separate button. Related dialogs use consistent, viewport-aware sizes and scroll long lists inside.
+
+These rules apply to ordinary resource pages and creation studios. The canvas editor and branded home page may use layouts suited to their distinct tasks rather than the library layout.
+
+## Canvas mode
+
+`web/src/lib/canvas-theme.ts` maps the same neutral palette to the canvas grid, nodes, panels, and toolbar. Canvas-specific controls may use the theme object when they need inline drawing colors; ordinary page controls should use the shared semantic tokens.
+
+Dark mode keeps its existing warm charcoal direction and remains independent from the light palette.

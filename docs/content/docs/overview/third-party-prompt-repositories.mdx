@@ -1,13 +1,39 @@
 ---
 title: Third-party Prompt Sources
-description: The seven third-party prompt sources built into the application
+description: Standard JSON prompt source format and public repositories to add manually
 ---
 
 # Third-party Prompt Sources
 
-The application includes the following seven sources. Prompt data is read as standard JSON from the [Image Prompts](https://github.com/yukkcat/image-prompts) registry; the original project links identify the upstream content.
+No third-party prompt source is bundled any more. A fresh configuration starts with an empty source list: add standard JSON URLs on the **Prompt sources** settings page yourself. Built-in sources found in an existing server configuration are removed, while custom sources and their schedule are preserved.
 
-| Source | Original project |
+## Fetch rules
+
+- The server proxies every fetch (`/api/prompt-source/:id`); the browser never contacts external hosts directly.
+- Only public HTTPS addresses are accepted; private hosts, internal networks, and redirects are rejected.
+- The response root must be an array, and each item needs a non-empty `title` and `prompt`, otherwise that entry is skipped. A non-array root fails the whole refresh.
+- A failed refresh keeps the last successful cache and reports source status with the last success time.
+
+## Item fields
+
+| Field | Meaning |
+| --- | --- |
+| `title` | Required prompt title |
+| `prompt` | Required prompt body |
+| `description` | Description text |
+| `coverUrl` | Cover image; falls back to the first reference image |
+| `referenceImageUrls` | Reference or result images; relative paths are allowed |
+| `preview` | Preview content |
+| `tags` | Tag list used for filtering |
+| `author` / `sourceUrl` | Author and upstream link |
+| `imageMode` / `imageModel` / `imageSize` / `imageCount` | Optional generation hints |
+| `createdAt` / `updatedAt` | ISO timestamps |
+
+## Public repositories
+
+[Image Prompts](https://github.com/yukkcat/image-prompts) collects standard JSON from several open-source prompt projects; pick the file URLs you need and add them as sources. The projects below are useful for browsing source content:
+
+| Project | URL |
 | --- | --- |
 | Banana Prompt Quicker | https://glidea.github.io/banana-prompt-quicker/ |
 | DavidWu GPT Image 2 | https://github.com/davidwuw0811-boop/awesome-gpt-image2-prompts |
@@ -16,5 +42,3 @@ The application includes the following seven sources. Prompt data is read as sta
 | Awesome GPT-4o | https://github.com/ImgEdify/Awesome-GPT4o-Image-Prompts |
 | YouMind GPT Image 2 | https://github.com/YouMind-OpenLab/awesome-gpt-image-2 |
 | YouMind Nano Banana Pro | https://github.com/YouMind-OpenLab/awesome-nano-banana-pro-prompts |
-
-Each built-in source can be enabled and refreshed independently. Settings also supports custom standard JSON sources and scheduled bulk refreshes; a failed refresh keeps the source's last successful cache available.

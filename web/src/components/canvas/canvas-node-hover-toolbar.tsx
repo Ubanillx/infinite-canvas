@@ -8,14 +8,13 @@ import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { formatBytes, getDataUrlByteSize } from "@/lib/image-utils";
 import { useCopyText } from "@/hooks/use-copy-text";
 import { useThemeStore } from "@/stores/use-theme-store";
-import { CanvasNodeType, type CanvasNodeData, type ViewportTransform } from "@/types/canvas";
+import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import type { CanvasNodeToolbarItem } from "@/types/canvas-plugin";
 import { ImageToolSettingsModal, type ImageToolbarSettingsTool } from "./canvas-image-toolbar-settings-modal";
 import { IMAGE_QUICK_TOOLS_STORAGE_KEY, buildImageToolbarTools, defaultImageQuickToolIds, readImageQuickToolsConfig, type ImageQuickToolId } from "./canvas-image-toolbar-tools";
 
 type CanvasNodeHoverToolbarProps = {
     node: CanvasNodeData | null;
-    viewport: ViewportTransform;
     onKeep: (nodeId: string) => void;
     onLeave: () => void;
     onInfo: (node: CanvasNodeData) => void;
@@ -53,7 +52,6 @@ type ToolbarTool = {
 
 export function CanvasNodeHoverToolbar({
     node,
-    viewport,
     onKeep,
     onLeave,
     onInfo,
@@ -107,8 +105,6 @@ export function CanvasNodeHoverToolbar({
     if (!node) return null;
 
     const activeNode = node;
-    const left = viewport.x + (node.position.x + node.width / 2) * viewport.k;
-    const top = viewport.y + node.position.y * viewport.k - 14;
     const isImage = node.type === CanvasNodeType.Image;
     const isVideo = node.type === CanvasNodeType.Video;
     const isAudio = node.type === CanvasNodeType.Audio;
@@ -187,7 +183,7 @@ export function CanvasNodeHoverToolbar({
             <div
                 className="absolute z-[70] flex h-12 -translate-x-1/2 -translate-y-full items-center overflow-visible rounded-[18px] border border-black/10 bg-white text-[15px] text-[#242529] shadow-[0_8px_28px_rgba(15,23,42,.12)]"
                 data-node-toolbar={node.id}
-                style={{ left, top }}
+                style={{ left: 0, top: 0 }}
                 onMouseEnter={() => onKeep(node.id)}
                 onMouseLeave={() => {
                     if (!imageToolSettingsOpen) onLeave();
@@ -220,10 +216,10 @@ export function CanvasNodeInfoModal({ node, open, onClose }: { node: CanvasNodeD
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
     const [view, setView] = useState<"info" | "json">("info");
-    const imageBytes = node?.type === CanvasNodeType.Image && node.metadata?.content ? getDataUrlByteSize(node.metadata.content) : 0;
+    const imageBytes = useMemo(() => open && view === "info" && node?.type === CanvasNodeType.Image && node.metadata?.content ? getDataUrlByteSize(node.metadata.content) : 0, [node?.type, node?.metadata?.content, open, view]);
     const batchCount = node?.type === CanvasNodeType.Image ? node.metadata?.images?.length || 0 : 0;
     const json = useMemo(() => {
-        if (!node) return "";
+        if (!open || view !== "json" || !node) return "";
         return JSON.stringify(
             node,
             (key, value) => {
@@ -234,7 +230,7 @@ export function CanvasNodeInfoModal({ node, open, onClose }: { node: CanvasNodeD
             },
             2,
         );
-    }, [node]);
+    }, [node, open, view]);
 
     useEffect(() => {
         if (open) setView("info");

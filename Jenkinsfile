@@ -57,6 +57,8 @@ pipeline {
         }
         stage('Container smoke test') {
             steps {
+                // 用隔离的 PostgreSQL + RustFS 跑一次完整启动与健康检查，
+                // 结束后删除容器和临时卷，不影响宿主机上已有的中间件。
                 sh 'bash deploy/smoke-test.sh'
             }
         }
@@ -79,6 +81,8 @@ pipeline {
                 }
             }
             sh 'rm -f .ci/image.tar.gz .ci/release.tar.gz'
+            // 冒烟阶段异常中断时兜底清理隔离栈，避免残留容器占用端口和磁盘。
+            sh 'docker compose -p infinite-canvas-smoke -f docker-compose.smoke.yml down -v --remove-orphans >/dev/null 2>&1 || true'
         }
     }
 }

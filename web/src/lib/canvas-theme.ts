@@ -1,33 +1,35 @@
+import { lightPalette } from "@/lib/light-palette";
+
 export type CanvasColorTheme = "light" | "dark";
 export type CanvasBackgroundMode = "dots" | "lines" | "blank";
 
 export const canvasThemes = {
     light: {
         canvas: {
-            background: "#f4f2ed",
-            dot: "rgba(68,64,60,.28)",
-            line: "rgba(68,64,60,.12)",
-            selectionStroke: "#1c1917",
-            selectionFill: "rgba(28,25,23,.06)",
+            background: lightPalette.background,
+            dot: "rgba(70, 71, 65, .2)",
+            line: "rgba(70, 71, 65, .09)",
+            selectionStroke: lightPalette.primary,
+            selectionFill: "rgba(48, 51, 47, .06)",
         },
         node: {
-            label: "#57534e",
-            fill: "#e7e5df",
-            panel: "#fbfaf7",
-            stroke: "#d6d3ca",
-            activeStroke: "#1c1917",
-            placeholder: "#8a8479",
-            text: "#292524",
-            muted: "#78716c",
-            faint: "#a8a29e",
+            label: lightPalette.mutedText,
+            fill: lightPalette.soft,
+            panel: lightPalette.surface,
+            stroke: lightPalette.border,
+            activeStroke: lightPalette.primary,
+            placeholder: lightPalette.faintText,
+            text: lightPalette.text,
+            muted: lightPalette.mutedText,
+            faint: lightPalette.faintText,
         },
         toolbar: {
-            panel: "rgba(251,250,247,.96)",
-            border: "#d6d3ca",
-            item: "#57534e",
-            itemHover: "#e7e5df",
-            activeBg: "#e7e5df",
-            activeText: "#292524",
+            panel: "rgba(255, 255, 255, .96)",
+            border: lightPalette.border,
+            item: lightPalette.mutedText,
+            itemHover: lightPalette.hover,
+            activeBg: lightPalette.soft,
+            activeText: lightPalette.text,
         },
     },
     dark: {

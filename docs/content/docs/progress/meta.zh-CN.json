@@ -5,7 +5,10 @@
   "pages": [
     "[更新日志](/zh-CN/docs/progress/changelog)",
     "local-agent-integration-plan",
+    "agent-file-attachments-plan",
     "prompt-chip-input-plan",
+    "canvas-template-plan",
+    "canvas-media-lifecycle-plan",
     "pending-test",
     "todo"
   ]

@@ -1,0 +1,85 @@
+---
+title: Agent 文件附件与产物回画布
+description: 让画布内的 Codex 像桌面版一样读取任意附件，并把工作产物导回画布生图
+---
+
+# Agent 文件附件与产物回画布
+
+本文档记录画布 AI 助手从"只能传图片"扩展到"可读取任意文件、产物回画布"的实施设计与边界。
+
+## 问题
+
+侧边栏此前只支持图片附件，原因是四处实现都写死了图片：前端 `accept="image/*"` 并过滤 `image/*`、附件以 Data URL 走 30MB JSON 请求体、Canvas Agent 只把 `data:image/` 写入临时文件后作为 `localImage` 传给 Codex、`canvas_create_attachment_nodes` 只认图片。
+
+Codex app-server 的 `turn/start.input` 只有 `text`、`image`、`localImage`、`skill`、`mention` 五种，没有通用文件项。Codex 桌面版能读附件，本质是"文件在工作目录里 + 模型自己读取"，因此本方案不新增协议，只把文件可靠地放进工作区并把路径写进提示词。
+
+## 方案对比
+
+- 方案 A：附件落到临时目录 + 提示词清单。改动最小，但受 30MB 请求体与 base64 膨胀限制，无法复用。
+- **方案 B（当前实现）**：本地文件中心。流式上传、按 `fileId` 复用、产物导入画布。
+- 方案 C：服务端对象存储 + 签名下载。跨设备需要，但改动面最大，暂不实现。
+
+## 实现
+
+### 文件中心
+
+`canvas-agent/src/agent/file-center.ts`，每个工作区一份，落在 `<workspacePath>/.infinite-canvas/files/`：
+
+```txt
+files/
+  index.json          { version: 1, files: [ ... ] }
+  <fileId>/<原文件名>
+```
+
+- 上传走 `POST /agent/files?name=`，请求体即字节，由 Express 在 JSON 解析器之前单独分流；上传阶段不绑定会话，发送时才按 `fileId` 绑定到实际线程。
+- 先写字节再入索引，失败整目录回滚；索引写入用临时文件 rename，版本不符拒绝覆盖。
+- 只按 `fileId` 读取（`GET /agent/files/:fileId/content`），不接受任意路径。
+- 文件名只用于展示和落盘，写入前去掉路径分隔符与控制字符。
+
+### 提示词
+
+`withAttachmentContext` 在图片附件清单之外追加文件段落，给出 `fileId`、名称、类型、大小和绝对路径，并提示可用 `canvas_import_artifact` 交回画布。文件内容不内联，避免占用上下文。
+
+### 产物回画布
+
+新增 MCP 工具 `canvas_import_artifact({ path, mode?, title?, x?, y?, gap?, direction? })`：
+
+1. Agent 校验路径 `realpath` 落在当前工作区内、是普通文件、非符号链接、不超过 50 MiB。
+2. 按 MIME 与扩展名判定 `image` 或 `text`，其他类型明确拒绝并返回原因。
+3. 复制进文件中心后通过 SSE `tool_call` 交给网页。
+4. 网页读取字节：图片 `uploadImage` + 图片节点，文本读取为文本节点，再 `applyOps` 并上报画布状态。
+
+### 消息元数据 v2
+
+文件附件没有预览图，只有 `fileId`，因此存储从 v1 升到 v2。升级时先整目录备份为 `message-metadata.v1-backup-<时间戳>`，逐条重写后写 `manifest.json v2`；任一步失败中止并保留原文件。
+
+## 边界值
+
+| 项 | 值 | 失败处理 |
+|---|---|---|
+| 单文件 | 100 MiB | 413，落盘前拒绝 |
+| 单条消息文件数 | 10 | 超出部分忽略并提示 |
+| 单轮文件总量 | 300 MiB | 阻止发送 |
+| 工作区文件总量 | 2 GiB | 507，提示清理 |
+| 产物导入单文件 | 50 MiB | 工具返回错误给模型 |
+| 已绑定文件保留 | 30 天 | 消息中标记不可用 |
+| 未发送文件 | 24 小时 | 定时清理 |
+| 清理节流 | 每小时最多一次 | 写日志，不阻塞请求 |
+
+## 安全
+
+- 文件读取只按 `fileId`，路径穿越无效。
+- 产物必须是工作区内普通文件，跨工作区一律拒绝。
+- 沿用现有 token 与 Origin 白名单；二进制不进入日志。
+- 文件在工作区内，`workspace-write` 沙箱读取无需额外授权；执行命令仍按当前权限模式弹审批。
+
+## 平台差异
+
+- Pi 引擎没有 shell 也没有文件读取工具，隐藏文件上传入口并拒绝带 `fileId` 的请求。
+- Docker 部署下文件中心位于 `/home/node/.infinite-canvas` 卷，重启不丢，但不支持跨设备（需要方案 C）。
+
+## 后续
+
+1. 文件节点类型（PDF、压缩包等可直接上画布），需要同时改动节点渲染、缩略图、资源派生和模板预览。
+2. 图片也改走文件中心，去掉 28 MB JSON 限制并简化 `turnAttachments`。
+3. 方案 C：文件同步到对象存储并签名下载，服务端清单升 v2。

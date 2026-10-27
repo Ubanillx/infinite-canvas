@@ -4,26 +4,13 @@ set -Eeuo pipefail
 root_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 web_dir="$root_dir/web"
 port="${PORT:-3100}"
-runtime_dir="${RUNTIME_DIR:-/tmp/infinite-canvas-$UID}"
+agent_url="${VITE_CANVAS_AGENT_URL:-/api/canvas-agent}"
+source "$root_dir/scripts/run-common.sh"
+resolve_runtime_tools
+set_runtime_dir
+mkdir -p "$runtime_dir"
 pid_file="$runtime_dir/preview.pid"
 log_file="$runtime_dir/build-and-preview.log"
-bun_bin="${BUN_BIN:-}"
-node_bin="${NODE_BIN:-}"
-agent_url="${VITE_CANVAS_AGENT_URL:-/api/canvas-agent}"
-
-if [[ -z "$bun_bin" ]]; then
-    bun_bin="$(command -v bun || true)"
-fi
-if [[ ! -x "$bun_bin" && -x "$HOME/.bun/bin/bun" ]]; then
-    bun_bin="$HOME/.bun/bin/bun"
-fi
-
-if [[ -z "$node_bin" ]]; then
-    for candidate in "$HOME"/.nvm/versions/node/*/bin/node; do
-        [[ -x "$candidate" ]] && node_bin="$candidate"
-    done
-    [[ -n "$node_bin" ]] || node_bin="$(command -v node || true)"
-fi
 
 if [[ ! "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
     echo "Invalid PORT: $port" >&2
@@ -44,7 +31,6 @@ if [[ ! -f "$web_dir/node_modules/vite/bin/vite.js" ]]; then
     exit 1
 fi
 
-mkdir -p "$runtime_dir"
 old_pid=""
 
 is_project_preview() {

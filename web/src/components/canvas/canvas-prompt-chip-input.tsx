@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { Image } from "antd";
-import { FileText, Image as ImageIcon, Music2, Video } from "lucide-react";
 
+import { CanvasResourcePreview } from "./canvas-resource-preview";
+import { closestEditor, placeCaretAtEnd, removeActiveMention, textBeforeCaret } from "@/lib/canvas/contenteditable";
 import i18n from "@/i18n";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { isImeComposing, isPlainEnterKey } from "@/lib/keyboard-event";
@@ -249,7 +250,7 @@ function MentionMenu({ rect, references, activeIndex, theme, onSelect }: { rect:
                         selectReference(reference);
                     }}
                 >
-                    <ReferencePreview reference={reference} />
+                    <CanvasResourcePreview reference={reference} />
                     <span className="min-w-0 flex-1">
                         <span className="block font-medium">{reference.label}</span>
                         <span className="block truncate opacity-65">{reference.text || reference.title}</span>
@@ -258,17 +259,6 @@ function MentionMenu({ rect, references, activeIndex, theme, onSelect }: { rect:
             ))}
         </div>,
         document.body,
-    );
-}
-
-function ReferencePreview({ reference }: { reference: CanvasResourceReference }) {
-    if (reference.kind === "image" && reference.previewUrl) return <img src={reference.previewUrl} alt="" className="size-9 rounded-md object-cover" />;
-    if (reference.kind === "video" && reference.previewUrl) return <video src={reference.previewUrl} className="size-9 rounded-md bg-black object-cover" muted preload="metadata" />;
-    const Icon = reference.kind === "audio" ? Music2 : reference.kind === "video" ? Video : reference.kind === "image" ? ImageIcon : FileText;
-    return (
-        <span className="grid size-9 shrink-0 place-items-center rounded-md bg-black/10">
-            <Icon className="size-4" />
-        </span>
     );
 }
 
@@ -317,17 +307,6 @@ function serializeNodes(nodes: NodeListOf<ChildNode>) {
     return result;
 }
 
-function removeActiveMention() {
-    const selection = window.getSelection();
-    if (!selection?.rangeCount) return;
-    const range = selection.getRangeAt(0);
-    const text = textBeforeCaret();
-    const match = /@([^\s@]*)$/.exec(text);
-    if (!match) return;
-    range.setStart(range.startContainer, Math.max(0, range.startOffset - (match[1] || "").length - 1));
-    range.deleteContents();
-}
-
 // Chips are atomic contentEditable="false" blocks and are removed as a unit with adjacent Backspace/Delete presses.
 function deleteAdjacentReference(key: string) {
     const selection = window.getSelection();
@@ -363,16 +342,6 @@ function findReferenceSibling(node: Node, previous: boolean, includeSelf = false
     return current instanceof HTMLElement && current.dataset.refLabel ? current : null;
 }
 
-function textBeforeCaret() {
-    const selection = window.getSelection();
-    if (!selection?.rangeCount) return "";
-    const range = selection.getRangeAt(0).cloneRange();
-    const editor = closestEditor(range.startContainer);
-    if (!editor) return "";
-    range.setStart(editor, 0);
-    return range.toString();
-}
-
 function caretRect(): DOMRect | null {
     const selection = window.getSelection();
     if (!selection?.rangeCount) return null;
@@ -383,20 +352,6 @@ function caretRect(): DOMRect | null {
     // Empty lines and editors produce a zero-sized range, so fall back to the editor bounds.
     const editor = closestEditor(range.startContainer);
     return editor ? editor.getBoundingClientRect() : null;
-}
-
-function closestEditor(node: Node) {
-    const element = node instanceof Element ? node : node.parentElement;
-    return element?.closest("[contenteditable='true']") || null;
-}
-
-function placeCaretAtEnd(element: HTMLElement) {
-    const range = document.createRange();
-    range.selectNodeContents(element);
-    range.collapse(false);
-    const selection = window.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(range);
 }
 
 // Split value into text fragments and matching active labels, which are already sorted by descending length.

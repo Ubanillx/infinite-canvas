@@ -16,16 +16,18 @@ docker compose -f docker-compose.local.yml up -d --build --wait --wait-timeout 1
 
 The default binding is `127.0.0.1:3000`. Use an HTTPS reverse proxy in production and explicitly configure `INFINITE_CANVAS_ALLOWED_HOSTS`. LAN access requires an explicit bind address and firewall policy. Image builds include regression tests.
 
-The main `docker-compose.yml` runs an already loaded image from this fork. Set `APP_IMAGE` to the release image; the default `infinite-canvas:local` must be built first. The upstream published latest image is not a substitute for this dev branch's server implementation.
+The main `docker-compose.yml` runs an already loaded image from this fork. Set `APP_IMAGE` to the release image; the default `infinite-canvas:local` must be built first. The upstream published latest image is not a substitute for this dev branch's server implementation. That compose file also starts PostgreSQL, RustFS and a one-shot bucket initializer; point the `deploy/production.env.example` variables at external instances when needed and replace the default credentials.
 
 ## Services and storage
 
-The non-root container (UID/GID 1000) supervises a Bun/Vite preview Web service and a Node Canvas Agent. The Web service retains authentication, SQLite, workspace data, media, server-owned credentials and same-origin proxies. The Agent listens only on loopback port 17371. This is not a static nginx or Next.js application.
+The non-root container (UID/GID 1000) supervises a Bun/Vite preview Web service and a Node Canvas Agent. The Web service retains authentication, workspace data, media, server-owned credentials and same-origin proxies. The Agent listens only on loopback port 17371. This is not a static nginx or Next.js application.
 
-Named volumes persist `/data`, `/home/node/.infinite-canvas` and `/home/node/.codex`. WebDAV uses manual snapshot upload/import. Do not delete volumes during updates. Back up SQLite consistently, including WAL state. Existing root-owned volumes require an explicit offline migration review of ownership and absolute workspace paths. Codex authentication is provisioned after startup and must never be baked into the image.
+Two companion services hold the data layer: PostgreSQL stores accounts, workspace data and the media index, while RustFS stores media objects. RustFS is S3-compatible and the application only uses the standard S3 API, so another compatible implementation can be substituted. The application connects through `DATABASE_URL` and the `S3_*` variables; browsers never reach the bucket directly and media still flows through authenticated same-origin routes.
+
+Named volumes persist `/data`, `/home/node/.infinite-canvas`, `/home/node/.codex` and the PostgreSQL and RustFS data directories. WebDAV uses manual snapshot upload/import. Do not delete volumes during updates. Back up both the PostgreSQL database and the object bucket; backing up only one leaves data and media inconsistent. Existing root-owned volumes require an explicit offline migration review of ownership and absolute workspace paths. Codex authentication is provisioned after startup and must never be baked into the image.
 
 ## Automatic releases
 
-[Jenkins Deployment](/docs/overview/jenkins) accepts only deploy-branch pushes through a GitHub Webhook, transfers images over pinned SSH and verifies Compose health before recording success. Failed updates attempt to restore the previous image and runtime configuration, not business data. See deploy/README.md in the repository for setup and rollback.
+[Jenkins Deployment](/docs/overview/jenkins) accepts only deploy-branch pushes through a GitHub Webhook, transfers images over pinned SSH and verifies Compose health before recording success. The smoke check briefly starts the same PostgreSQL and RustFS stack in an isolated Compose project and cleans it up afterwards. Deployments rebuild only `app`; data services and their volumes are never rolled back with an image. The deploy host does not reach an image registry, so data service images must be preloaded. Failed updates attempt to restore the previous image and runtime configuration, not business data. See deploy/README.md in the repository for setup and rollback.
 
 Runtime analytics IDs default to empty; config.js also sets `/api/canvas-agent`. The separate Next.js documentation application in `docs/` is not part of this release pipeline. Real image, provider, Codex and deployment acceptance remain required.

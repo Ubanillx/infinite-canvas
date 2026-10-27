@@ -1,11 +1,14 @@
 import localforage from "localforage";
 
+import { formatCompactBytes as formatBytes } from "@/lib/format";
 import i18n from "@/i18n";
 import { getActiveWorkspace, workspaceHeaders, workspaceStoreName } from "@/lib/workspace";
-import { randomId } from "@/lib/utils";
+import { randomId, safeFileName } from "@/lib/utils";
 import { mergeCanvasSnapshot, type CanvasSnapshotData } from "@/lib/canvas/canvas-snapshot-merge";
 import { getMediaBlob, resolveMediaUrl, setMediaBlob } from "@/services/file-storage";
 import { getImageBlob, resolveImageUrl, setImageBlob } from "@/services/image-storage";
+import { readWorkspaceLogs } from "@/services/workspace-logs";
+import { saveWorkspaceData } from "@/services/workspace-data";
 import { deleteWebdavPath, downloadWebdavFile, listWebdavDirectory, uploadWebdavFile, WEBDAV_MANIFEST_FILE_NAME } from "@/services/webdav-sync";
 import type { Asset } from "@/stores/use-asset-store";
 import { useAssetStore } from "@/stores/use-asset-store";
@@ -91,8 +94,8 @@ function domainOptions(): [SyncDomainOptions<CanvasDomainData>, SyncDomainOption
     return [
         { key: "canvas", label: "画布", emptyData: { projects: [], folders: [], deleted: [] }, localData: async () => ({ projects: useCanvasStore.getState().projects, folders: useCanvasStore.getState().folders, deleted: useCanvasStore.getState().deletedProjects }), mergeData: mergeCanvasSnapshot, applyData: async (data) => useCanvasStore.getState().replaceCanvasData(data.projects, data.folders || [], data.deleted) },
         { key: "assets", label: "我的素材", emptyData: { assets: [] }, localData: async () => ({ assets: useAssetStore.getState().assets }), mergeData: (local, remote) => ({ assets: mergeImportedById(local.assets, remote.assets) }), applyData: async (data) => useAssetStore.getState().replaceAssets(await Promise.all(data.assets.map(hydrateAsset))) },
-        { key: "image-workbench", label: "生图工作台", emptyData: { logs: [] }, localData: async () => ({ logs: await readStoredLogs(imageLogStore) }), mergeData: (local, remote) => ({ logs: mergeImportedById(local.logs, remote.logs) }), applyData: async (data) => replaceStoredLogs(imageLogStore, data.logs) },
-        { key: "video-workbench", label: "视频创作台", emptyData: { logs: [] }, localData: async () => ({ logs: await readStoredLogs(videoLogStore) }), mergeData: (local, remote) => ({ logs: mergeImportedById(local.logs, remote.logs) }), applyData: async (data) => replaceStoredLogs(videoLogStore, data.logs) },
+        { key: "image-workbench", label: "生图工作台", emptyData: { logs: [] }, localData: async () => ({ logs: await readWorkspaceLogs<StoredLog & { id: string }>("image-workbench", imageLogStore) }), mergeData: (local, remote) => ({ logs: mergeImportedById(local.logs, remote.logs) }), applyData: async (data) => { await replaceStoredLogs(imageLogStore, data.logs); await saveWorkspaceData("image-workbench", data); } },
+        { key: "video-workbench", label: "视频创作台", emptyData: { logs: [] }, localData: async () => ({ logs: await readWorkspaceLogs<StoredLog & { id: string }>("video-workbench", videoLogStore) }), mergeData: (local, remote) => ({ logs: mergeImportedById(local.logs, remote.logs) }), applyData: async (data) => { await replaceStoredLogs(videoLogStore, data.logs); await saveWorkspaceData("video-workbench", data); } },
     ];
 }
 
@@ -201,15 +204,12 @@ async function hydrateAsset(asset: Asset): Promise<Asset> {
 }
 
 type LogStore = ReturnType<typeof localforage.createInstance>;
-async function readStoredLogs(store: LogStore) { const logs: StoredLog[] = []; await store.iterate<StoredLog, void>((value) => { if (value && typeof value === "object") logs.push(value); }); return logs; }
 async function replaceStoredLogs(store: LogStore, logs: StoredLog[]) { await store.clear(); await runWithConcurrency(logs, FILE_CONCURRENCY, async (log) => { if (log.id) await store.setItem(log.id, log); }); }
 function mergeImportedById<T extends { id?: string }>(local: T[], remote: T[]) { const items = new Map(remote.filter((item) => item.id).map((item) => [item.id!, item])); local.forEach((item) => { if (item.id) items.set(item.id, item); }); return [...items.values()]; }
 function collectStorageKeys(value: unknown, keys = new Set<string>()): string[] { if (typeof value === "string") { if (storageKeyPattern.test(value)) keys.add(value); return [...keys]; } if (!value || typeof value !== "object") return [...keys]; if ("storageKey" in value && typeof value.storageKey === "string" && storageKeyPattern.test(value.storageKey)) keys.add(value.storageKey); Object.values(value).forEach((item) => (Array.isArray(item) ? item.forEach((child) => collectStorageKeys(child, keys)) : collectStorageKeys(item, keys))); return [...keys]; }
 function domainLabel(domain: DomainKey) { return domain === "canvas" ? "画布" : domain === "assets" ? "我的素材" : domain === "image-workbench" ? "生图工作台" : "视频创作台"; }
-function safeFileName(value: string) { return value.replace(/[\\/:*?"<>|]/g, "_"); }
 function fileExtension(mimeType: string, storageKey: string) { if (mimeType.includes("png")) return "png"; if (mimeType.includes("jpeg")) return "jpg"; if (mimeType.includes("webp")) return "webp"; if (mimeType.includes("gif")) return "gif"; if (mimeType.includes("mp4")) return "mp4"; if (mimeType.includes("webm")) return "webm"; if (mimeType.includes("wav")) return "wav"; if (mimeType.includes("mpeg") || mimeType.includes("mp3")) return "mp3"; return storageKey.startsWith("image:") ? "png" : "bin"; }
 function emitProgress(onProgress: AppSyncProgress | undefined, event: AppSyncProgressEvent) { onProgress?.(event); }
 function errorText(error: unknown) { return error instanceof Error ? error.message : i18n.t("config.webdav.errors.syncFailed"); }
-function formatBytes(bytes: number) { return bytes < 1024 ? `${bytes}B` : bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)}KB` : `${(bytes / 1024 / 1024).toFixed(1)}MB`; }
 function waitForHydration<T extends { hydrated: boolean }>(store: { getState: () => T; subscribe: (listener: (state: T) => void) => () => void }) { if (store.getState().hydrated) return Promise.resolve(); return new Promise<void>((resolve) => { const unsubscribe = store.subscribe((state) => { if (state.hydrated) { unsubscribe(); resolve(); } }); }); }
 async function runWithConcurrency<T, R>(items: T[], limit: number, worker: (item: T, index: number) => Promise<R>) { const results = new Array<R>(items.length); let next = 0; await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => { while (next < items.length) { const index = next++; results[index] = await worker(items[index], index); } })); return results; }

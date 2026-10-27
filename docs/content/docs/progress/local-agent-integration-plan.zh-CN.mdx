@@ -28,9 +28,9 @@ description: 规划通过本地 Canvas Agent、MCP 和侧边栏助手连接 Code
 
 `canvas-agent` 是本地可信边界，负责启动或连接 Codex / Claude Code、暴露 MCP 工具、维护画布连接、转发侧边栏对话事件。
 
-## 推荐目录
+## 当前目录结构
 
-后续实现时建议在项目根目录新增独立 npm 包：
+`canvas-agent/` 已按下面结构实现，和最初的规划目录不同：HTTP 路由放在 `server/http.ts`，MCP 协议层放在 `server/mcp.ts`，Agent 适配器放在 `agent/`，画布会话与操作放在 `canvas/`。
 
 ```txt
 canvas-agent/
@@ -39,21 +39,37 @@ canvas-agent/
   src/
     index.ts
     config.ts
-    http-server.ts
-    canvas-session.ts
-    mcp-server.ts
-    agents.ts
-    schemas.ts
-    tools.ts
-    types.ts
+    server/
+      http.ts
+      mcp.ts
+    canvas/
+      session.ts
+      operations.ts
+      schemas.ts
+      tools.ts
+      types.ts
+    agent/
+      types.ts
+      codex.ts
+      codex-client.ts
+      codex-protocol.ts
+      codex-history.ts
+      claude.ts
+      pi/
+    skills/
+      store.ts
+    utils/
+      agent-runtime.ts
+      logger.ts
 ```
 
 原因：
 
 - 这是用户本机运行的 Node 服务，不属于线上服务端，也不属于纯前端页面。
-- 后续可以发布成 npm 包，用户通过 `npx` 或全局安装启动。
-- Codex SDK、Codex MCP、Claude SDK 都更适合在本地 Node 进程中接入。
-- HTTP 路由使用 Express，MCP 协议层使用官方 `@modelcontextprotocol/sdk`，工具入参使用 `zod`，避免手写协议和松散 JSON。
+- 已发布成 npm 包 `@basketikun/canvas-agent`，用户通过 `npx` 启动。
+- Codex SDK、Codex MCP、Pi Agent、Claude SDK 都在本地 Node 进程中接入。
+- HTTP 路由使用 `express`，MCP 协议层使用官方 `@modelcontextprotocol/sdk`，工具入参使用 `zod`（部分工具用 `typebox` 描述 Schema），避免手写协议和松散 JSON。
+- 请求体上限为 `30mb`，同时用于图片附件和画布快照。
 
 ## 本机启动方式
 
@@ -80,7 +96,7 @@ Local URL: http://127.0.0.1:17371
 Connect token: xxxxxx
 ```
 
-网页侧边栏填写或自动发现 `http://127.0.0.1:17371` 和 token 后连接本机服务。
+网页侧边栏默认通过同源 `/api/canvas-agent` 网关自动连接，也可手动填写 `http://127.0.0.1:17371` 和 token。
 
 ## 前端需要增加的能力
 
@@ -144,7 +160,7 @@ codex mcp add infinite-canvas -- npx -y @basketikun/canvas-agent@latest mcp
 codex mcp add infinite-canvas -- node /path/to/infinite-canvas/canvas-agent/dist/index.js mcp
 ```
 
-网页侧边栏助手另走 Canvas Agent 的对话通道。Canvas Agent 使用官方 `@openai/codex` CLI 的 `codex app-server --stdio` 启动并续用同一个 thread，启动时会注入 `infinite-canvas` MCP 配置并把 `default_tools_approval_mode` 设为 `approve`，避免 Codex 自己的 MCP 审批卡住侧边栏；真正修改画布前由网页侧边栏做二次确认。
+网页侧边栏助手另走 Canvas Agent 的对话通道。Canvas Agent 使用官方 `@openai/codex` CLI 的 `codex app-server --stdio` 启动并续用同一个 thread，启动时会注入 `infinite-canvas` MCP 配置并把 `default_tools_approval_mode` 设为 `approve`，避免 Codex 自己的 MCP 审批卡住侧边栏；写操作是否需要在网页侧边栏逐次确认由面板的确认模式决定，默认自动确认。
 
 侧边栏图片附件通过 HTTP 发送到本机 Canvas Agent，Canvas Agent 临时写入本机文件后作为 app-server `localImage` 输入传给 Codex；MVP 会在输入区提示附件体积，单次请求体限制为 30MB。
 
@@ -168,7 +184,7 @@ type AgentEvent =
   | { type: "turn.failed"; error: { message: string } };
 ```
 
-Claude 后续接入时再单独做 Claude Adapter；当前前端默认只展示 Codex。
+Claude 后续接入时再单独做 Claude Adapter；侧边栏目前可选 Codex 和 Pi 两种引擎（Pi 由 Canvas Agent 直接调用服务端已保存的文本渠道）。
 
 ## Codex 接入优先级
 
@@ -192,7 +208,7 @@ Claude Code 侧当前 MVP 先调用本机 Claude Code CLI 的流式 JSON 输出�
 claude mcp add --scope user --transport stdio infinite-canvas -- npx -y @basketikun/canvas-agent@latest mcp
 ```
 
-Canvas Agent 调用 Claude Code 时默认允许 `mcp__infinite-canvas__*`，避免 print 模式被工具审批卡住；真正修改画布仍由网页侧边栏确认。
+Canvas Agent 调用 Claude Code 时默认允许 `mcp__infinite-canvas__*`，避免 print 模式被工具审批卡住；写操作确认沿用面板的确认模式。
 
 参考：
 
@@ -204,7 +220,7 @@ Canvas Agent 调用 Claude Code 时默认允许 `mcp__infinite-canvas__*`，避�
 - Canvas Agent 默认只监听 `127.0.0.1`。
 - Canvas Agent 启动时生成 token，网页连接必须携带 token。
 - Canvas Agent 只接受允许的 Origin，默认允许用户当前打开的画布域名。
-- 画布操作默认先在侧边栏展示工具调用，`canvas_apply_ops` 默认需要用户确认后执行，并保留最近一次工具操作撤销入口。
+- 画布写操作默认自动执行，需要逐次审核时可在右侧面板把「自动确认」切换为「手动确认」，并在收到写操作时展示待执行工具调用；保留最近一次工具操作撤销入口。
 - 不把 Codex / Claude 登录态、API Key、用户本地文件路径上传到线上服务。
 - 线上网页只保存 Canvas Agent 地址和必要偏好，不保存本地密钥。
 
@@ -231,6 +247,8 @@ Canvas Agent 调用 Claude Code 时默认允许 `mcp__infinite-canvas__*`，避�
 2. 统一 Claude Code 的消息和工具调用事件。
 3. 前端侧边栏增加 Agent 类型选择。
 
+当前状态：Claude Code CLI Adapter 已实现（`agent/claude.ts`），尚未升级为 Claude Agent SDK Adapter；侧边栏的引擎选择目前提供 Codex 与 Pi。
+
 ### 第四阶段：体验完善
 
 1. 增加本机连接状态、重连和 token 更新。
@@ -242,7 +260,6 @@ Canvas Agent 调用 Claude Code 时默认允许 `mcp__infinite-canvas__*`，避�
 
 - 用户运行 `npx -y @basketikun/canvas-agent@latest` 后，线上画布能显示已连接。
 - 用户在 Codex CLI 中可以创建文本节点、移动节点、连接节点。
-- 网页侧边栏能发送一条消息给本地 Codex，并展示流式回复。
-- 网页侧边栏默认只展示本地 Codex，并展示结构化回复。
+- 网页侧边栏能发送一条消息给本地 Codex 或 Pi，并展示流式回复和结构化事件。
 - 侧边栏能展示一次 `canvas_apply_ops` 工具调用和结果。
-- 断开 Canvas Agent 后，网页能显示清晰的本机连接失败提示。
+- 断开 Canvas Agent 后，网页能显示清晰的本机连接失败提示，且不会把请求转交给其他标签页。

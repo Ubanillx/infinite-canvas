@@ -1,6 +1,6 @@
 import axios from "axios";
 
-import i18n from "@/i18n";
+import { aiHeaders, apiMessage as apiText, readApiErrorMessage, readStatusError } from "./shared";
 import { buildAiRequestUrl, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
 import { normalizePluginImages, runModelPlugin } from "./model-plugin";
 import { nanoid } from "nanoid";
@@ -9,8 +9,6 @@ import { buildImageReferencePromptText } from "@/lib/image-reference-prompt";
 import { imageToDataUrl } from "@/services/image-storage";
 import { imageSizePresets, inferMediaScale } from "@/lib/media-size";
 import type { ReferenceImage } from "@/types/image";
-
-const apiText = (key: string, options?: Record<string, unknown>) => i18n.t(`apiErrors.${key}`, options);
 
 export type AiTextMessage = {
     role: "system" | "user" | "assistant";
@@ -245,38 +243,6 @@ function parseImagePayload(payload: ImageApiResponse) {
     return images;
 }
 
-function readApiErrorMessage(value: unknown): string {
-    if (!value) return "";
-    if (typeof value === "string") {
-        // The value may be serialized JSON, such as error.message, or a plain-text error.
-        try {
-            const parsed = JSON.parse(value);
-            const inner = readApiErrorMessage(parsed) || value;
-            // Treat an empty parsed object such as "{}" as having no useful message.
-            if (inner === value && typeof parsed === "object" && Object.keys(parsed).length === 0) return "";
-            return inner;
-        } catch {
-            // Detect HTML error pages.
-            if (/<[a-z][\s\S]*>/i.test(value)) return apiText("htmlError", { preview: `${value.slice(0, 80)}...` });
-            return value;
-        }
-    }
-    if (typeof value !== "object") return "";
-    const payload = value as { msg?: unknown; message?: unknown; error?: unknown; detail?: unknown };
-    // error may be a string or an object containing a message.
-    const errorMsg =
-        typeof payload.error === "string"
-            ? payload.error
-            : (payload.error as { message?: unknown })?.message;
-    return (
-        readApiErrorMessage(payload.msg) ||
-        readApiErrorMessage(payload.message) ||
-        readApiErrorMessage(errorMsg) ||
-        readApiErrorMessage(payload.detail) ||
-        ""
-    );
-}
-
 function readAxiosError(error: unknown, fallback: string) {
     if (axios.isCancel(error)) return apiText("requestCanceled");
     if (axios.isAxiosError(error)) {
@@ -296,29 +262,9 @@ function readAxiosError(error: unknown, fallback: string) {
     return error instanceof Error ? readApiErrorMessage(error.message) || error.message : fallback;
 }
 
-function readStatusError(status: number | undefined, fallback: string) {
-    if (status === 401 || status === 403) return apiText("authenticationFailed");
-    if (status === 429) return apiText("rateLimited");
-    if (status === 404) return apiText("notFound");
-    if (status === 502) return apiText("badGateway");
-    if (status === 503) return apiText("serviceBusy");
-    return status ? apiText("httpFailed", { status }) : fallback;
-}
-
 function withSystemPrompt(config: AiConfig, prompt: string) {
     const systemPrompt = config.systemPrompt.trim();
     return systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
-}
-
-function aiApiUrl(config: AiConfig, path: string) {
-    return buildAiRequestUrl(config, path);
-}
-
-function aiHeaders(config: AiConfig, contentType?: string) {
-    return {
-        ...(config.channelId ? {} : { Authorization: `Bearer ${config.apiKey}` }),
-        ...(contentType ? { "Content-Type": contentType } : {}),
-    };
 }
 
 function geminiBaseUrl(config: Pick<AiConfig, "baseUrl">) {
@@ -474,7 +420,7 @@ function consumeResponseStreamText(state: ResponseStreamState, text: string, onD
 }
 
 async function requestStreamingResponse(config: AiConfig, body: Record<string, unknown>, onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
-    const response = await fetch(aiApiUrl(config, "/responses"), {
+    const response = await fetch(buildAiRequestUrl(config, "/responses"), {
         method: "POST",
         headers: { ...aiHeaders(config, "application/json"), Accept: "text/event-stream" },
         body: JSON.stringify({ ...body, stream: true }),
@@ -730,7 +676,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     const background = normalizeBackground(config.background);
     try {
         const response = await axios.post<ImageApiResponse>(
-            aiApiUrl(requestConfig, "/images/generations"),
+            buildAiRequestUrl(requestConfig, "/images/generations"),
             {
                 model: requestConfig.model,
                 prompt: withSystemPrompt(requestConfig, prompt),
@@ -795,7 +741,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
         const refs = await Promise.all(references.map((image) => imageToDataUrl(image)));
         try {
             const response = await axios.post<ImageApiResponse>(
-                aiApiUrl(requestConfig, "/images/generations"),
+                buildAiRequestUrl(requestConfig, "/images/generations"),
                 {
                     model: requestConfig.model,
                     prompt: withSystemPrompt(requestConfig, requestPrompt),
@@ -845,7 +791,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     files.forEach((file) => formData.append(imageField, file));
 
     try {
-        const response = await axios.post<ImageApiResponse>(aiApiUrl(requestConfig, "/images/edits"), formData, { headers: aiHeaders(requestConfig), signal: options?.signal, timeout: IMAGE_REQUEST_TIMEOUT_MS });
+        const response = await axios.post<ImageApiResponse>(buildAiRequestUrl(requestConfig, "/images/edits"), formData, { headers: aiHeaders(requestConfig), signal: options?.signal, timeout: IMAGE_REQUEST_TIMEOUT_MS });
         const images = await parseImagePayload(response.data);
         return images;
     } catch (error) {

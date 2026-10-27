@@ -5,31 +5,17 @@ root_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 agent_dir="$root_dir/canvas-agent"
 web_dir="$root_dir/web"
 port="${PORT:-3100}"
-runtime_dir="${RUNTIME_DIR:-/tmp/infinite-canvas-$UID}"
+source "$root_dir/scripts/run-common.sh"
+resolve_runtime_tools
+prepare_runtime_dir
 agent_log="$runtime_dir/canvas-agent.log"
 web_log="$runtime_dir/build-and-preview.log"
-bun_bin="${BUN_BIN:-}"
-node_bin="${NODE_BIN:-}"
-
-if [[ -z "$bun_bin" ]]; then
-    bun_bin="$(command -v bun || true)"
-fi
-[[ -x "$bun_bin" ]] || bun_bin="$HOME/.bun/bin/bun"
-
-if [[ -z "$node_bin" ]]; then
-    for candidate in "$HOME"/.nvm/versions/node/*/bin/node; do
-        [[ -x "$candidate" ]] && node_bin="$candidate"
-    done
-    [[ -n "$node_bin" ]] || node_bin="$(command -v node || true)"
-fi
 
 [[ -x "$bun_bin" ]] || { echo "Bun was not found." >&2; exit 1; }
 [[ -x "$node_bin" ]] || { echo "Node.js was not found." >&2; exit 1; }
 [[ -f "$agent_dir/node_modules/.bin/tsc" ]] || { echo "Canvas Agent dependencies are missing." >&2; exit 1; }
 [[ -f "$web_dir/node_modules/vite/bin/vite.js" ]] || { echo "Web dependencies are missing." >&2; exit 1; }
 
-mkdir -p -m 700 "$runtime_dir"
-chmod 700 "$runtime_dir"
 umask 077
 # Keep the previous five runs, including the error that caused a restart.
 for log in "$agent_log" "$web_log"; do
@@ -70,10 +56,7 @@ echo "Preparing Canvas Agent..."
 cd "$agent_dir"
 "$bun_bin" run build
 
-if [[ -f "$HOME/.infinite-canvas/canvas-agent.json" ]]; then
-    chmod 700 "$HOME/.infinite-canvas"
-    chmod 600 "$HOME/.infinite-canvas/canvas-agent.json"
-fi
+protect_agent_config
 
 echo "Building Web..."
 cd "$web_dir"

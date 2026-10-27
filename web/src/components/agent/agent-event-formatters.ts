@@ -61,13 +61,27 @@ export function agentMessageToChatMessage(item: AgentChatItem, endpoint: string,
     return { ...item, meta: item.role === "user" || item.role === "assistant" ? undefined : item.meta, attachments: item.attachments?.map((attachment) => agentAttachmentToChatAttachment(attachment, endpoint, token)) };
 }
 
-export function agentAttachmentToChatAttachment(item: AgentMessageAttachment, endpoint: string, token: string): AgentChatAttachment {
-    return { id: item.id, name: item.name, url: resolveAgentMessageAssetUrl(endpoint, token, item.dataUrl || item.url) };
+export function agentAttachmentToChatAttachment(item: AgentMessageAttachment & { uploadState?: "uploading" | "ready" | "failed"; progress?: number }, endpoint: string, token: string): AgentChatAttachment {
+    return {
+        id: item.id,
+        name: item.name,
+        kind: item.kind || "image",
+        ...(item.fileId ? { fileId: item.fileId } : {}),
+        ...(item.size ? { size: item.size } : {}),
+        ...(item.uploadState ? { uploadState: item.uploadState } : {}),
+        ...(item.progress === undefined ? {} : { progress: item.progress }),
+        url: item.fileId ? "" : resolveAgentMessageAssetUrl(endpoint, token, item.dataUrl || item.url || ""),
+    };
+}
+
+/** 回复标题跟随当前引擎，避免 Pi 模式下仍显示 Codex。 */
+export function agentReplyTitle(engine: "codex" | "pi") {
+    return i18n.t(engine === "pi" ? "agent.panel.enginePi" : "agent.panel.engineCodex");
 }
 
 export function formatAgentEvent(event: AgentEventPayload): Omit<AgentChatItem, "id"> | null {
     const item = event.item;
-    if (event.type === "item.completed" && item?.type === "agent_message") return { role: "assistant", title: "Codex", text: stringText(item.text) };
+    if (event.type === "item.completed" && item?.type === "agent_message") return { role: "assistant", title: agentReplyTitle(useAgentStore.getState().engine), text: stringText(item.text) };
     return null;
 }
 
@@ -235,9 +249,10 @@ export function parseEventData<T>(event: Event) {
     }
 }
 
-export function isCurrentThreadEvent(event: { threadId?: string; thread_id?: string }) {
+export function isCurrentThreadEvent(event: { threadId?: string; thread_id?: string; agent?: string }) {
     const threadId = event.threadId || event.thread_id || "";
-    return Boolean(threadId) && threadId === useAgentStore.getState().activeThreadId;
+    const current = useAgentStore.getState();
+    return Boolean(threadId) && threadId === current.activeThreadId && (!event.agent || event.agent === current.engine) && current.conversation.engine === current.engine;
 }
 
 export function registerLiveAgentTurn(
@@ -328,7 +343,7 @@ export function toolName(name: string) {
 }
 
 const toolTranslationKeys: Record<string, string> = {
-    canvas_apply_ops: "canvasOps", canvas_get_state: "readCanvas", canvas_get_selection: "readSelection", canvas_export_snapshot: "exportSnapshot", canvas_create_node: "createNode", canvas_create_attachment_nodes: "addAttachments", canvas_create_text_node: "createText", canvas_create_text_nodes: "createTexts", canvas_create_config_node: "createConfig", canvas_create_image_prompt_flow: "createImageFlow", canvas_create_generation_flow: "createGenerationFlow", canvas_generate_text: "generateText", canvas_generate_image: "generateImage", canvas_generate_video: "generateVideo", canvas_generate_audio: "generateAudio", canvas_update_node: "updateNode", canvas_update_node_text: "updateText", canvas_move_nodes: "moveNodes", canvas_resize_node: "resizeNode", canvas_delete_nodes: "deleteNodes", canvas_connect_nodes: "connectNodes", canvas_select_nodes: "selectNodes", canvas_set_viewport: "setViewport", canvas_run_generation: "runGeneration", site_navigate: "openPage",
+    canvas_apply_ops: "canvasOps", canvas_get_state: "readCanvas", canvas_get_selection: "readSelection", canvas_export_snapshot: "exportSnapshot", canvas_create_node: "createNode", canvas_create_attachment_nodes: "addAttachments", canvas_import_artifact: "importArtifact", canvas_create_text_node: "createText", canvas_create_text_nodes: "createTexts", canvas_create_config_node: "createConfig", canvas_create_image_prompt_flow: "createImageFlow", canvas_create_generation_flow: "createGenerationFlow", canvas_generate_text: "generateText", canvas_generate_image: "generateImage", canvas_generate_video: "generateVideo", canvas_generate_audio: "generateAudio", canvas_update_node: "updateNode", canvas_update_node_text: "updateText", canvas_move_nodes: "moveNodes", canvas_resize_node: "resizeNode", canvas_delete_nodes: "deleteNodes", canvas_connect_nodes: "connectNodes", canvas_select_nodes: "selectNodes", canvas_set_viewport: "setViewport", canvas_run_generation: "runGeneration", site_navigate: "openPage",
 };
 
 function siteToolSummary(name: string, result: unknown, input: unknown) {
@@ -367,6 +382,7 @@ function toolInputRows(name: string, input: unknown) {
     if (name === "canvas_create_text_node") return [detailRow(tr("textContent"), objectField(input, "text"))].flatMap((row) => (row ? [row] : []));
     if (name === "canvas_apply_ops") return [detailRow(tr("operationContent"), summarizeCanvasAgentOps((objectField(input, "ops") as CanvasAgentOp[] | undefined) || []))].flatMap((row) => (row ? [row] : []));
     if (name === "canvas_create_attachment_nodes") return [detailRow(tr("imageCount"), Array.isArray(objectField(input, "attachmentIds")) ? (objectField(input, "attachmentIds") as unknown[]).length : 0)].flatMap((row) => (row ? [row] : []));
+    if (name === "canvas_import_artifact") return [detailRow(tr("artifactPath"), stringText(objectField(input, "path")))].flatMap((row) => (row ? [row] : []));
     return [];
 }
 
@@ -427,8 +443,8 @@ export function workingActivity(item?: AgentChatItem) {
     const key = `${item?.id || "waiting"}-${status}-${item?.text || ""}-${output.length}`;
     if (item?.role !== "tool") return { key, text: tr("thinking") };
     if (["inProgress", "in_progress", "running", "pending"].includes(status)) return { key, text: tr("operationRunning", { operation: item.title || tr("toolOperation") }) };
-    if (item.title === toolName("canvas_get_state")) return { key, text: tr("organizingCanvas") };
-    return { key, text: tr("operationCompleted", { operation: item.title || tr("toolOperation") }) };
+    if (item.title === toolName("canvas_get_state")) return { key, text: tr("organizingCanvas", { engine: agentReplyTitle(useAgentStore.getState().engine) }) };
+    return { key, text: tr("operationCompleted", { operation: item.title || tr("toolOperation"), engine: agentReplyTitle(useAgentStore.getState().engine) }) };
 }
 
 export function currentPlanMessage(messages: AgentChatItem[]) {
@@ -497,7 +513,7 @@ export function promptWithCanvasReferences(text: string, references: CanvasResou
 }
 
 export function attachmentPayloadBytes(attachments: AgentAttachment[]) {
-    return attachments.reduce((total, item) => total + item.dataUrl.length, 0);
+    return attachments.reduce((total, item) => total + (item.kind === "image" ? item.dataUrl.length : 0), 0);
 }
 
 export function formatBytes(bytes: number) {
@@ -505,7 +521,7 @@ export function formatBytes(bytes: number) {
 }
 
 export function isCanvasWriteTool(name: string) {
-    return name === "canvas_apply_ops" || name === "canvas_create_attachment_nodes";
+    return name === "canvas_apply_ops" || name === "canvas_create_attachment_nodes" || name === "canvas_import_artifact";
 }
 
 function parseToolArguments(value: unknown) {
@@ -521,12 +537,12 @@ export function agentMessageId(threadId: string, turnId: string, itemId: string)
     return `${threadId}:${turnId}:${itemId}`;
 }
 
-export function scopeChatItem(item: AgentChatItem, threadId: string, turnId: string) {
+export function scopeChatItem(item: AgentChatItem, threadId: string, turnId: string, engine?: "codex" | "pi") {
     const scopeTurnId = turnId || "pending";
     const prefix = `${threadId || "local"}:${scopeTurnId}:`;
     const sourceItemId = item.itemId || (item.id.startsWith(prefix) ? item.id.slice(prefix.length) : item.id);
     const itemId = item.role === "user" ? "synthetic:user" : sourceItemId;
-    return { ...item, id: agentMessageId(threadId || "local", scopeTurnId, itemId), itemId, threadId, turnId };
+    return { ...item, id: agentMessageId(threadId || "local", scopeTurnId, itemId), itemId, threadId, turnId, ...(engine ? { engine } : {}) };
 }
 
 export function bindPendingTurnMessages(messages: AgentChatItem[], threadId: string, turnId: string) {
@@ -543,9 +559,9 @@ export function upsertAgentMessage(messages: AgentChatItem[], item: AgentChatIte
     return messages.map((message, itemIndex) => itemIndex === index ? next : message);
 }
 
-export function mergeAgentMessages(snapshot: AgentChatItem[], current: AgentChatItem[], threadId: string, liveTurnKeys: ReadonlySet<string>) {
+export function mergeAgentMessages(snapshot: AgentChatItem[], current: AgentChatItem[], threadId: string, liveTurnKeys: ReadonlySet<string>, engine?: "codex" | "pi") {
     let messages = [...snapshot];
-    current.filter((item) => item.threadId === threadId).forEach((item) => {
+    current.filter((item) => item.threadId === threadId && (!engine || item.engine === engine)).forEach((item) => {
         const live = Boolean(item.turnId && liveTurnKeys.has(`${threadId}\0${item.turnId}`));
         const index = messages.findIndex((message) => message.id === item.id);
         if (index < 0) {
@@ -560,10 +576,10 @@ export function mergeAgentMessages(snapshot: AgentChatItem[], current: AgentChat
     return messages;
 }
 
-export function normalizeHistoryMessages(messages: AgentChatItem[]) {
+export function normalizeHistoryMessages(messages: AgentChatItem[], engine?: "codex" | "pi") {
     return messages
         .filter((item) => (normalizeText(item.text) || item.role === "tool") && item.itemId && item.threadId && item.turnId)
-        .map(({ streamId: _streamId, ...item }) => scopeChatItem({ ...item, text: normalizeText(item.text) } as AgentChatItem, item.threadId!, item.turnId!));
+        .map(({ streamId: _streamId, ...item }) => scopeChatItem({ ...item, text: normalizeText(item.text) } as AgentChatItem, item.threadId!, item.turnId!, engine));
 }
 
 function mergeLocalMessageMetadata(current: AgentChatItem, incoming: AgentChatItem) {

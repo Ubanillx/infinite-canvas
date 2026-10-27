@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -83,6 +84,54 @@ test("oversized image previews are rejected instead of silently dropped", async 
         () => fixture.store.recordPending("message-1", { attachments: [{ id: "image-1", name: "large.png", url: `data:image/png;base64,${"a".repeat(500_001)}` }] }),
         /attachments metadata is invalid/,
     );
+});
+
+test("文件附件只靠 fileId 记录并能在历史里读回", async (context) => {
+    const fixture = await createFixture(context);
+    const metadata = await fixture.store.recordPending("message-1", { attachments: [{ id: "file-1", name: "report.pdf", size: 1048576, type: "application/pdf", fileId: "6f0c" }] });
+    await fixture.store.bindTurn("message-1", "thread-1", "turn-1");
+
+    assert.deepEqual(metadata?.attachments?.[0], { id: "file-1", name: "report.pdf", size: 1048576, type: "application/pdf", kind: "file", fileId: "6f0c" });
+    const [message] = await fixture.reopen().mergeThread("thread-1", [{ role: "user", threadId: "thread-1", turnId: "turn-1" }]);
+    assert.equal(message.attachments?.[0].fileId, "6f0c");
+    assert.equal(message.attachments?.[0].url, undefined);
+});
+
+test("v1 存储升级到 v2 前会先备份原目录", async (context) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "canvas-agent-message-metadata-"));
+    context.after(() => fs.rm(root, { recursive: true, force: true }));
+    const storeDirectory = path.join(root, "message-metadata");
+    const threadDirectory = path.join(storeDirectory, "threads", createHash("sha256").update("thread-1").digest("hex"));
+    await fs.mkdir(threadDirectory, { recursive: true });
+    await fs.mkdir(path.join(storeDirectory, "pending"), { recursive: true });
+    await fs.mkdir(path.join(storeDirectory, "assets"), { recursive: true });
+    await fs.writeFile(path.join(storeDirectory, "manifest.json"), '{"version":1}');
+    const record = { version: 1, clientMessageId: "message-1", threadId: "thread-1", turnId: "turn-1", createdAt: 1, metadata: sampleMetadata() };
+    await fs.writeFile(path.join(threadDirectory, "record.json"), JSON.stringify(record));
+
+    const store = new MessageMetadataStore(storeDirectory);
+    const [message] = await store.mergeThread("thread-1", [{ role: "user", threadId: "thread-1", turnId: "turn-1" }]);
+    assert.equal(message.clientMessageId, "message-1");
+    assert.equal(message.attachments?.[0].name, "image.png");
+    assert.equal(JSON.parse(await fs.readFile(path.join(storeDirectory, "manifest.json"), "utf8")).version, 2);
+
+    const backups = (await fs.readdir(root)).filter((name) => name.startsWith("message-metadata.v1-backup-"));
+    assert.equal(backups.length, 1);
+    assert.equal(JSON.parse(await fs.readFile(path.join(root, backups[0], "manifest.json"), "utf8")).version, 1);
+    assert.ok((await fs.readdir(path.join(root, backups[0], "threads", createHash("sha256").update("thread-1").digest("hex")))).length);
+});
+
+test("损坏的 v1 记录中止迁移且不写新版本清单", async (context) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "canvas-agent-message-metadata-"));
+    context.after(() => fs.rm(root, { recursive: true, force: true }));
+    const storeDirectory = path.join(root, "message-metadata");
+    await fs.mkdir(path.join(storeDirectory, "pending"), { recursive: true });
+    await fs.mkdir(path.join(storeDirectory, "threads"), { recursive: true });
+    await fs.writeFile(path.join(storeDirectory, "manifest.json"), '{"version":1}');
+    await fs.writeFile(path.join(storeDirectory, "pending", "broken.json"), '{"version":1}');
+
+    await assert.rejects(() => new MessageMetadataStore(storeDirectory).mergeThread("thread-1", []), /record is invalid/);
+    assert.equal(JSON.parse(await fs.readFile(path.join(storeDirectory, "manifest.json"), "utf8")).version, 1);
 });
 
 async function createFixture(context: TestContext, initialize = true) {

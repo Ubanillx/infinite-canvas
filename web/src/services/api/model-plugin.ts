@@ -1,5 +1,6 @@
 import axios, { type AxiosRequestConfig } from "axios";
 
+import { delay as sleep } from "./shared";
 import i18n from "@/i18n";
 import { buildAiRequestUrl, buildApiUrl, withLocalProxy, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 
@@ -87,24 +88,6 @@ function createPluginRequest(config: AiConfig, options?: RequestOptions) {
         const response = await axios.request({ ...requestConfig, url: pluginUrl(config, requestConfig.url), signal: options?.signal });
         return response.data;
     };
-}
-
-function sleep(ms: number, signal?: AbortSignal) {
-    return new Promise<void>((resolve, reject) => {
-        if (signal?.aborted) {
-            reject(new DOMException("Aborted", "AbortError"));
-            return;
-        }
-        const timer = setTimeout(resolve, ms);
-        signal?.addEventListener(
-            "abort",
-            () => {
-                clearTimeout(timer);
-                reject(new DOMException("Aborted", "AbortError"));
-            },
-            { once: true },
-        );
-    });
 }
 
 function createPoll(signal?: AbortSignal) {

@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, useSpring, useTransform } from "motion/react";
 import { useTranslation } from "react-i18next";
+import { MessageSquare } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { summarizeCanvasAgentOps } from "@/lib/canvas/canvas-agent-ops";
@@ -78,7 +79,14 @@ export function AgentChatTimeline({
     return (
         <div className="relative min-h-0 flex-1">
             <div ref={listRef} className="thin-scrollbar h-full select-text overflow-y-auto" onScroll={updateScrollState}>
-                <div ref={contentRef} className="space-y-4 px-4 pt-4">
+                <div ref={contentRef} className="space-y-5 px-6 pb-6 pt-6 [&_svg.lucide]:stroke-[1.6]">
+                    {!timeline.length && !sending && !waiting && !showBootstrap && !pendingTool && !pendingApprovals.length ? (
+                        <div className="flex flex-col items-start gap-3 py-10" style={{ color: theme.node.muted }}>
+                            <MessageSquare className="size-6" strokeWidth={1.4} />
+                            <div className="text-base font-medium" style={{ color: theme.node.text }}>{t("agent.chat.emptyTitle")}</div>
+                            <div className="text-xs leading-6">{t("agent.chat.emptyDescription")}</div>
+                        </div>
+                    ) : null}
                     {timeline.map((entry) => entry.type === "commands"
                         ? <AgentCommandGroupRow key={entry.id} items={entry.items} theme={theme} />
                         : <AgentChatMessageRow key={entry.item.id} item={entry.item} theme={theme} />)}
@@ -107,7 +115,7 @@ export function AgentTaskProgress({ theme, busy }: { theme: (typeof canvasThemes
     const plan = useAgentStore((state) => busy ? currentPlanMessage(state.messages) : latestPlanMessage(state.messages));
     if (!plan) return null;
     return (
-        <div className="shrink-0 px-4 pt-2">
+        <div className="shrink-0 px-6 pt-2">
             <AgentToolCard key={plan.id} title={plan.title || t("agent.events.progress")} text={plan.text} detail={plan.detail} theme={theme} />
         </div>
     );
@@ -166,7 +174,7 @@ function isCommandMessage(item: AgentChatItem) {
 export function AgentUsageBar({ usage, theme }: { usage: AgentTokenUsage; theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
     const { t } = useTranslation();
     return (
-        <div className="flex items-center justify-center gap-4 px-4 pt-1 text-[11px] tabular-nums" style={{ color: theme.node.muted }}>
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-x-3 gap-y-1 px-6 pt-2 text-[10px] tabular-nums" style={{ color: theme.node.muted }}>
             <span className="opacity-70">{t("agent.chat.latestCall")}</span>
             <UsageNumber label={t("agent.chat.input")} value={usage.input} color={theme.node.text} />
             <UsageNumber label={t("agent.chat.cached")} value={usage.cached} color={theme.node.text} />

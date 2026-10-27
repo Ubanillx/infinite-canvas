@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
+import { useEffect, useId, useImperativeHandle, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent, type Ref } from "react";
 import { Popover } from "antd";
-import { Sparkles } from "lucide-react";
+import { Check, LayoutGrid, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -16,7 +16,10 @@ type ComposerCommand = { type: "skill" | "resource"; query: string; length: numb
 type ComposerCandidate = { type: "skill"; skill: AgentSkillSummary } | { type: "resource"; reference: CanvasResourceReference };
 type ReferenceHover = { reference: AgentCanvasReference; left: number; top: number; width: number; height: number };
 
-export function AgentChatPromptInput({ value, disabled, placeholder, theme, onChange, onSubmit, onAddFiles }: {
+export type AgentChatPromptInputRef = { focus: () => void; openSkills: () => void };
+
+export function AgentChatPromptInput({ ref, value, disabled, placeholder, theme, onChange, onSubmit, onAddFiles }: {
+    ref?: Ref<AgentChatPromptInputRef>;
     value: string;
     disabled?: boolean;
     placeholder: string;
@@ -25,6 +28,8 @@ export function AgentChatPromptInput({ value, disabled, placeholder, theme, onCh
     onSubmit: () => void;
     onAddFiles?: (files: FileList | File[] | null) => void | Promise<void>;
 }) {
+    const { t } = useTranslation();
+    const menuId = useId();
     const containerRef = useRef<HTMLDivElement>(null);
     const editorRef = useRef<HTMLDivElement>(null);
     const composingRef = useRef(false);
@@ -64,11 +69,22 @@ export function AgentChatPromptInput({ value, disabled, placeholder, theme, onCh
         editor.replaceChildren(...tokens.map((token) => {
             if (token.type === "text") return document.createTextNode(token.value);
             return token.type === "skill"
-                ? createSkillToken(token.skill, theme)
+                ? createSkillToken(token.skill, theme, t("agent.composer.mentions.removeSkill"), disabled)
                 : createReferenceToken(token.reference, theme);
         }));
+        if (document.activeElement === editor) {
+            const range = document.createRange();
+            range.selectNodeContents(editor);
+            range.collapse(false);
+            window.getSelection()?.removeAllRanges();
+            window.getSelection()?.addRange(range);
+        }
         lastEmittedRef.current = value;
-    }, [theme, tokens, value]);
+    }, [disabled, t, theme, tokens, value]);
+
+    useEffect(() => {
+        editorRef.current?.querySelectorAll<HTMLButtonElement>("[data-agent-remove-skill]").forEach((button) => { button.disabled = Boolean(disabled); });
+    }, [disabled]);
 
     const emit = (next: string) => {
         lastEmittedRef.current = next;
@@ -104,7 +120,7 @@ export function AgentChatPromptInput({ value, disabled, placeholder, theme, onCh
         if (!editor) return;
         const next = serializeEditor(editor);
         emit(next);
-        syncSelectedMetadata(editor);
+        syncSelectedMetadata(editor, value);
         syncCommand();
     };
 
@@ -123,7 +139,7 @@ export function AgentChatPromptInput({ value, disabled, placeholder, theme, onCh
                 closeCommand();
                 return;
             }
-            insertTokenAtCaret(editor, createSkillToken({ name: candidate.skill.name, path: candidate.skill.path, displayName: candidate.skill.interface?.displayName || undefined }, theme));
+            insertTokenAtCaret(editor, createSkillToken({ name: candidate.skill.name, path: candidate.skill.path, displayName: candidate.skill.interface?.displayName || undefined }, theme, t("agent.composer.mentions.removeSkill")));
             const next = serializeEditor(editor);
             emit(next);
             useAgentSkillStore.getState().selectSkill(candidate.skill);
@@ -135,6 +151,25 @@ export function AgentChatPromptInput({ value, disabled, placeholder, theme, onCh
         }
         closeCommand();
     };
+
+    useImperativeHandle(ref, () => ({
+        focus: () => editorRef.current?.focus(),
+        openSkills: () => {
+            const editor = editorRef.current;
+            if (!editor || disabled) return;
+            editor.focus();
+            const range = document.createRange();
+            range.selectNodeContents(editor);
+            range.collapse(false);
+            window.getSelection()?.removeAllRanges();
+            window.getSelection()?.addRange(range);
+            setCommand({ type: "skill", query: "", length: 0 });
+            setActiveIndex(0);
+            const agent = useAgentStore.getState();
+            const skillState = useAgentSkillStore.getState();
+            if (agent.connected && !skillState.loaded && !skillState.loading) void skillState.loadSkills(agent.url.trim().replace(/\/$/, ""), agent.token);
+        },
+    }));
 
     const handleCommandKey = (event: KeyboardEvent<HTMLDivElement>) => {
         if (!command || isImeComposing(event)) return false;
@@ -169,61 +204,86 @@ export function AgentChatPromptInput({ value, disabled, placeholder, theme, onCh
 
     return (
         <div ref={containerRef} className="relative">
-            {!value.trim() ? <div className="pointer-events-none absolute left-1 top-1 text-sm leading-6" style={{ color: theme.node.placeholder }}>{placeholder}</div> : null}
-            <div
-                ref={editorRef}
-                contentEditable={!disabled}
-                suppressContentEditableWarning
-                role="textbox"
-                aria-multiline="true"
-                aria-label={placeholder}
-                className="thin-scrollbar max-h-32 min-h-20 w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent px-1 py-1 text-sm leading-6 outline-none"
-                style={{ color: theme.node.text, cursor: disabled ? "default" : "text" }}
-                onInput={() => {
-                    if (!composingRef.current) syncFromEditor();
-                }}
-                onCompositionStart={() => { composingRef.current = true; }}
-                onCompositionEnd={() => {
-                    composingRef.current = false;
-                    syncFromEditor();
-                }}
-                onPaste={(event) => {
-                    const images = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
-                    if (images.length && onAddFiles) {
+            {selectedSkill && !tokens.some((token) => token.type === "skill") ? (
+                <div className="mb-2 inline-flex max-w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs" style={{ background: theme.toolbar.activeBg, color: theme.node.text }}>
+                    <LayoutGrid className="size-3.5 shrink-0" strokeWidth={1.6} />
+                    <span className="truncate" title={selectedSkill.interface?.shortDescription || selectedSkill.description}>{selectedSkill.interface?.displayName || selectedSkill.name}</span>
+                    <button type="button" disabled={disabled} className="grid size-5 shrink-0 place-items-center rounded hover:bg-black/5 focus-visible:outline focus-visible:outline-1 dark:hover:bg-white/10" aria-label={t("agent.composer.mentions.removeSkill")} onClick={() => useAgentSkillStore.getState().clearSelection()}><X className="size-3" strokeWidth={1.6} /></button>
+                </div>
+            ) : null}
+            <div className="relative">
+                {!value.trim() ? <div className="pointer-events-none absolute left-1 top-1 text-sm leading-6" style={{ color: theme.node.placeholder }}>{placeholder}</div> : null}
+                <div
+                    ref={editorRef}
+                    contentEditable={!disabled}
+                    suppressContentEditableWarning
+                    role="textbox"
+                    aria-multiline="true"
+                    aria-label={placeholder}
+                    aria-disabled={disabled}
+                    aria-autocomplete="list"
+                    aria-controls={command ? menuId : undefined}
+                    aria-activedescendant={command && candidates.length ? `${menuId}-${Math.min(activeIndex, candidates.length - 1)}` : undefined}
+                    className="thin-scrollbar max-h-[min(12rem,30dvh)] min-h-24 w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent px-1 py-1 text-sm leading-7 outline-none"
+                    style={{ color: theme.node.text, cursor: disabled ? "default" : "text" }}
+                    onInput={() => {
+                        if (!composingRef.current) syncFromEditor();
+                    }}
+                    onCompositionStart={() => { composingRef.current = true; }}
+                    onCompositionEnd={() => {
+                        composingRef.current = false;
+                        syncFromEditor();
+                    }}
+                    onPaste={(event) => {
+                        const images = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
+                        if (images.length && onAddFiles) {
+                            event.preventDefault();
+                            void onAddFiles(images);
+                            return;
+                        }
                         event.preventDefault();
-                        void onAddFiles(images);
-                        return;
-                    }
-                    event.preventDefault();
-                    insertTextAtCaret(event.clipboardData.getData("text/plain"));
-                    syncFromEditor();
-                }}
-                onKeyDown={(event) => {
-                    event.stopPropagation();
-                    if (isImeComposing(event) || handleCommandKey(event)) return;
-                    if ((event.key === "Backspace" || event.key === "Delete") && deleteAdjacentToken(event.key)) {
-                        event.preventDefault();
-                        requestAnimationFrame(syncFromEditor);
-                        return;
-                    }
-                    if (isPlainEnterKey(event)) {
-                        event.preventDefault();
-                        onSubmit();
-                        return;
-                    }
-                    requestAnimationFrame(syncCommand);
-                }}
-                onKeyUp={(event) => {
-                    if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) syncCommand();
-                }}
-                onClick={syncCommand}
-                onMouseOver={showReferencePreview}
-                onMouseLeave={() => setReferenceHover(null)}
-                onBlur={(event) => {
-                    if (event.relatedTarget instanceof HTMLElement && event.relatedTarget.closest("[data-agent-command-menu]")) return;
-                    window.setTimeout(closeCommand, 120);
-                }}
-            />
+                        insertTextAtCaret(event.clipboardData.getData("text/plain"));
+                        syncFromEditor();
+                    }}
+                    onKeyDown={(event) => {
+                        event.stopPropagation();
+                        if (event.target !== event.currentTarget) return;
+                        if (isImeComposing(event) || handleCommandKey(event)) return;
+                        if ((event.key === "Backspace" || event.key === "Delete") && deleteAdjacentToken(event.key)) {
+                            event.preventDefault();
+                            requestAnimationFrame(syncFromEditor);
+                            return;
+                        }
+                        if (isPlainEnterKey(event)) {
+                            event.preventDefault();
+                            onSubmit();
+                            return;
+                        }
+                        requestAnimationFrame(syncCommand);
+                    }}
+                    onKeyUp={(event) => {
+                        if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) syncCommand();
+                    }}
+                    onClick={(event) => {
+                        const removeButton = event.target instanceof Element ? event.target.closest("[data-agent-remove-skill]") : null;
+                        if (!removeButton) return syncCommand();
+                        if (disabled) return;
+                        const token = removeButton.closest("[data-agent-token-kind='skill']");
+                        const caret = document.createTextNode("");
+                        token?.replaceWith(caret);
+                        editorRef.current?.focus();
+                        placeCaretAfter(caret);
+                        syncFromEditor();
+                    }}
+                    onMouseOver={showReferencePreview}
+                    onMouseLeave={() => setReferenceHover(null)}
+                    onBlur={(event) => {
+                        if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
+                        if (event.relatedTarget instanceof HTMLElement && event.relatedTarget.closest("[data-agent-command-menu]")) return;
+                        window.setTimeout(() => { if (!containerRef.current?.contains(document.activeElement)) closeCommand(); }, 120);
+                    }}
+                />
+            </div>
             {referenceHover ? (
                 <Popover
                     open
@@ -237,30 +297,32 @@ export function AgentChatPromptInput({ value, disabled, placeholder, theme, onCh
                     />
                 </Popover>
             ) : null}
-            {command ? <AgentCommandMenu command={command} candidates={candidates} activeIndex={Math.min(activeIndex, Math.max(candidates.length - 1, 0))} loading={command.type === "skill" && skillsLoading} theme={theme} onSelect={insertCandidate} /> : null}
+            {command ? <AgentCommandMenu id={menuId} command={command} candidates={candidates} activeIndex={Math.min(activeIndex, Math.max(candidates.length - 1, 0))} loading={command.type === "skill" && skillsLoading} theme={theme} onSelect={insertCandidate} /> : null}
         </div>
     );
 }
-function AgentCommandMenu({ command, candidates, activeIndex, loading, theme, onSelect }: { command: ComposerCommand; candidates: ComposerCandidate[]; activeIndex: number; loading: boolean; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onSelect: (candidate: ComposerCandidate) => void }) {
+function AgentCommandMenu({ id, command, candidates, activeIndex, loading, theme, onSelect }: { id: string; command: ComposerCommand; candidates: ComposerCandidate[]; activeIndex: number; loading: boolean; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onSelect: (candidate: ComposerCandidate) => void }) {
     const { t } = useTranslation();
     const activeItemRef = useRef<HTMLButtonElement | null>(null);
     useEffect(() => { activeItemRef.current?.scrollIntoView({ block: "nearest" }); }, [activeIndex]);
     const stopPropagation = (event: PointerEvent | MouseEvent) => event.stopPropagation();
     return (
-        <div data-agent-command-menu className="absolute bottom-[calc(100%+8px)] left-0 z-[120] w-full min-w-64 overflow-hidden rounded-xl border shadow-xl" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }} onPointerDown={stopPropagation} onMouseDown={stopPropagation}>
-            <div className="border-b px-3 py-2 text-xs" style={{ borderColor: theme.toolbar.border, color: theme.node.muted }}>
-                {t(command.type === "skill" ? "agent.composer.mentions.selectSkill" : "agent.composer.mentions.selectResource")}{command.query ? ` · ${command.query}` : ""}
+        <div data-agent-command-menu className="absolute bottom-[calc(100%+12px)] left-0 z-[120] w-full overflow-hidden rounded-xl border shadow-sm" style={{ background: theme.node.panel, borderColor: theme.toolbar.border, color: theme.node.text }} onPointerDown={stopPropagation} onMouseDown={stopPropagation}>
+            <div className="flex items-center justify-between gap-2 border-b px-3 py-3 text-xs" style={{ borderColor: theme.toolbar.border, color: theme.node.muted }}>
+                <span>{t(command.type === "skill" ? "agent.composer.mentions.selectSkill" : "agent.composer.mentions.selectResource")}{command.query ? ` · ${command.query}` : ""}</span>
+                <span className="shrink-0 text-[10px] opacity-65" aria-hidden>{t("agent.composer.mentions.keyboardHint")}</span>
             </div>
-            <div className="thin-scrollbar max-h-[min(21rem,52vh)] overflow-y-auto p-1">
+            <div id={id} role="listbox" aria-label={t(command.type === "skill" ? "agent.composer.mentions.selectSkill" : "agent.composer.mentions.selectResource")} className="thin-scrollbar max-h-[min(21rem,45dvh,calc(100dvh-18rem))] overflow-y-auto p-1.5">
                 {candidates.length ? candidates.map((candidate, index) => {
                     const skill = candidate.type === "skill" ? candidate.skill : null;
                     const reference = candidate.type === "resource" ? candidate.reference : null;
                     const title = skill ? skill.interface?.displayName || skill.name : reference?.title || "";
                     const description = skill ? skill.interface?.shortDescription || skill.shortDescription || skill.description : reference ? `${agentReferenceMarker(reference)} · ${canvasReferenceKindLabel(reference.kind)}` : "";
                     return (
-                        <button key={skill ? `${skill.name}:${skill.path}` : reference?.nodeId} ref={index === activeIndex ? activeItemRef : undefined} type="button" className="flex w-full min-w-0 items-center gap-2.5 rounded-lg px-2 py-2 text-left transition hover:bg-black/5 dark:hover:bg-white/10" style={{ background: index === activeIndex ? theme.toolbar.activeBg : undefined, color: index === activeIndex ? theme.toolbar.activeText : theme.node.text }} onPointerDown={(event) => { event.preventDefault(); onSelect(candidate); }}>
-                            {skill ? <span className="grid size-9 shrink-0 place-items-center"><Sparkles className="size-4" /></span> : reference ? <ReferencePreview reference={reference} /> : null}
-                            <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{title}</span><span className="mt-0.5 block truncate text-xs" style={{ color: theme.node.muted }}>{description}</span></span>
+                        <button key={skill ? `${skill.name}:${skill.path}` : reference?.nodeId} id={`${id}-${index}`} role="option" aria-selected={index === activeIndex} ref={index === activeIndex ? activeItemRef : undefined} type="button" className="flex w-full min-w-0 items-center gap-2.5 rounded-md px-2.5 py-2.5 text-left transition hover:bg-black/5 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-[-1px] dark:hover:bg-white/10" style={{ background: index === activeIndex ? theme.toolbar.activeBg : undefined, color: index === activeIndex ? theme.toolbar.activeText : theme.node.text }} onPointerDown={(event) => { event.preventDefault(); onSelect(candidate); }} onClick={(event) => { if (event.detail === 0) onSelect(candidate); }}>
+                            {skill ? <LayoutGrid className="size-4 shrink-0" strokeWidth={1.6} /> : reference ? <ReferencePreview reference={reference} /> : null}
+                            <span className="min-w-0 flex-1"><span className="block truncate text-[13px] font-medium">{title}</span><span className="mt-0.5 line-clamp-2 text-xs leading-5" style={{ color: theme.node.muted }}>{description}</span></span>
+                            {index === activeIndex ? <Check className="size-3.5 shrink-0" strokeWidth={1.6} /> : null}
                         </button>
                     );
                 }) : <div className="px-3 py-6 text-center text-xs" style={{ color: theme.node.muted }}>{t(loading ? "agent.composer.mentions.loadingSkills" : command.type === "skill" ? "agent.composer.mentions.noSkills" : "agent.composer.mentions.noResources")}</div>}
@@ -275,11 +337,23 @@ function ReferencePreview({ reference }: { reference: CanvasResourceReference })
     return <span className="grid size-9 shrink-0 place-items-center"><Icon className="size-4" /></span>;
 }
 
-function createSkillToken(skill: AgentSkillReference, theme: (typeof canvasThemes)[keyof typeof canvasThemes]) {
+function createSkillToken(skill: AgentSkillReference, theme: (typeof canvasThemes)[keyof typeof canvasThemes], removeLabel: string, disabled?: boolean) {
     const token = createToken("skill", agentSkillMarker(skill), theme);
     token.dataset.skillName = skill.name;
-    token.title = skill.path;
-    token.textContent = `/${skill.displayName || skill.name}`;
+    token.title = `/${skill.name}`;
+    token.classList.add("!inline-flex", "items-center", "align-middle");
+    token.style.background = theme.toolbar.activeBg;
+    const label = document.createElement("span");
+    label.className = "min-w-0 max-w-[min(12rem,50vw)] truncate";
+    label.textContent = `/${skill.displayName || skill.name}`;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.disabled = Boolean(disabled);
+    remove.dataset.agentRemoveSkill = "";
+    remove.className = "ml-1 grid size-4 shrink-0 place-items-center rounded !leading-none opacity-60 hover:bg-black/5 hover:opacity-100 focus-visible:outline focus-visible:outline-1 dark:hover:bg-white/10";
+    remove.setAttribute("aria-label", removeLabel);
+    remove.textContent = "\u00d7";
+    token.append(label, remove);
     return token;
 }
 
@@ -390,14 +464,15 @@ function tokenSibling(node: Node, previous: boolean) {
     return current instanceof HTMLElement && current.dataset.agentToken ? current : null;
 }
 
-function syncSelectedMetadata(editor: HTMLElement) {
+function syncSelectedMetadata(editor: HTMLElement, previousPrompt: string) {
     const state = useAgentStore.getState();
     const nodeIds = new Set(Array.from(editor.querySelectorAll<HTMLElement>("[data-agent-token-kind='resource']")).map((item) => item.dataset.nodeId));
     const references = state.canvasReferences.filter((item) => nodeIds.has(item.nodeId));
     if (references.length !== state.canvasReferences.length) state.setAgentState({ canvasReferences: references });
     const selectedSkill = useAgentSkillStore.getState().selectedSkill;
     const skillName = editor.querySelector<HTMLElement>("[data-agent-token-kind='skill']")?.dataset.skillName;
-    if (selectedSkill && skillName !== selectedSkill.name) useAgentSkillStore.getState().clearSelection();
+    // Default prompts need not contain a marker; only token deletion clears an inline selection.
+    if (selectedSkill && previousPrompt.includes(agentSkillMarker(selectedSkill)) && skillName !== selectedSkill.name) useAgentSkillStore.getState().clearSelection();
 }
 
 function textBeforeCaret(editor: HTMLElement | null) {

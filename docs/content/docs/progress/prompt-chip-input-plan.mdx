@@ -1,24 +1,68 @@
 ---
 title: Prompt Reference Thumbnail Plan
-description: Display real image thumbnails for @ references in the canvas prompt input
+description: Turn the canvas prompt panel input from a textarea into contentEditable so @ references render real image thumbnails
 ---
 
-# Prompt Reference Thumbnail Plan
+# Prompt Reference Thumbnails in the Prompt Panel
+
+Status: implemented. `CanvasPromptChipInput` is in place and the prompt panel already uses it.
 
 ## Problem
 
-A plain textarea can display only text labels for `@` references. The canvas prompt panel needs real image thumbnails while preserving ordinary text editing, IME input, keyboard navigation, deletion, and the existing send contract.
+The prompt panel (`CanvasNodePromptPanel`) shows a plain blue text chip (“Image 1”) after an `@` reference to an image. The goal is to show the real thumbnail instead of a text index.
 
-## Solution
+That input is a native `<textarea>`, which holds only plain text and cannot embed images. Rendering thumbnails requires `contentEditable` (an editable div) with references turned into atomic chips containing an `<img>`. The existing “compose prompt” component (`CanvasConfigComposer`) already implements this contentEditable plus image-chip pattern and serves as the blueprint.
 
-Introduce `CanvasPromptChipInput`, a focused `contentEditable` input that renders text and atomic reference chips. Keep the external value and callbacks compatible with the existing prompt panel so model invocation and connected-resource numbering do not change.
+## Key constraint (why the existing component cannot simply be changed)
 
-Implementation requirements:
+`CanvasResourceMentionTextarea` is shared by two callers:
 
-- Reuse the existing composer approach for selection restoration, composition events, paste, and keyboard handling.
-- Treat each reference chip as a non-editable unit and remove it with Backspace or Delete.
-- Render image references with object URLs and accessible labels; keep text, video, and audio references compact.
-- Serialize the editable DOM back to the current plain-text reference format before sending.
-- Replace only the prompt panel input and keep the existing model selectors, prompt library, resource resolution, and generation requests unchanged.
+1. **Prompt panel** `web/src/components/canvas/canvas-node-prompt-panel.tsx` — the target here. `highlightLabels` defaults to true, the value is the prompt string, and references are embedded as label text such as “Image 1” that goes **straight to the AI** (together with the `Reference image index: Image 1` prefix from `web/src/lib/image-reference-prompt.ts`).
+2. **In-node text editing** `web/src/components/canvas/canvas-node.tsx` (the `isEditingContent` branch) — uses `highlightLabels={false}` and calls textarea-only APIs such as `textarea.setSelectionRange(...)` through a `ref`. Converting that component to contentEditable breaks this caller immediately.
 
-Manual verification should cover Chinese IME, ordinary slash text, multiline paste, adding and deleting multiple references, thumbnail rendering, selection movement, sending, and restoring the draft.
+> Conclusion: **add a new contentEditable chip input and replace only the prompt panel**; `CanvasResourceMentionTextarea` (the textarea version) stays untouched for in-node text editing.
+
+## Solution: add `CanvasPromptChipInput`
+
+New file `web/src/components/canvas/canvas-prompt-chip-input.tsx`, following the contentEditable pattern of `canvas-config-composer.tsx` with one **core difference**:
+
+- Compose prompt serializes references as `@[node:UUID]` markers.
+- This component must keep the **reference label text** (for example “Image 1”) as its value so the generated prompt keeps the same meaning. Chip ↔ text serialization therefore uses the **label text**, not a node marker.
+
+### Component contract (unchanged usage)
+
+Props: `value: string`, `references: CanvasResourceReference[]`, `onChange(value)`, `onSubmit?()`, `className`, `style`, `placeholder`. Image thumbnails use `reference.previewUrl` (that is, `node.metadata.content`, already present on `CanvasResourceReference`).
+
+### Implementation notes (reusing composer behaviour)
+
+1. **DOM ← value (rebuild while unfocused)**: mirror the composer rebuild effect. Split the value into “text run + matched label” using the active label list (`references.filter(active).map(label)`, longest first) and insert a chip at each match. Skip rebuilding while focused (`document.activeElement === editor` returns early) to avoid fighting typing and IME.
+2. **Chip rendering**: mirror `createReferenceChip`. For images use a `size-6` `<img src={reference.previewUrl}>`; other kinds use truncated text. Each chip is a `<span contentEditable="false">` that stores its label in `dataset.refLabel` for serialization.
+3. **value ← DOM (`syncFromEditor`)**: mirror `serializeNodes`, but serialize chips to `dataset.refLabel` (label text) instead of node markers; append text nodes as-is and turn `<br>` into `\n`.
+4. **@ menu**: reuse `textBeforeCaret` plus the `/@([^\s@]*)$/` check; position the menu with `getSelection().getRangeAt(0).getBoundingClientRect()`, which is simpler than the textarea mirror div and always sits at the caret. Keep the existing `MentionMenu` visuals (thumbnail, label, subtitle).
+5. **Atomic deletion**: reuse the composer's `deleteAdjacentReference` / `adjacentReferenceNode` / `findReferenceSibling`: contentEditable plus `contentEditable="false"` chips already delete as a unit. Copy those DOM helpers plus `textBeforeCaret` / `placeCaretAtEnd` / `closestEditor` into the new component so the composer stays untouched and regression-free.
+6. **Enter to send + IME**: reuse `isPlainEnterKey` / `isImeComposing` from `@/lib/keyboard-event` with `onCompositionStart/End`, and call `onSubmit` when sending.
+7. **Placeholder and styling**: show the placeholder only when empty (absolute overlay); apply the `className` / `style` passed by the panel (`min-h-40`, transparent background, no border, matching the current look).
+
+### Replacement point
+
+In `canvas-node-prompt-panel.tsx`, swap `<CanvasResourceMentionTextarea .../>` for `<CanvasPromptChipInput .../>` with the same value/references/onChange/onSubmit/className/style/placeholder. Everything else (model select, settings, generate button) stays as is.
+
+### Out of scope
+
+- `CanvasResourceMentionTextarea` (textarea version) remains for in-node text editing.
+- The generation path and the `image-reference-prompt.ts` prefix logic stay unchanged because the value is still label text.
+
+## Affected files
+
+- Added: `web/src/components/canvas/canvas-prompt-chip-input.tsx`
+- Changed: `web/src/components/canvas/canvas-node-prompt-panel.tsx` (only the input swap plus the matching import)
+
+## Verification
+
+1. `npx tsc --noEmit` passes.
+2. After refreshing the dev server:
+   - Connect an image to an image or video node, type `@` in the panel input, confirm the menu opens at the caret, pick the image, and check that the input shows the **real thumbnail chip** instead of “Image 1” text.
+   - Press Backspace once right after the chip and confirm the whole chip is removed.
+   - Mix plain text with chips, press Enter to generate, and confirm the prompt sent to the model still references “Image 1” as text and the result uses the image.
+   - Confirm Chinese IME input neither swallows characters nor triggers sending by accident.
+   - Regression: double-clicking a text node to edit inside it still works.
