@@ -2,11 +2,11 @@
 
 ## 设计与范围
 
-固定 `deploy` 分支 → GitHub Push Webhook → Jenkins 检出并校验远端提交 → 测试 → 构建镜像 → 隔离容器冒烟检查 → SSH/SCP 传输镜像包 → 部署主机 Docker Compose 更新 → 健康检查 → 成功切换 current；失败恢复上一版镜像和运行配置。
+固定 `deploy` 分支 → GitHub Push Webhook → Jenkins 检出并校验远端提交 → 构建镜像 → SSH/SCP 传输镜像包 → 部署主机 Docker Compose 更新 → 健康检查 → 成功切换 current；失败恢复上一版镜像和运行配置。
 
 不需要镜像仓库，也不会在部署主机拉取 Git 或安装 Node/npm 依赖。部署主机与 Jenkins Docker 构建节点须使用相同 CPU 架构。这里是待真实环境验收的部署配置，不代表 Jenkins、Webhook 或目标主机已经配置成功。
 
-流水线只接受 `deploy` / `origin/deploy`，拒绝 PR，并要求检出 HEAD 等于当前 `origin/deploy`。`dev`、`main` 或旧提交不会进入测试、构建和部署。禁止把不可信 PR 放到持有部署凭据的节点运行。请保护 deploy 分支并限制 Jenkins Job Configure 和凭据权限。
+流水线只接受 `deploy` / `origin/deploy`，拒绝 PR，并要求检出 HEAD 等于当前 `origin/deploy`。`dev`、`main` 或旧提交不会进入构建和部署。禁止把不可信 PR 放到持有部署凭据的节点运行。请保护 deploy 分支并限制 Jenkins Job Configure 和凭据权限。
 
 ## Jenkins 前置条件
 
@@ -100,6 +100,47 @@ sudo install -m 600 -o canvas-deploy -g canvas-deploy deploy/production.env.exam
 
 首次部署遇到同名但不受 current 管理的已有容器会拒绝接管，防止误覆盖旧部署。Compose 项目名、数据卷身份和部署目录应长期稳定。
 
+### 导入宿主机 Codex 配置
+
+网页助手使用镜像内安装的 Codex，不使用宿主机的全局 CLI。将仓库中的 `deploy/import-codex-config.sh` 单独复制到部署机，以已经配置好 Codex 且可执行 Docker 的用户运行：
+
+```bash
+# 默认读取当前用户的 CODEX_HOME 或 ~/.codex，查找 infinite-canvas 项目的 app 容器。
+bash import-codex-config.sh
+
+# 源目录或容器不同时显式指定；--restart 会重启整个应用，中断当前对话和请求。
+bash import-codex-config.sh --source /home/你的用户/.codex --container 应用容器名 --restart
+```
+
+- 复制 `config.toml`、存在的 `auth.json`，以及顶层 `model_catalog_json` 引用的模型目录 JSON；保留宿主机原文件，不导入或覆盖历史会话、Skill、缓存和 Agent 数据。多个匹配容器时拒绝猜测；自定义项目名可用 `--project` 指定。
+- 模型目录文件复制为容器 `CODEX_HOME` 下的 `imported-model-catalog.json`，配置中的对应路径同步改写，保留供应商和其他配置值。相对路径按宿主机配置目录解析；源文件缺失或不可读时停止，不删除该字段绕过问题。路径定点改写需使用普通单行顶层 `model_catalog_json = "..."` 写法，不能安全改写时拒绝覆盖。
+- 脚本使用容器运行用户写入其 `CODEX_HOME`，默认即专用数据卷内的 `/home/node/.codex`；先在私有临时目录解析配置，再调用容器内 `codex app-server --print-startup-config` 验证暂存配置和模型目录兼容性，成功后才备份并替换，模型目录先于配置安装。备份目录以 `config-backup-` 开头，目录权限 700、文件权限 600；写入失败时尝试恢复，备份路径会输出但凭证内容不会输出。校验过程不发送对话请求，临时状态随暂存目录清理。
+- 默认不重启；导入后按脚本提示，在无进行中任务时重启应用并新建 Codex 对话。`--restart` 只代表执行重启，不代表第三方服务认证或应用健康验收通过。
+- 主机环境变量、系统钥匙串、项目级配置和模型目录之外的外部文件不会自动迁移。配置使用 `env_key` / `env_http_headers` 且容器缺少对应变量时会警告；变量密钥仍须通过受控的容器密钥注入方式提供，不要写入仓库、Jenkins artifacts 或 `production.env`。显式使用 `keyring` 凭证存储的配置会拒绝导入，应先在宿主机配置文件式认证。
+- 普通导入除顶层模型目录路径外，不自动改写供应商地址、模型、权限、MCP 命令和本机绝对路径；`localhost` 在容器里指容器自身，宿主机本地代理、其他外部路径和 profile 私有模型目录需另行调整。只在交互 CLI 中临时选择的 profile 或通过命令行覆盖的配置也不会自动变成网页默认配置。
+- 不要用 `sudo` 后的新 `$HOME` 误读 root 配置；需要 sudo 执行 Docker 时显式传 `--source /home/实际用户/.codex`。备份同样包含敏感凭证，只保存在专用 Codex 卷内，不要上传或提交。
+
+#### 宿主机 Magpie 网关
+
+宿主机 Codex 通过 `http://127.0.0.1:3425` 使用 Magpie 时，单独复制配置不能让容器访问代理。可显式启用网关配置：
+
+```bash
+# 以运行 Magpie 的非 root 用户执行；--restart 额外重启应用并中断当前请求。
+bash import-codex-config.sh --container 应用容器名 --magpie-gateway --restart
+```
+
+- 前提为 Linux、宿主机 Python 3 / `flock` / `magpie` 可用，以及当前用户已有运行中的 `magpie.service`。手动启动的 `serve` / `web` / TUI 不会被脚本终止或接管；先自行退出对应进程，再运行 `magpie daemon install`。不要用 sudo 运行此模式。
+- 当前仅支持单个 Docker bridge 网络的 IPv4 应用容器、宿主机顶层默认供应商 `magpie`、HTTP 回环地址端口 3425；有默认 profile、TLS、`EnvironmentFile` 或冲突的服务覆盖时拒绝自动调整，不降级 TLS，不猜测多个网络的出口。
+- 通过 Magpie 官方 `gateway-key` CLI 创建独立命名 Key，重复执行复用脚本已有且仍启用的 Key；已撤销、禁用、改名或不匹配的 Key 不会被静默重建。服务只新增脚本专用的 `magpie.service.d/zz-infinite-canvas-gateway.conf`，保留原 unit、代理环境和提供商凭证。
+- 先绑定 Docker 网关地址，并暂不放行容器，验证带 Key 的请求返回 403；再只放行容器的 `/32` 地址，验证无 Key 返回 401、有效 Key 返回 200。通过后才改为 `0.0.0.0:3425` 并复核认证，保留宿主机原 `127.0.0.1` 访问。过程中 Magpie 会重启三次，本机 CLI 暂时不可用；应用仅在 `--restart` 时重启。使用 Magpie 自带就绪等待，不添加新的超时或重试策略。
+- 白名单为 Magpie 应用层的 `MAGPIE_ALLOW_IPS`，不是主机防火墙规则；不发布额外 Docker 端口、不修改防火墙或启用 host 网络。除选定应用容器外，其他远程 IP 不放行；宿主机自身地址仍按 Magpie 官方规则允许。容器重建导致 IP 改变后必须重新运行脚本更新白名单；不要把整个网段加入名单绕过问题。
+- 容器新增独立的 `infinite_canvas_magpie` 供应商，地址为 `http://Docker网关:3425/v1`，关闭 WebSocket，并在 600 权限的 `config.toml` 中保存网关 Bearer Token；不复制宿主机 `auth.json`，保留容器已有认证文件、模型选择、已迁移的模型目录和其他供应商配置。宿主机 Codex 配置与上游供应商密钥不改动。此模式不依赖临时 `docker exec -e` 注入，应用重启后配置仍保留。
+- 主机 Key 状态和私有事务备份位于 `${XDG_STATE_HOME:-~/.local/state}/infinite-canvas/`，目录 700、文件 600；备份中的 `transaction.json` 包含旧服务覆盖和旧 Key 状态，容器文件另按普通导入规则备份。所有 Key 创建输出、CLI 校验输出均不打印；这些状态、配置和备份包含凭证，不得上传、提交或贴到聊天中。
+- 网关拒绝策略、认证检查、容器 CLI 校验或文件安装失败时，尝试恢复本次服务覆盖、旧 Key 状态及容器文件，仅撤销本次新建的 Key，不恢复整个 Magpie Key 仓库覆盖其他客户端。恢复失败会保留私有备份并明确提示人工处理。应用配置成功提交后，若最后的应用重启失败，保留已提交配置与 Key，待手动重启，不撤销正在使用的凭证。
+- 检查仅使用读取模型列表的请求，不发送生成请求；脚本成功不代表真实模型对话已验收。完成后刷新网页并新建 Codex 对话，历史会话可能仍保留原供应商。
+
+参考：[Magpie 网关与远程客户端](https://github.com/yetone/magpie/blob/main/docs/reference.md#connecting-anything-else)、[Codex 供应商配置](https://developers.openai.com/codex/config-reference/)。
+
 ## 版本、验证和回滚
 
 目录：`incoming/<SHA>-<BUILD>/` 为传输包，`releases/<SHA>-<BUILD>/` 为 Compose/镜像元数据，`current` 为最后一个健康版本的原子软链接，`shared/production.env` 为下一次部署输入。
@@ -136,9 +177,7 @@ mv -Tf ".manual-$release_id" current
 
 ## 针对性测试与待验收
 
-CI 的 test 阶段运行部署脚本模拟测试、健康探针测试、Web 回归测试和 Agent 测试。模拟测试不挂载 Docker socket，覆盖传输包校验、首次失败、更新回滚、回滚失败、镜像不匹配、并发锁、项目名限制、SSH 严格校验、参数注入拒绝、子进程退出和 SIGTERM。
-
-冒烟阶段使用 `docker-compose.smoke.yml` 启动一套与生产项目同构的隔离栈（`app` + `postgres` + `rustfs` + `rustfs-init`，项目名 `infinite-canvas-smoke`），等待健康后由 `post` 无条件 `down -v` 清理，不发布端口、不影响宿主机已有中间件。
+CI 流水线已取消测试和容器冒烟阶段，推送 `deploy` 后直接构建镜像并部署；部署健康检查仍由 `remote-deploy.sh` 执行。Dockerfile 保留 `test` 目标，需要时可手动运行 `docker build --target test .`。
 
 本地不执行应用构建/类型检查（遵循仓库约定），构建留给流水线。真实镜像构建、Jenkins 语法/插件兼容性、Webhook 投递、SSH 登录、卷初始化、Codex 实际登录以及生产回滚仍需真实环境验收。
 
