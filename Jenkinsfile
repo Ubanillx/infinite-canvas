@@ -36,7 +36,14 @@ pipeline {
             steps {
                 sh '''#!/usr/bin/env bash
                     set -Eeuo pipefail
-                    docker build --target runtime --label "org.opencontainers.image.revision=$RELEASE_SHA" --tag "$APP_IMAGE" .
+                    DOCKER_BUILDKIT=1 docker build --progress=plain --target runtime --label "org.opencontainers.image.revision=$RELEASE_SHA" --tag "$APP_IMAGE" .
+                '''
+            }
+        }
+        stage('Package release') {
+            steps {
+                sh '''#!/usr/bin/env bash
+                    set -Eeuo pipefail
                     mkdir -p .ci
                     docker image inspect --format '{{.Id}}' "$APP_IMAGE" > .ci/image-id
                     docker save "$APP_IMAGE" | gzip > .ci/image.tar.gz
