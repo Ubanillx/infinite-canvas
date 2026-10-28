@@ -1,4 +1,4 @@
-# 仅供 CI 隔离冒烟检查使用：临时 PostgreSQL + RustFS，与生产编排无关。
+# 供手动隔离冒烟检查使用：临时 PostgreSQL + RustFS，与生产编排无关。
 # 容器之间只走内部网络，不向宿主机发布端口。
 name: infinite-canvas-smoke
 

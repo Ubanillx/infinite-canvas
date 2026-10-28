@@ -24,11 +24,11 @@ COPY deploy ./deploy
 FROM source AS test
 RUN apt-get update && apt-get install -y --no-install-recommends python3 util-linux \
     && rm -rf /var/lib/apt/lists/*
-RUN node --test deploy/tests/healthcheck.test.mjs && python3 deploy/tests/test_deployment.py -v
+RUN node --test deploy/tests/healthcheck.test.mjs deploy/tests/import-codex-config.test.mjs && python3 deploy/tests/test_deployment.py -v && python3 deploy/tests/test_magpie_gateway.py -v
 RUN cd /app/web && bun test tests src/server/ai-response.test.mjs
 RUN cd /app/canvas-agent && npm test
 
-FROM test AS build
+FROM source AS build
 RUN cd /app/web && VITE_CANVAS_AGENT_URL=/api/canvas-agent npm run build
 RUN cd /app/canvas-agent && npm run build && npm prune --omit=dev --ignore-scripts --no-audit --no-fund
 

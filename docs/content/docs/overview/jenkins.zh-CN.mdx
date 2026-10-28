@@ -5,7 +5,7 @@ description: deploy 分支的 GitHub Webhook、SSH 与 Docker Compose 发布流�
 
 # Jenkins 自动部署
 
-仓库提供 `Jenkinsfile`，固定检测 `deploy` 分支，由 GitHub Push Webhook 触发。流水线按顺序执行测试、镜像构建、隔离容器冒烟检查、SSH 传输、Docker Compose 更新和健康检查；发布失败尝试恢复上一个健康版本，部署和回滚各等待最多 120 秒。
+仓库提供 `Jenkinsfile`，固定检测 `deploy` 分支，由 GitHub Push Webhook 触发。流水线按顺序执行镜像构建、SSH 传输、Docker Compose 更新和健康检查；发布失败尝试恢复上一个健康版本，部署和回滚各等待最多 120 秒。
 
 Jenkins 单分支 Pipeline 使用 `Pipeline script from SCM`，Git 分支设为 `*/deploy`，Script Path 为 `Jenkinsfile`，启用 `GitHub hook trigger for GITScm polling`。GitHub Webhook 地址为 `https://你的Jenkins地址/github-webhook/`，订阅 Push events，使用 HTTPS 并验证实际投递结果。dev/main 的更新不会直接发布。
 

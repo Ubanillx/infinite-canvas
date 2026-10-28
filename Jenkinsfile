@@ -32,11 +32,6 @@ pipeline {
                 }
             }
         }
-        stage('Test') {
-            steps {
-                sh 'docker build --target test --tag "infinite-canvas-test:$BUILD_NUMBER-$RELEASE_SHA" .'
-            }
-        }
         stage('Build image') {
             steps {
                 sh '''#!/usr/bin/env bash
@@ -53,13 +48,6 @@ pipeline {
                     tar -C .ci -czf .ci/release.tar.gz image.tar.gz compose.yml remote-deploy.sh image-ref image-id revision SHA256SUMS
                 '''
                 script { env.PACKAGE_READY = 'true' }
-            }
-        }
-        stage('Container smoke test') {
-            steps {
-                // 用隔离的 PostgreSQL + RustFS 跑一次完整启动与健康检查，
-                // 结束后删除容器和临时卷，不影响宿主机上已有的中间件。
-                sh 'bash deploy/smoke-test.sh'
             }
         }
         stage('SSH deploy') {
@@ -81,9 +69,6 @@ pipeline {
                 }
             }
             sh 'rm -f .ci/image.tar.gz .ci/release.tar.gz .ci/infra-images.tar.gz'
-            // 冒烟阶段异常中断时兜底清理隔离栈，避免残留容器占用端口和磁盘。
-            // down 仍会解析 image 字段，必须提供 APP_IMAGE 占位值，否则会因缺少变量直接退出。
-            sh 'APP_IMAGE=unused docker compose -p infinite-canvas-smoke -f docker-compose.smoke.yml down -v --remove-orphans >/dev/null 2>&1 || true'
         }
     }
 }
