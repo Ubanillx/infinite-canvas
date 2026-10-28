@@ -3,3 +3,4 @@ Dockerfile text eol=lf
 Jenkinsfile text eol=lf
 *.yml text eol=lf
 *.mjs text eol=lf
+deploy/*.py text eol=lf

@@ -32,7 +32,21 @@ FROM source AS build
 RUN cd /app/web && VITE_CANVAS_AGENT_URL=/api/canvas-agent npm run build
 RUN cd /app/canvas-agent && npm run build && npm prune --omit=dev --ignore-scripts --no-audit --no-fund
 
-FROM base AS runtime
+FROM base AS office-tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-venv curl jq ripgrep file zip unzip \
+    poppler-utils pandoc libreoffice-writer libreoffice-calc libreoffice-impress \
+    tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim ffmpeg fontconfig fonts-dejavu-core fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+COPY deploy/office-requirements.txt /usr/local/lib/infinite-canvas/office-requirements.txt
+RUN python3 -m venv /opt/office \
+    && /opt/office/bin/python -m pip install --no-cache-dir -r /usr/local/lib/infinite-canvas/office-requirements.txt
+COPY deploy/image-info.py /usr/local/bin/canvas-image-info
+COPY deploy/office-tools.md /usr/local/lib/infinite-canvas/office-tools.md
+RUN chmod 755 /usr/local/bin/canvas-image-info
+ENV PATH="/opt/office/bin:${PATH}" INFINITE_CANVAS_OFFICE_TOOLS=1
+
+FROM office-tools AS runtime
 WORKDIR /app
 ENV NODE_ENV=production HOME=/home/node PORT=3000 \
     INFINITE_CANVAS_DATA_DIR=/data CODEX_HOME=/home/node/.codex
@@ -50,3 +64,9 @@ EXPOSE 3000
 VOLUME ["/data", "/home/node/.infinite-canvas", "/home/node/.codex"]
 HEALTHCHECK CMD ["bun", "/usr/local/lib/infinite-canvas/healthcheck.mjs"]
 ENTRYPOINT ["/usr/local/bin/infinite-canvas-entrypoint"]
+
+FROM runtime AS runtime-test
+COPY deploy/tests/test_office_runtime.py /tmp/test_office_runtime.py
+RUN python /tmp/test_office_runtime.py
+
+FROM runtime AS release
