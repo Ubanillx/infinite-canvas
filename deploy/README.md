@@ -10,11 +10,26 @@
 
 ## Jenkins 前置条件
 
-- Linux Agent 标签为 `docker-linux`，装有 Git、Bash、Docker Engine、OpenSSH client、tar、gzip、sha256sum。Docker 开启 BuildKit，构建节点可访问 npm、Docker Hub 和系统包源。
+- Linux Agent 标签为 `docker-linux`，装有 Git、Bash、Docker Engine、OpenSSH client、tar、gzip、sha256sum。Docker 支持 BuildKit，构建节点可访问 npm、PyPI、Docker Hub 和系统包源。
 - Jenkins 插件：Pipeline、Git、GitHub、Credentials Binding。该方案不依赖 Timestamper、SSH Publisher、SSH Agent 或 Docker Pipeline 插件。
 - 若旧构建提示 `Invalid option type "timestamps"`，说明当前 Jenkins 未提供 Timestamper 选项。仓库已移除该非必需选项；使用最新 deploy 分支重新构建，不要直接回放旧 Jenkinsfile。需要日志时间戳时可由管理员另行安装并配置 Timestamper。
 - Docker 权限相当于主机 root 权限，使用专用可信构建节点和部署账号，不向容器挂载宿主机 Docker socket。
 - 镜像基础版本在 Dockerfile 的 `NODE_IMAGE` / `BUN_IMAGE` 参数中定义；生产可改用审核后的 digest，更新需要重新验收。
+
+### 构建缓存
+
+Jenkins 显式启用 BuildKit，复用同一 Docker 构建节点上的层缓存和下载缓存，不需要新增镜像仓库或部署凭据：
+
+- 前端与 Agent 各有独立的依赖层和编译层，依赖安装仅依赖各自的 `package.json` / `package-lock.json`。修改源码不重装依赖；只修改一端不会因共用构建链而重编译另一端。前端使用根目录的 `VERSION` / `CHANGELOG.md`，这些文件变化仍会正常触发前端编译。
+- npm 通过 BuildKit 挂载缓存下载包，继续执行 `npm ci` 并校验锁文件，不共享或复用宿主机的 `node_modules`。Python 依赖按固定版本清单安装，pip 下载缓存不再被禁用；清单变化时可复用未变化的包。
+- 系统软件包与索引使用带锁的 APT 缓存，关闭镜像内自动删除下载包的配置。Office、OCR、Python 等运行环境独立于应用源码，未变化时直接复用完整安装层；APT/npm/pip 下载缓存不打进最终运行镜像。
+- `.local` 调试产物与本地数据不再进入构建上下文。Jenkins 分别显示 `Build image`、`Package release` 和 `SSH deploy`，构建日志中的 `CACHED` 表示层缓存命中。缓存不加速后两步的完整镜像导出、压缩、传输和加载。
+
+首次使用新结构仍需完整下载和安装。后续构建须复用同一 Docker builder 及其数据目录；清理 Jenkins 工作区不会清理该缓存，但切换构建主机、使用临时 Docker daemon、手动 prune 或 Docker 自动回收均可能使缓存失效，届时正常重新下载。若 `docker-linux` 标签对应多台主机，各自维护本地缓存，本方案不跨节点同步缓存，也不调整缓存保留期限或磁盘限额。不要在每次发布后执行 `docker builder prune` / `docker system prune`。
+
+验收时对比首次构建、无源码变化的再次构建、单端源码修改、单端锁文件修改和 Python 清单修改的日志；预期只重跑受影响的步骤，不应恢复已取消的测试或冒烟阶段。镜像复制清单、非 root 运行用户、SSH 校验、回滚和数据卷保持不变。
+
+参考：[Docker 构建缓存优化](https://docs.docker.com/build/cache/optimize/)。
 
 ### 凭据（ID 与 Jenkinsfile 保持一致）
 
