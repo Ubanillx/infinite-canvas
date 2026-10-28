@@ -13,6 +13,139 @@ async function setup(request: APIRequestContext, page: Page) {
     return { workspace, headers };
 }
 
+test("Agent attachment reads keep the authenticated workspace context", async ({ request, page }) => {
+    const { workspace } = await setup(request, page);
+    await page.route("**/mock-agent/agent/attachments/*?*", async (route) => {
+        const url = new URL(route.request().url());
+        expect(url.searchParams.get("workspaceId")).toBe(workspace.id);
+        expect(url.searchParams.get("clientId")).toBe("source-tab");
+        expect(route.request().headers()["x-infinite-canvas-workspace"]).toBe(workspace.id);
+        await route.fulfill({ contentType: "image/png", body: Buffer.from(png, "base64") });
+    });
+    const result = await page.evaluate(async () => {
+        const modulePath = "/src/services/api/canvas-agent.ts";
+        const { fetchAgentAttachment } = await import(modulePath);
+        const response = await fetchAgentAttachment(`${location.origin}/mock-agent`, "test", "source-tab", "attachment-1");
+        return { status: response.status, bytes: (await response.arrayBuffer()).byteLength };
+    });
+    expect(result).toEqual({ status: 200, bytes: Buffer.from(png, "base64").length });
+});
+
+test("canvas image export copies original bytes to the current thread without changing nodes", async ({ request, page }) => {
+    const { workspace, headers } = await setup(request, page);
+    const key = `image:${randomUUID().replaceAll("-", "")}`;
+    const original = Buffer.from(await page.evaluate(() => {
+        const canvas = document.createElement("canvas");
+        canvas.width = canvas.height = 2;
+        canvas.getContext("2d")!.fillRect(0, 0, 1, 1);
+        return canvas.toDataURL("image/png").split(",")[1];
+    }), "base64");
+    expect((await request.put(`/api/media/blob/${encodeURIComponent(key)}`, { headers: { ...headers, "content-type": "image/png" }, data: original })).ok()).toBe(true);
+    let uploaded = 0;
+    await page.route("**/mock-agent/agent/files?*", async (route) => {
+        const url = new URL(route.request().url());
+        expect(url.searchParams.get("workspaceId")).toBe(workspace.id);
+        expect(url.searchParams.get("threadId")).toBe("source-thread");
+        expect(url.searchParams.get("name")).toBe("canvas-image.png");
+        expect(route.request().postDataBuffer()).toEqual(original);
+        uploaded++;
+        await route.fulfill({ json: { ok: true, file: { fileId: "exported-file" } } });
+    });
+    const result = await page.evaluate(async (key) => {
+        const modulePath = "/src/services/api/canvas-agent.ts";
+        const { exportCanvasImage } = await import(modulePath);
+        const snapshot = { projectId: "canvas", nodes: [{ id: "image", type: "image", metadata: { images: [{ id: "selected", storageKey: key, status: "success" }] } }] };
+        const before = JSON.stringify(snapshot);
+        const file = await exportCanvasImage(`${location.origin}/mock-agent`, "test", snapshot, { nodeId: "image", imageId: "selected", threadId: "source-thread" });
+        return { file, unchanged: JSON.stringify(snapshot) === before };
+    }, key);
+    expect(result).toEqual({ file: { fileId: "exported-file" }, unchanged: true });
+    expect(uploaded).toBe(1);
+    expect(await (await request.get(`/api/media/blob/${encodeURIComponent(key)}`, { headers })).body()).toEqual(original);
+});
+
+test("403 JSON and invalid image bytes cannot be exported as PNG", async ({ request, page }) => {
+    await setup(request, page);
+    let uploaded = 0;
+    await page.route("**/mock-agent/agent/files?*", async (route) => { uploaded++; await route.fulfill({ status: 500 }); });
+    for (const status of [403, 200]) {
+        await page.route("**/api/media/blob/image%3Ainvalid-export", (route) => route.fulfill({ status, contentType: status === 403 ? "application/json" : "image/png", body: '{"error":"denied"}' }));
+        const failed = await page.evaluate(async () => {
+            const modulePath = "/src/services/api/canvas-agent.ts";
+            const { exportCanvasImage } = await import(modulePath);
+            try {
+                await exportCanvasImage(`${location.origin}/mock-agent`, "test", { nodes: [{ id: "image", type: "image", metadata: { storageKey: "image:invalid-export" } }] }, { nodeId: "image", threadId: "thread" });
+                return false;
+            } catch { return true; }
+        });
+        expect(failed).toBe(true);
+        await page.unroute("**/api/media/blob/image%3Ainvalid-export");
+    }
+    expect(uploaded).toBe(0);
+});
+
+test("live MCP errors expose result.content instead of hiding the failure", async ({ request, page }) => {
+    await setup(request, page);
+    const detail = await page.evaluate(async () => {
+        const modulePath = "/src/components/agent/agent-event-formatters.ts";
+        const { formatAgentActivity } = await import(modulePath);
+        return formatAgentActivity({ type: "item.completed", item: { type: "mcp_tool_call", tool: "canvas_create_attachment_nodes", status: "completed", arguments: { attachmentIds: ["image"] }, result: { isError: true, content: [{ type: "text", text: "workspace denied" }] } } })?.detail;
+    });
+    expect(detail.status).toBe("failed");
+    expect(detail.output).toBe("workspace denied");
+});
+
+test("switching workspace during export cancels before reading or uploading another workspace", async ({ request, page }) => {
+    await setup(request, page);
+    let transfers = 0;
+    await page.route("**/api/media/blob/image%3Aexport-race", async (route) => { transfers++; await route.fulfill({ status: 403 }); });
+    await page.route("**/mock-agent/agent/files?*", async (route) => { transfers++; await route.fulfill({ status: 403 }); });
+    const error = await page.evaluate(async () => {
+        const modulePath = "/src/services/api/canvas-agent.ts";
+        const { exportCanvasImage } = await import(modulePath);
+        const key = "infinite-canvas:active-workspace";
+        const original = localStorage.getItem(key)!;
+        const result = exportCanvasImage(`${location.origin}/mock-agent`, "test", { nodes: [{ id: "image", type: "image", metadata: { storageKey: "image:export-race" } }] }, { nodeId: "image", threadId: "thread" });
+        localStorage.setItem(key, JSON.stringify({ ...JSON.parse(original), id: "00000000-0000-4000-8000-000000000000" }));
+        try { await result; return "accepted"; }
+        catch (error) { return String(error); }
+        finally { localStorage.setItem(key, original); }
+    });
+    expect(error).toContain("工作区已切换");
+    expect(transfers).toBe(0);
+});
+
+test("only initialization, not a long running turn, shows the initialization warning", async ({ request, page }) => {
+    await setup(request, page);
+    await page.route("**/mock-agent/**", (route) => route.fulfill({ json: { ok: true, data: [], messages: [] } }));
+    await page.clock.install();
+    await page.evaluate(async () => {
+        const modulePath = "/src/stores/use-agent-store.ts";
+        const { useAgentStore } = await import(modulePath);
+        useAgentStore.getState().setAgentState({ url: `${location.origin}/mock-agent`, token: "test", connected: true, enabled: false, panelMounted: true, panelOpen: true, activeTab: "chat", loadingThreads: false, activeThreadId: "thread", conversation: { engine: "codex", revision: 1, conversationId: "conversation", threadId: "thread", status: "running", mcpStatuses: {} } });
+    });
+    const composer = page.locator("aside[data-canvas-shortcuts-ignore] [role=textbox]");
+    await expect(composer).toHaveAttribute("aria-label", /询问 Codex/);
+    await page.clock.fastForward(60_001);
+    await expect(composer).toHaveAttribute("aria-label", /询问 Codex/);
+    await page.evaluate(async () => {
+        const modulePath = "/src/stores/use-agent-store.ts";
+        const { useAgentStore } = await import(modulePath);
+        const state = useAgentStore.getState();
+        state.setAgentState({ conversation: { ...state.conversation, status: "preparing" } });
+    });
+    await expect(composer).toHaveAttribute("aria-label", /正在初始化/);
+    await page.clock.fastForward(60_001);
+    await expect(composer).toHaveAttribute("aria-label", /初始化时间较长/);
+    await page.evaluate(async () => {
+        const modulePath = "/src/stores/use-agent-store.ts";
+        const { useAgentStore } = await import(modulePath);
+        const state = useAgentStore.getState();
+        state.setAgentState({ conversation: { ...state.conversation, status: "running" } });
+    });
+    await expect(composer).toHaveAttribute("aria-label", /询问 Codex/);
+});
+
 test("Codex and Pi send only after originals are inventoried, restore by message scope, and release references without deleting media", async ({ request, page }) => {
     const { headers } = await setup(request, page);
     const messages = new Map<string, string>();
@@ -43,7 +176,8 @@ test("Codex and Pi send only after originals are inventoried, restore by message
             return fetchAgentJson(endpoint, "test", `/agent/${engine}/threads/thread`);
         }, { engine, png, id: randomUUID() });
         const attachment = result.messages[0].attachments[0];
-        keys.push(attachment.storageKey);
+        // Restored attachments expose the original through a media URL, not a storageKey field.
+        keys.push(decodeURIComponent(new URL(attachment.url, page.url()).pathname.split("/").at(-1)!));
         expect(attachment.url).toContain("/api/media/blob/");
         expect(attachment.dataUrl).toBeUndefined();
         expect(await (await request.get(attachment.url)).body()).toEqual(Buffer.from(png, "base64"));

@@ -162,6 +162,41 @@ export function fetchAgentFile(endpoint: string, token: string, fileId: string) 
     return fetch(`${endpoint}/agent/files/${encodeURIComponent(fileId)}/content?token=${encodeURIComponent(token)}${workspaceQuerySuffix()}`);
 }
 
+export function fetchAgentAttachment(endpoint: string, token: string, clientId: string, attachmentId: string) {
+    return fetch(`${endpoint}/agent/attachments/${encodeURIComponent(attachmentId)}?token=${encodeURIComponent(token)}&clientId=${encodeURIComponent(clientId)}${workspaceQuerySuffix()}`, { headers: workspaceHeaders() });
+}
+
+/** 使用网页既有鉴权复制当前画布原图；不转码、不修改节点，也不向模型暴露凭证。 */
+export async function exportCanvasImage(endpoint: string, token: string, snapshot: CanvasAgentSnapshot, input: { nodeId: string; imageId?: string; threadId: string }) {
+    const workspaceId = getActiveWorkspace()?.id;
+    const node = snapshot.nodes.find((item) => item.id === input.nodeId && item.type === "image");
+    if (!workspaceId || !node || !input.threadId) throw new Error(i18n.t("agent.runtime.imageExportUnavailable"));
+    const metadata = node.metadata || {};
+    const image = input.imageId
+        ? metadata.images?.find((item) => item.id === input.imageId)
+        : metadata.images?.find((item) => item.id === metadata.primaryImageId) || metadata.images?.find((item) => item.status === "success");
+    if (input.imageId && !image) throw new Error(i18n.t("agent.runtime.imageExportUnavailable"));
+    const source = image || metadata;
+    if ((!source.storageKey && !source.content) || source.status === "loading" || source.status === "error") throw new Error(i18n.t("agent.runtime.imageExportUnavailable"));
+    const { getImageBlob, imageToDataUrl } = await import("@/services/image-storage");
+    if (getActiveWorkspace()?.id !== workspaceId) throw new Error(i18n.t("agent.runtime.imageExportWorkspaceChanged"));
+    const blob = source.storageKey
+        ? await getImageBlob(source.storageKey)
+        : await (await fetch(await imageToDataUrl({ url: source.content }))).blob();
+    const extensions: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif", "image/avif": "avif" };
+    const extension = extensions[blob?.type || ""];
+    if (!blob || !extension) throw new Error(i18n.t("agent.runtime.imageExportInvalid"));
+    try {
+        const bitmap = await createImageBitmap(blob);
+        bitmap.close();
+    } catch {
+        throw new Error(i18n.t("agent.runtime.imageExportInvalid"));
+    }
+    if (getActiveWorkspace()?.id !== workspaceId) throw new Error(i18n.t("agent.runtime.imageExportWorkspaceChanged"));
+    const file = await uploadAgentFile(endpoint, token, new File([blob], `canvas-image.${extension}`, { type: blob.type }), { threadId: input.threadId });
+    return { fileId: file.fileId };
+}
+
 export function resolveAgentMessageAssetUrl(endpoint: string, token: string, value: string) {
     const match = AGENT_MESSAGE_ASSET_PATTERN.exec(value);
     if (!match) return value.startsWith("agent-asset:") ? "" : value;

@@ -22,7 +22,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useAgentStore, type AgentAttachment, type AgentBootstrapStatus, type AgentCanvasContext, type AgentCanvasReference, type AgentChatItem, type AgentConversationState, type AgentEngine, type AgentFileAttachment, type AgentImageAttachment, type AgentModel, type AgentPendingApproval, type AgentPendingToolCall, type AgentPermissionMode, type AgentQueuedMessage, type AgentReasoningEffort, type AgentThreadSummary } from "@/stores/use-agent-store";
 import { type CanvasAgentOp, type CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import { isSiteTool, runSiteTool } from "@/lib/agent/agent-site-tools";
-import { acknowledgeCodexHistory, activateAgentClient, AgentApiError, createPiThread, deleteAgentFile, deletePiThread, discoverAgentConfig, fetchAgentFile, fetchAgentJson, fetchPiModels, fetchPiThread, fetchPiThreads, interruptCodexTurn, interruptPiTurn, postCodexApproval, postState, postToolResult, resumePiThread, uploadAgentFile } from "@/services/api/canvas-agent";
+import { acknowledgeCodexHistory, activateAgentClient, AgentApiError, createPiThread, deleteAgentFile, deletePiThread, discoverAgentConfig, exportCanvasImage, fetchAgentAttachment, fetchAgentFile, fetchAgentJson, fetchPiModels, fetchPiThread, fetchPiThreads, interruptCodexTurn, interruptPiTurn, postCodexApproval, postState, postToolResult, resumePiThread, uploadAgentFile } from "@/services/api/canvas-agent";
 import { workspaceHeaders } from "@/lib/workspace";
 import { AgentChatTimeline, AgentTaskProgress, AgentUsageBar } from "./agent-chat";
 import { AgentChatComposer } from "./agent-chat-composer";
@@ -78,7 +78,7 @@ const MAX_ATTACHMENT_PAYLOAD_BYTES = 28 * 1024 * 1024;
 const MESSAGE_PREVIEW_LONG_EDGE = 192;
 const MESSAGE_PREVIEW_MAX_LENGTH = 500_000;
 const DEFAULT_AGENT_URL = "http://127.0.0.1:17371";
-const AGENT_PROTOCOL_VERSION = 8;
+const AGENT_PROTOCOL_VERSION = 9;
 const HISTORY_RETRY_DELAYS_MS = [0, 150, 350, 700, 1200];
 // 会话初始化（含 MCP 预热）超过该时间仍无进展时，提示用户查看日志而不是无限等待。
 const AGENT_INIT_TIMEOUT_MS = 60_000;
@@ -188,13 +188,12 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         if (!status.saving && !status.error) setModelsRevision((revision) => revision + 1);
     }), []);
     useEffect(() => {
-        if (!connected) return setInitStalled(false);
-        if (conversationBusy || conversation.status === "idle") {
+        setInitStalled(false);
+        if (connected && (conversation.status === "preparing" || conversation.status === "idle")) {
             const timer = setTimeout(() => setInitStalled(true), AGENT_INIT_TIMEOUT_MS);
             return () => clearTimeout(timer);
         }
-        setInitStalled(false);
-    }, [connected, conversation.status, conversationBusy]);
+    }, [connected, conversation.status, conversation.conversationId]);
     const closePanel = useAgentStore((state) => state.closePanel);
     const pushMessage = useAgentStore((state) => state.addMessage);
     const pushEventLog = useAgentStore((state) => state.addEventLog);
@@ -1053,6 +1052,10 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                 appliedOps = await attachmentNodeOps(endpoint, token, clientIdRef.current, payload.input?.nodes);
                 result = context.applyOps(appliedOps);
                 await postState(endpoint, token, clientIdRef.current, result as CanvasAgentSnapshot);
+            } else if (payload.name === "canvas_export_image") {
+                const context = canvasContextRef.current;
+                if (!context) throw new Error(rt("openCanvasFirst"));
+                result = await exportCanvasImage(endpoint, token, context.snapshot, payload.input as { nodeId: string; imageId?: string; threadId: string });
             } else if (payload.name === "canvas_import_artifact") {
                 const context = canvasContextRef.current;
                 if (!context) throw new Error(rt("openCanvasFirst"));
@@ -1068,6 +1071,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             addEventLog(rt("toolCompleted", { tool: toolName(payload.name) }), result, result);
         } catch (error) {
             const message = error instanceof Error ? error.message : rt("canvasOperationFailed");
+            addEventLog(rt("toolExecutionFailed"), message, { name: payload.name, requestId: payload.requestId, error: message });
             await postToolResult(endpoint, token, clientIdRef.current, { requestId: payload.requestId, error: message });
         }
     };
@@ -1649,7 +1653,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                             ? connectError || t("agent.status.disconnected")
                             : conversation.status === "failed"
                             ? t(engine === "pi" ? "agent.panel.piInitFailed" : "agent.panel.initFailed")
-                            : initStalled
+                            : initStalled && (conversation.status === "idle" || conversation.status === "preparing")
                                 ? t("agent.panel.initStalled")
                                 : conversation.status === "idle" || conversation.status === "preparing"
                                     ? t("agent.panel.mcpInitializing")
@@ -1773,7 +1777,7 @@ async function attachmentNodeOps(endpoint: string, token: string, clientId: stri
             const id = String(item.id || "");
             const attachmentId = String(item.attachmentId || "");
             if (!id || !attachmentId) throw new Error(rt("invalidAttachmentNode"));
-            const res = await fetch(`${endpoint}/agent/attachments/${encodeURIComponent(attachmentId)}?token=${encodeURIComponent(token)}&clientId=${encodeURIComponent(clientId)}`);
+            const res = await fetchAgentAttachment(endpoint, token, clientId, attachmentId);
             if (!res.ok) {
                 const body = (await res.json().catch(() => null)) as { error?: string } | null;
                 throw new Error(body?.error || rt("attachmentReadFailed"));

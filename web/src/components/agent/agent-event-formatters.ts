@@ -90,7 +90,7 @@ export function formatAgentActivity(event: AgentEventPayload): Omit<AgentChatIte
     if (!item || (event.type !== "item.started" && event.type !== "item.completed")) return null;
     const completed = event.type === "item.completed";
     const status = String(item.status || (completed ? "completed" : "inProgress"));
-    const failed = Boolean(item.error?.message) || item.success === false || ["failed", "error"].includes(status);
+    const failed = Boolean(mcpToolError(item)) || item.success === false || ["failed", "error"].includes(status);
     const itemStatus = failed ? "failed" : status;
     if (item.type === "reasoning") {
         const text = readableText(item.summary);
@@ -121,7 +121,7 @@ export function formatAgentActivity(event: AgentEventPayload): Omit<AgentChatIte
     if (item.type === "context_compaction") return { role: "tool", title: tr("compactContext"), text: item.error?.message || tr(completed ? "contextCompacted" : "compactingContext"), detail: { kind: "context", status: itemStatus, ...(item.error?.message ? { output: item.error.message } : {}) } };
     if (isMcpToolItem(item)) {
         const name = String(item.tool || "");
-        return { role: "tool", title: toolName(name), text: completed ? item.error?.message || toolSummary(item) : tr("toolRunning", { action: toolAction(name) }), detail: toolDetail(item, itemStatus) };
+        return { role: "tool", title: toolName(name), text: completed ? mcpToolError(item) || toolSummary(item) : tr("toolRunning", { action: toolAction(name) }), detail: toolDetail(item, itemStatus) };
     }
     if (item.type === "dynamic_tool_call") {
         const name = String(item.tool || "");
@@ -295,7 +295,10 @@ export function formatAgentEventLog(event: AgentEventPayload) {
     if (event.type === "turn.completed") return { title: tr(event.status === "interrupted" ? "turnStopped" : "turnCompleted"), text: turnSummary(event) };
     if (event.type === "turn.failed" || event.type === "error") return { title: tr("turnFailed"), text: agentErrorView(event.message || event.error?.message).text };
     if (event.type === "item.started" && isMcpToolItem(item)) return { title: tr("toolCalled"), text: toolName(String(item?.tool || "")) };
-    if (event.type === "item.completed" && isMcpToolItem(item)) return { title: tr(item.error ? "toolFailed" : "toolCompleted"), text: `${toolName(String(item?.tool || ""))}${item.error?.message ? ` · ${item.error.message}` : ""}` };
+    if (event.type === "item.completed" && isMcpToolItem(item)) {
+        const error = mcpToolError(item);
+        return { title: tr(error ? "toolFailed" : "toolCompleted"), text: `${toolName(String(item.tool || ""))}${error ? ` · ${error}` : ""}` };
+    }
     if (event.type === "item.completed" && item?.type === "agent_message") return { title: tr("replyReceived"), text: compactText(stringText(item.text)) };
     return null;
 }
@@ -343,7 +346,7 @@ export function toolName(name: string) {
 }
 
 const toolTranslationKeys: Record<string, string> = {
-    canvas_apply_ops: "canvasOps", canvas_get_state: "readCanvas", canvas_get_selection: "readSelection", canvas_export_snapshot: "exportSnapshot", canvas_create_node: "createNode", canvas_create_attachment_nodes: "addAttachments", canvas_import_artifact: "importArtifact", canvas_create_text_node: "createText", canvas_create_text_nodes: "createTexts", canvas_create_config_node: "createConfig", canvas_create_image_prompt_flow: "createImageFlow", canvas_create_generation_flow: "createGenerationFlow", canvas_generate_text: "generateText", canvas_generate_image: "generateImage", canvas_generate_video: "generateVideo", canvas_generate_audio: "generateAudio", canvas_update_node: "updateNode", canvas_update_node_text: "updateText", canvas_move_nodes: "moveNodes", canvas_resize_node: "resizeNode", canvas_delete_nodes: "deleteNodes", canvas_connect_nodes: "connectNodes", canvas_select_nodes: "selectNodes", canvas_set_viewport: "setViewport", canvas_run_generation: "runGeneration", site_navigate: "openPage",
+    canvas_apply_ops: "canvasOps", canvas_get_state: "readCanvas", canvas_get_selection: "readSelection", canvas_export_snapshot: "exportSnapshot", canvas_create_node: "createNode", canvas_create_attachment_nodes: "addAttachments", canvas_import_artifact: "importArtifact", canvas_export_image: "exportImage", canvas_create_text_node: "createText", canvas_create_text_nodes: "createTexts", canvas_create_config_node: "createConfig", canvas_create_image_prompt_flow: "createImageFlow", canvas_create_generation_flow: "createGenerationFlow", canvas_generate_text: "generateText", canvas_generate_image: "generateImage", canvas_generate_video: "generateVideo", canvas_generate_audio: "generateAudio", canvas_update_node: "updateNode", canvas_update_node_text: "updateText", canvas_move_nodes: "moveNodes", canvas_resize_node: "resizeNode", canvas_delete_nodes: "deleteNodes", canvas_connect_nodes: "connectNodes", canvas_select_nodes: "selectNodes", canvas_set_viewport: "setViewport", canvas_run_generation: "runGeneration", site_navigate: "openPage",
 };
 
 function siteToolSummary(name: string, result: unknown, input: unknown) {
@@ -368,7 +371,17 @@ function isMcpToolItem(item?: AgentEventItem): item is AgentEventItem & { type: 
 
 export function toolDetail(item: AgentEventItem | undefined, status: string): AgentUserDetail {
     const name = String(item?.tool || "");
-    return { kind: "tool", status, rows: toolInputRows(name, item?.arguments), ...(item?.error?.message ? { output: item.error.message } : {}) };
+    const error = mcpToolError(item);
+    return { kind: "tool", status: error ? "failed" : status, rows: toolInputRows(name, item?.arguments), ...(error ? { output: error } : {}) };
+}
+
+function mcpToolError(item?: AgentEventItem) {
+    if (item?.error?.message) return item.error.message;
+    if (item?.type !== "mcp_tool_call") return "";
+    if (objectField(item.result, "isError") !== true && item.success !== false && !["failed", "error"].includes(item.status || "")) return "";
+    const content = objectField(item.result, "content");
+    const text = Array.isArray(content) ? content.map((part) => stringText(objectField(part, "text"))).filter(Boolean).join("\n") : "";
+    return text || stringText(item.result) || tr("toolFailed");
 }
 
 export function toolCallDetail(name: string, input: unknown, status: string, error = ""): AgentUserDetail {
@@ -377,6 +390,7 @@ export function toolCallDetail(name: string, input: unknown, status: string, err
 
 function toolInputRows(name: string, input: unknown) {
     input = parseToolArguments(input);
+    if (name === "canvas_export_image") return [detailRow(tr("nodeId"), objectField(input, "nodeId")), detailRow(tr("imageId"), objectField(input, "imageId"))].flatMap((row) => row ? [row] : []);
     if (name === "site_navigate") return [detailRow(tr("targetPage"), routeName(stringText(objectField(input, "path")) || "/"))].flatMap((row) => (row ? [row] : []));
     if (name === "prompts_search") return [detailRow(tr("searchContent"), objectField(input, "query"))].flatMap((row) => (row ? [row] : []));
     if (name === "canvas_create_text_node") return [detailRow(tr("textContent"), objectField(input, "text"))].flatMap((row) => (row ? [row] : []));
