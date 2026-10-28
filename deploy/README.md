@@ -179,6 +179,16 @@ mv -Tf ".manual-$release_id" current
 
 CI 流水线已取消测试和容器冒烟阶段，推送 `deploy` 后直接构建镜像并部署；部署健康检查仍由 `remote-deploy.sh` 执行。Dockerfile 保留 `test` 目标，需要时可手动运行 `docker build --target test .`。
 
+### 容器办公与图片处理工具
+
+运行时镜像内置 Python/Pillow、Word/Excel/PowerPoint/PDF 处理库，以及无界面 LibreOffice、Pandoc、Poppler、OCR（英文/简体中文）、FFmpeg、常用命令行程序和中日韩字体。Python 库固定版本，装在 `/opt/office` 虚拟环境，应用用户可直接运行 `python` / `python3`，无需 root 或临时安装。LibreOffice 用于后台格式转换，不提供桌面、远程桌面或额外网络端口；这些依赖会增加镜像体积和构建时间。
+
+Agent 可通过 `canvas_export_image` 把当前画布原图复制到同工作区文件中心，再运行 `canvas-image-info <图片路径>` 检查真实透明像素或用 Pillow 处理。导出复用网页登录和工作区鉴权，不向模型提供 Cookie 或服务端密钥，不修改原图、聊天记录或画布节点。完整工具说明位于镜像内 `/usr/local/lib/infinite-canvas/office-tools.md`。
+
+新增依赖只有在重建并部署镜像后才生效，不会由配置导入脚本安装。Agent 通信协议已升级为 9；部署完成后刷新网页并恢复原会话即可，不需要删除聊天记录或画布。请等待现有任务结束后再部署，因为更换容器会中断运行中的任务；不要使用删除数据卷的方式更新。
+
+可手动执行 `docker build --target runtime-test .`，在实际运行时复制清单、Node/Bun 版本及非 root 用户下检查办公依赖、图片透明度和 Office 转 PDF；该目标不会改变当前 CI 的直接构建部署流程。本次未执行镜像构建或此容器验收。
+
 本地不执行应用构建/类型检查（遵循仓库约定），构建留给流水线。真实镜像构建、Jenkins 语法/插件兼容性、Webhook 投递、SSH 登录、卷初始化、Codex 实际登录以及生产回滚仍需真实环境验收。
 
 参考：[Jenkins credentials binding](https://www.jenkins.io/doc/pipeline/steps/credentials-binding/)、[GitHub plugin](https://plugins.jenkins.io/github/)、[Compose up](https://docs.docker.com/reference/cli/docker/compose/up/)。

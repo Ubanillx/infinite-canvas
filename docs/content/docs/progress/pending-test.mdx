@@ -5,6 +5,17 @@ description: Implemented changes that still need manual verification
 
 # Pending Tests
 
+## Agent 附件、原图读取与办公运行环境
+
+- 附件原图读取改用统一 API 入口，显式携带工作区标识，保留登录会话、工作区成员校验及原有 Agent token 认证。实时消息和历史消息都从 MCP 的错误内容中提取失败原因，网页工具失败也记录到日志，不再只显示图片数量。
+- 新增 `canvas_export_image(nodeId, imageId?)`：只从发起 turn 的当前画布读取指定图片，将原始字节复制进同一工作区文件中心并绑定源线程，返回可供 shell 使用的 `file.path`。多图节点支持指定图片 ID，默认主图。媒体读取/上传继续使用网页现有鉴权，不把 Cookie、服务端 Key 或任意下载地址交给模型；拒绝非当前画布节点、其他工作区/线程文件、403 响应和无效图片，不转码或修改原图，不改变节点和连线。
+- 初始化提示仍沿用原有 60 秒阈值，仅在 `idle` / `preparing` 计时；进入 `running`、就绪、失败或断开时不再显示初始化超时提示，切换会话重新计时。生图参数补上 `background=transparent|opaque`，沿用现有生成链路，不承诺所有模型支持透明输出；提示 Agent 优先原图裁切/蒙版，并导出后检查 Alpha，而不是把棋盘格当作透明背景。
+- Agent 通信协议升级为 9，以拒绝无法处理新工具的旧网页/Agent 组合。消息元数据版本、文件中心索引及历史存储格式保持不变，不进行消息迁移、裁剪、清理或原画布重排。部署后需刷新网页并恢复原会话验收，不必删除或重建旧对话。
+- 最终容器运行层增加 Python 虚拟环境及固定版本 Pillow、python-docx、openpyxl、python-pptx、pypdf、reportlab、pandas、requests；预装无界面 LibreOffice、Pandoc、Poppler、英文/简体中文 Tesseract OCR、FFmpeg、常用命令行程序与中日韩字体。`python` / `python3` 直接使用预装环境，提供环境说明和只读 `canvas-image-info` 命令，统计 RGBA/调色板图片的真实透明、半透明和不透明像素，拒绝将错误 JSON 当成图片。
+- 已补充 Node、浏览器和真实运行容器的回归用例。Docker `runtime-test` 目标继承实际最终运行时，以非 root 用户检查依赖、字体、OCR、原图不变、真实 Alpha/调色板透明度、伪 PNG 拒绝以及 Office 文件读写和 DOCX 转 PDF；该目标尚未构建或执行，CI 不会自动增加测试阶段，镜像大小、容器内依赖安装和真实办公转换仍待验收。
+- 行为回归已通过：72 项定向 Node 用例，以及桌面/手机 Chromium 的 18 项附件、原图导出、错误内容拒绝、工作区切换保护、初始化提示和历史附件恢复检查。浏览器测试使用独立数据库与对象存储桶，结束后已清理；服务日志未发现可疑行。记录：`.local/e2e-2026-10-28T10-48-48-890Z/`。这些结果不代表真实模型生成或最终容器内的办公转换已经通过。
+- 本次未构建、做语法/类型检查、重启部署容器、发送真实生成请求或操作用户的聊天和画布；新程序需重建并部署运行时镜像后才可用。TODO 已检查，保留跨设备附件、签名下载与文件节点等未实现事项。
+
 ## Host Codex Configuration Import
 
 - Added `deploy/import-codex-config.sh`: select the host Codex home and a running Compose app container automatically or explicitly; copy `config.toml`, optional `auth.json`, and the top-level custom model catalog, preserving host files, container sessions and skills. Rewrite only the catalog path and validate the staged config with the container CLI before backup and replacement.
