@@ -5,6 +5,16 @@ description: 当前版本已实现但仍需人工验证的变更项
 
 # 待测试
 
+## 宿主机 Codex 配置导入
+
+- 新增 `deploy/import-codex-config.sh`，自动定位宿主机 Codex 目录和运行中的 Compose 应用容器，也支持显式指定；复制 `config.toml`、可选的 `auth.json` 和顶层模型目录 JSON，仅改写模型目录路径，使用容器 CLI 校验暂存配置后再备份替换；保留宿主机原文件、容器历史会话和 Skill。
+- 待验证模型目录绝对/相对路径、源文件缺失或不可读、无效 JSON/模型 schema、供应商配置不变、私有备份和权限、无效 TOML/JSON 与目标符号链接拒绝、替换失败后的恢复、凭证文件缺失或不可读、多容器歧义和输出不泄露凭证。检查供应商环境变量缺失时的警告，以及显式 keyring 存储拒绝导入；宿主机环境变量、其他外部文件与项目级覆盖不在迁移范围内。
+- Node 22 + Bun 1.3.13 下通过 4 项定向导入回归，使用模拟 Docker/CLI 验证模型目录绝对/相对路径（含带引号文件名）、源文件缺失保护，以及原生校验失败前不覆盖文件且清理暂存状态。另以真实 Linux Codex 0.164.0 离线复现完全相同的 `config/read` 缺文件错误，补齐并重写模型目录路径后，`config/read` 与启动配置校验均通过。记录：`.local/codex-config-error-20261028-105131/`。
+- 默认不重启，`--restart` 会中断应用当前请求；部署机使用下述 Magpie 网关模式重新导入已通过，上游供应商生成调用与真实对话仍待用户验收。未执行项目构建、语法检查或完整测试套件。已检查 TODO，无对应需迁移条目。
+- 新增显式 `--magpie-gateway`：针对宿主机回环地址 3425 的 Magpie，使用当前用户已有的 systemd 服务，自动注册或复用独立网关 Key；在 Docker 网关地址先验证未放行 IP 和无 Key 请求被拒绝，再启用保留回环访问的共享监听，仅放行当前应用容器 IPv4 `/32`。容器改用独立 HTTP 供应商和私有 Bearer Token，不复制宿主机认证文件、不改宿主机 Codex、不发布 Docker 端口、不改防火墙、不覆盖基础服务 unit。
+- Node 22 / Bun 1.3.13 下通过 9 项导入/探测行为回归，包含供应商暂存改写、宿主机配置与认证保留、输出无凭证、模拟 CLI 校验和网关激活失败保护、容器文件拒绝安装后的主机回滚，以及真实嵌入 Bun HTTP 探针访问回环测试服务。Python 3.12 下通过 9 项嵌入主机事务回归，使用模拟 systemd/Magpie/Docker 验证 Key 复用、容器 IP 改变、私有状态、早期及提交后回滚、白名单或认证未生效时不扩大到 LAN、撤销 Key 保护，以及未运行服务和 EnvironmentFile 拒绝。记录：`.local/magpie-gateway-20261028-123628-import/`、`.local/magpie-gateway-20261028-122913-host/`。未执行构建、语法检查、真实宿主机服务变更或生成调用。
+- 用户提供的部署日志确认网关脚本完整执行成功：未放行 IP 拒绝、无 Key 拒绝和应用 Key 接受检查均通过，当前放行容器为 `172.18.0.4/32`；已报告宿主机与容器备份，模型目录和配置安装完成，Docker 返回应用重启成功。此结果验证网关连通与认证，不等于上游模型生成已通过；新建 Codex 对话、真实模型回复、本机 CLI 保留、重启持久性、凭证权限及异常恢复仍待验收。Magpie 会重启三次，不接管手动进程；白名单属于 Magpie 应用层而非防火墙，宿主机自身地址仍允许。容器 IP 改变后须重跑；TLS、默认 profile、多网络和 EnvironmentFile 覆盖明确不自动处理。已检查中英文 TODO，无对应需迁移事项。
+
 ## AI 助手顶部导航居中
 
 - 导航以整个助手面板为基准居中，左右采用等宽网格轨道，不随引擎按钮、新建会话和收起按钮的实际宽度或有无偏移；窄屏新建会话收起文字，保留图标、提示与可访问名称，避免覆盖导航。
@@ -57,6 +67,7 @@ description: 当前版本已实现但仍需人工验证的变更项
 - 引擎差异：Pi 模式不显示文件上传入口，也不接受带 `fileId` 的附件，提示切换到 Codex；图片附件在 Pi 模式下保持原有行为。
 - 消息元数据存储升级到 v2，用于记录只有 `fileId` 而没有预览图地址的附件。首次启动会先把整个目录备份为 `message-metadata.v1-backup-<时间戳>` 再逐条升级；遇到损坏记录或未知版本时中止迁移并保留原文件，不静默覆盖。
 - Agent 通信协议版本升到 8，旧版网页连接新版 Canvas Agent（或反之）会显示需要重启 Agent 的提示。
+- Agent 图片附件改用通用 `randomId` 生成媒体键，不再依赖仅在安全上下文可用的 `crypto.randomUUID`。通过普通 HTTP（例如局域网地址）上传并发送图片时不应再出现 `crypto.randomUUID is not a function`，需分别验证 HTTPS/localhost 与局域网 HTTP。
 
 ## 服务端 Pi Agent 引擎
 
@@ -260,12 +271,13 @@ description: 当前版本已实现但仍需人工验证的变更项
 
 ## deploy 分支 CI/CD
 
+- CI 流水线已取消 Docker test 目标和容器冒烟阶段，推送 `deploy` 后直接构建运行时镜像并部署；Dockerfile 仍保留 `test` 目标供手动执行。
 - 首次发布前确认目标主机已初始化可读的 `shared/production.env`；缺少文件或 shared 目录时，SSH 预检应输出具体路径及原因并在上传前失败；连接、上传、远程激活失败应显示对应环节和退出码，不输出配置内容或私钥。
 - 使用 Dockerfile 固定的 Bun 1.3.13 验证响应流回归：gzip 解压、上游断流、后续健康请求、响应头发送前的可读 502 和下游失败时取消上游读取均应通过，且无未处理错误；不能用宿主机较新 Bun 代替此检查。
-- 确认 Docker test 阶段从 source 继承 `/app/docker-compose.yml` 和 `/app/docker-entrypoint.sh`，整组部署测试不再因缺少文件失败；只挂载完整宿主机仓库测试不能证明镜像内文件齐全。
+- 手动执行可选的 Docker test 目标时，确认其从 source 继承 `/app/docker-compose.yml` 和 `/app/docker-entrypoint.sh`，整组部署测试不再因缺少文件失败；只挂载完整宿主机仓库测试不能证明镜像内文件齐全。
 - 在未安装 Timestamper 的 Jenkins 上构建最新 deploy 提交，确认不再因 timestamps 选项编译失败；不要直接回放旧 Jenkinsfile，后续运行阶段仍需单独验收。
 - Jenkins 单分支 SCM 使用 */deploy，GitHub Push Webhook 触发；dev/main、PR 和旧提交不能进入构建或部署。首次注册参数后持久化部署主机默认值，再验证自动推送发布。
-- 首次 Linux 镜像构建运行部署/Web/Agent 测试并通过容器冒烟检查；首页 JS 静态资源、PostgreSQL 认证与工作区数据、Agent 同源健康请求正常，运行时 config.js 不包含密钥。容器健康检查须把 `/api/auth/me` 返回 200 且 `user: null` 视为未登录会话，遇到 401/500 判为失败；此前沿用旧 401 预期会让冒烟容器始终 unhealthy。
+- 首次 Linux 镜像构建并直接部署；首页 JS 静态资源、PostgreSQL 认证与工作区数据、Agent 同源健康请求正常，运行时 config.js 不包含密钥。容器健康检查须把 `/api/auth/me` 返回 200 且 `user: null` 视为未登录会话，遇到 401/500 判为失败。
 - 部署主机缺少 `postgres:17-alpine`、`rustfs/rustfs:latest`、`amazon/aws-cli:latest` 时，SSH 部署应只导出缺失镜像，经认证通道上传并 `docker load` 后再激活；主机已具备这些镜像时应跳过传输。需验证构建节点与部署主机架构一致，上传失败应明确指出基础镜像环节。
 - SSH 主机公钥错误时在传输前失败，包校验或 image ID/revision 不一致时不得更新服务；并发发布、项目名更改、未知已有容器需拒绝。
 - 测试健康升级、120 秒内检查失败后恢复旧镜像/运行配置、首次失败无旧版和回滚失败告警；current 只在新版本健康后变化，业务卷不删除、不自动回滚。
