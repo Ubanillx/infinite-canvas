@@ -1,4 +1,5 @@
 import { parseAgentAttachmentManifest, type AgentStoredAttachment, type AgentAttachmentManifest } from "@/lib/agent/agent-attachment-contract";
+import { randomId } from "@/lib/utils";
 
 export type AgentAttachmentTurn = {
     messageId: string; threadId?: string;
@@ -26,7 +27,7 @@ export async function persistAgentTurnAttachments(workspaceId: string, engine: s
     for (const file of files) {
         if (typeof file.dataUrl !== "string" || !file.dataUrl.startsWith("data:image/")) throw new Error("Agent 附件缺少可持久化的原图");
         const blob = await (await fetch(file.dataUrl)).blob();
-        const storageKey = `image:agent_${crypto.randomUUID()}`;
+        const storageKey = `image:agent_${randomId()}`;
         const response = await fetch(`/api/media/blob/${encodeURIComponent(storageKey)}`, { method: "PUT", headers: { "x-infinite-canvas-workspace": workspaceId, "content-type": blob.type }, body: blob });
         if (!response.ok) throw new Error("Agent 附件原图未保存，任务未发送");
         attachments.push({ id: file.id, name: file.name, type: blob.type, size: blob.size, width: file.width ?? 0, height: file.height ?? 0, storageKey, purpose: visible.has(file.id) ? "attachment" : "reference" });
