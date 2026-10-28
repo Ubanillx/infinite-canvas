@@ -8,6 +8,13 @@ function opsOf(name: Parameters<typeof buildCanvasToolRequest>[0], input: Record
     return (request.input as { ops: Array<Record<string, any>> }).ops;
 }
 
+test("generation flow forwards explicit transparency without changing its default", () => {
+    const config = opsOf("canvas_generate_image", { prompt: "isolated umbrella", background: "transparent" }).find((op) => op.nodeType === "config");
+    assert.equal(config?.metadata.background, "transparent");
+    const defaultConfig = opsOf("canvas_generate_image", { prompt: "background" }).find((op) => op.nodeType === "config");
+    assert.equal("background" in defaultConfig?.metadata, false);
+});
+
 test("generation flow reuses referenced nodes when the prompt only mentions them", () => {
     const ops = opsOf("canvas_generate_image", { prompt: "@[node:text-1]", referenceNodeIds: ["text-1"], title: "Flow", autoRun: true });
     const addedTextNodes = ops.filter((op) => op.type === "add_node" && op.nodeType === "text");

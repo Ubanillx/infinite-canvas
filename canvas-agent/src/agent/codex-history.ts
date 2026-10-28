@@ -93,7 +93,7 @@ export function threadMessages(thread: unknown, planUpdates: CodexPlanUpdate[] =
             }
             if (type === "mcpToolCall") {
                 const tool = String(field(item, "tool") || "工具调用");
-                const error = String(field(field(item, "error"), "message") || "");
+                const error = mcpToolError(item);
                 const input = toolArguments(field(item, "arguments"));
                 push({ id, role: "tool", title: toolName(tool), text: error || toolHistorySummary(tool, item, input), detail: toolHistoryDetail(tool, item, input, error) });
             }
@@ -511,6 +511,15 @@ function toolHistoryDetail(tool: string, item: unknown, input: unknown, error: s
     return { kind: "tool", status: itemStatus(item, error), rows: toolInputRows(tool, input), ...(error ? { output: error } : {}) };
 }
 
+function mcpToolError(item: unknown) {
+    const direct = itemErrorMessage(item);
+    if (direct) return direct;
+    const result = field(item, "result");
+    if (field(result, "isError") !== true && itemStatus(item) !== "failed") return "";
+    const text = arrayValue(field(result, "content")).map((part) => String(field(part, "text") || "")).filter(Boolean).join("\n");
+    return text || (typeof result === "string" ? result : "") || "工具执行失败";
+}
+
 function itemErrorMessage(item: unknown) {
     return String(field(field(item, "error"), "message") || "");
 }
@@ -593,6 +602,7 @@ function toolInputRows(tool: string, input: unknown) {
     if (tool === "canvas_create_text_node") return [textRow("文本内容", field(input, "text"))].filter(Boolean);
     if (tool === "canvas_apply_ops") return [textRow("操作内容", summarizeCanvasOps(arrayValue(field(input, "ops"))))].filter(Boolean);
     if (tool === "canvas_create_attachment_nodes") return [textRow("图片数量", arrayValue(field(input, "attachmentIds")).length)].filter(Boolean);
+    if (tool === "canvas_export_image") return [textRow("节点 ID", field(input, "nodeId")), textRow("图片 ID", field(input, "imageId"))].filter(Boolean);
     return [];
 }
 
@@ -697,6 +707,8 @@ function routeName(path: string) {
 
 /** 将 MCP 工具名称转换为聊天记录中的中文标题。 */
 function toolName(name: string) {
+    if (name === "canvas_export_image") return "导出图片文件";
+    if (name === "canvas_import_artifact") return "导入产物";
     if (name === "imagegen" || name.endsWith("__imagegen")) return "生成图片";
     if (name === "view_image" || name.endsWith("__view_image")) return "查看图片";
     if (name === "exec" || name === "exec_command" || name.endsWith("__exec_command")) return "执行命令";

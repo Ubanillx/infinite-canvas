@@ -8,6 +8,19 @@ import { appendReasoningDelta } from "./codex-client.js";
 import { CodexEventHistory } from "./codex-event-history.js";
 import { settledTurnIds, summarizeCodexThread, threadMessages } from "./codex-history.js";
 
+test("MCP content 中的执行错误在历史详情中保留，不改写已有消息", () => {
+    const thread = { id: "thread-1", turns: [{ id: "turn-1", status: "completed", items: [
+        { id: "tool-1", type: "mcpToolCall", tool: "canvas_create_attachment_nodes", status: "failed", arguments: { attachmentIds: ["image-1"] }, result: { isError: true, content: [{ type: "text", text: "工作区不存在或无权访问" }] } },
+        { id: "answer-1", type: "agentMessage", text: "原有回复" },
+    ] }] };
+    const before = JSON.stringify(thread);
+    const messages = threadMessages(thread);
+    assert.equal(messages.find((item) => item.itemId === "tool-1")?.detail?.output, "工作区不存在或无权访问");
+    assert.equal(messages.find((item) => item.itemId === "tool-1")?.detail?.status, "failed");
+    assert.equal(messages.find((item) => item.itemId === "answer-1")?.text, "原有回复");
+    assert.equal(JSON.stringify(thread), before);
+});
+
 test("线程摘要提取结构化状态类型", () => {
     assert.equal(summarizeCodexThread({ id: "thread-1", status: { type: "notLoaded" } }).status, "notLoaded");
     assert.equal(summarizeCodexThread({ id: "thread-1", status: "idle" }).status, "idle");

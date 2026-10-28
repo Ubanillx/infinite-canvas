@@ -7,7 +7,8 @@ export const DEFAULT_PORT = 17371;
 export const CONFIG_DIR = path.join(os.homedir(), ".infinite-canvas");
 export const CONFIG_FILE = path.join(CONFIG_DIR, "canvas-agent.json");
 export const VERSION = readPackageVersion();
-export const AGENT_PROMPT = fs.readFileSync(new URL("../agent-instructions.md", import.meta.url), "utf8");
+export const AGENT_PROMPT = fs.readFileSync(new URL("../agent-instructions.md", import.meta.url), "utf8")
+    + (process.env.INFINITE_CANVAS_OFFICE_TOOLS === "1" ? "\n容器已预装 Python/Pillow、Office/PDF/OCR 和媒体处理工具；使用前读取 /usr/local/lib/infinite-canvas/office-tools.md。图片透明度可直接运行 canvas-image-info file.path；python/python3 已指向预装依赖的环境，不要临时安装软件。\n" : "");
 const initializedWorkspaces = new Set<string>();
 const requestWorkspaceStates = new Map<string, SiteWorkspaceConfig>();
 

@@ -4,9 +4,58 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import test from "node:test";
 
+import { fileCenterFor } from "../agent/file-center.js";
 import { CanvasSession } from "./session.js";
+
+test("图片导出只从当前 turn 的画布读取并绑定工作区文件，不改变画布", async (t) => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "canvas-image-export-"));
+    t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+    const session = new CanvasSession("thread-1", "codex", workspace);
+    const first = connect(session, "first");
+    const second = connect(session, "second");
+    t.after(() => { first.close(); second.close(); });
+    const state = { ...snapshot("canvas-first"), nodes: [{ id: "image-1", type: "image" as const, position: { x: 10, y: 20 }, width: 100, height: 100, metadata: { storageKey: "image:original" } }] };
+    session.updateState(state, "first");
+    session.updateState(snapshot("canvas-second"), "second");
+    session.setCodexState({ busy: true, threadId: "thread-1", turnId: "turn-1" });
+    session.bindClient("first");
+    session.activateClient("second");
+    const saved = await fileCenterFor(workspace).save(Readable.from([Buffer.from("image-bytes")]), { name: "image.png", type: "image/png" });
+
+    const result = session.callTool("canvas_export_image", { nodeId: "image-1" });
+    const call = await waitForEvent(first, "tool_call");
+    assert.equal(field(call, "name"), "canvas_export_image");
+    assert.equal(second.event("tool_call"), undefined);
+    session.resolveResult("first", { requestId: String(field(call, "requestId")), result: { fileId: saved.fileId } });
+    const exported = (await result) as { file: { path: string; threadId: string; type: string } };
+    assert.equal(exported.file.path, saved.path);
+    assert.equal(exported.file.threadId, "thread-1");
+    assert.equal(exported.file.type, "image/png");
+    assert.deepEqual(session.canvasStateForClient("first"), { ...state, clientId: "first" });
+    await assert.rejects(session.callTool("canvas_export_image", { nodeId: "outside-canvas" }), /当前画布/);
+});
+
+test("图片导出拒绝其他工作区文件及其他线程已绑定的文件", async (t) => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "canvas-image-export-"));
+    t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+    const session = new CanvasSession("thread-1", "codex", workspace);
+    const first = connect(session, "first");
+    t.after(() => first.close());
+    session.updateState({ ...snapshot("canvas-first"), nodes: [{ id: "image-1", type: "image", position: { x: 0, y: 0 }, width: 100, height: 100 }] }, "first");
+    session.setCodexState({ busy: true, threadId: "thread-1", turnId: "turn-1" });
+    const saved = await fileCenterFor(workspace).save(Readable.from([Buffer.from("bytes")]), { name: "other.png", type: "image/png", threadId: "thread-other" });
+    const result = session.callTool("canvas_export_image", { nodeId: "image-1" });
+    const call = await waitForEvent(first, "tool_call");
+    session.resolveResult("first", { requestId: String(field(call, "requestId")), result: { fileId: saved.fileId } });
+    await assert.rejects(result, /另一会话/);
+    const missing = session.callTool("canvas_export_image", { nodeId: "image-1" });
+    const next = first.events("tool_call").at(-1);
+    session.resolveResult("first", { requestId: String(field(next, "requestId")), result: { fileId: "foreign-workspace-file" } });
+    await assert.rejects(missing, /找不到/);
+});
 
 test("MCP 读取当前激活网页的画布", async (t) => {
     const session = new CanvasSession();
@@ -264,7 +313,7 @@ test("new clients receive the current Codex state and later updates", (t) => {
     t.after(() => client.close());
 
     const hello = client.event("hello");
-    assert.equal(field(hello, "protocolVersion"), 8);
+    assert.equal(field(hello, "protocolVersion"), 9);
     assert.deepEqual(field(hello, "workspace"), { activeThreadId: "thread-2" });
     assert.deepEqual(field(hello, "conversation"), { engine: "codex", revision: 1, conversationId: "thread-2", threadId: "thread-2", status: "ready", mcpStatuses: {} });
     assert.deepEqual(field(hello, "codex"), { busy: true, threadId: "thread-2", turnId: "turn-1" });

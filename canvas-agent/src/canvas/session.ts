@@ -25,7 +25,7 @@ export type ConversationState = {
     error?: string;
 };
 type McpInventoryItem = { name: string; authStatus?: string };
-export const AGENT_PROTOCOL_VERSION = 8;
+export const AGENT_PROTOCOL_VERSION = 9;
 
 const SITE_TOOLS = new Set<ToolName>([
     "site_navigate",
@@ -465,6 +465,7 @@ export class CanvasSession {
         }
         if (name === "canvas_create_attachment_nodes") return await this.createAttachmentNodes(input as { attachmentIds: string[]; x?: number; y?: number; gap?: number; direction?: "row" | "column" });
         if (name === "canvas_import_artifact") return await this.importArtifact(input as { path: string; mode?: "auto" | "image" | "text"; title?: string; x?: number; y?: number; gap?: number; direction?: "row" | "column" });
+        if (name === "canvas_export_image") return await this.exportImage(input as { nodeId: string; imageId?: string });
         if (!this.clients.size) throw new Error("当前没有已连接画布");
         const request = buildCanvasToolRequest(name, input, this.canvasState);
         return await this.requestCanvasTool(request.name, request.input);
@@ -495,6 +496,23 @@ export class CanvasSession {
         });
         await this.requestCanvasTool("canvas_create_attachment_nodes", { nodes });
         return { nodes: nodes.map(({ id, attachmentId, title }) => ({ id, attachmentId, title })) };
+    }
+
+    /** 只通过发起网页的登录态读取图片，返回本工作区文件中心校验过的路径。 */
+    private async exportImage(input: { nodeId: string; imageId?: string }) {
+        if (!this.workspacePath) throw new Error("当前 Agent 没有工作区，无法导出图片");
+        const node = this.canvasState?.nodes?.find((item) => item.id === input.nodeId);
+        if (!node || node.type !== "image") throw new Error("只能导出当前画布中的图片节点");
+        const threadId = this.codexState.threadId || this.conversationState.threadId;
+        if (!threadId) throw new Error("当前 Agent 没有会话，无法导出图片");
+        const result = recordValue(await this.requestCanvasTool("canvas_export_image", { ...input, threadId }));
+        const fileId = String(result.fileId || "");
+        if (!fileId) throw new Error("网页未返回导出的图片文件");
+        const center = fileCenterFor(this.workspacePath);
+        const { file } = await center.read(fileId);
+        if (!file.type.startsWith("image/")) throw new Error("导出结果不是图片，未交给 Agent 处理");
+        const [bound] = await center.bind([fileId], threadId);
+        return { nodeId: input.nodeId, ...(input.imageId ? { imageId: input.imageId } : {}), file: bound };
     }
 
     /** 把模型产出的工作区文件导入当前画布，由网页读取内容后创建节点。 */

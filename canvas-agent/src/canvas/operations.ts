@@ -106,6 +106,7 @@ function configNodeOp(id: string, input: Record<string, unknown>, x: number, y: 
             model: input.model,
             size: input.size,
             quality: input.quality,
+            background: input.background,
             count: input.count,
             seconds: input.seconds,
             vquality: input.vquality,
