@@ -290,6 +290,7 @@ description: Implemented changes that still need manual verification
 ## deploy Branch CI/CD
 
 - CI no longer runs the Docker test target or container smoke stage: a deploy push builds the runtime image directly and deploys it. The `test` target remains in the Dockerfile for manual runs.
+- Nginx now allows request bodies up to 500MB. Verify `client_max_body_size 500m` is active on the deployment host and that large Agent image uploads no longer return 413 or show "Local Agent request failed".
 - Initialize readable `shared/production.env` on the target before the first release. Missing configuration or shared directory must produce an actionable path-specific preflight error before upload; connection, upload and activation failures must identify their stage and exit code without printing configuration or private keys.
 - Run Web response-stream regressions on the Dockerfile-pinned Bun 1.3.13: gzip decoding, interrupted upstream bodies, a subsequent healthy request, readable pre-header 502 errors and upstream cancellation on downstream failure must pass without unhandled errors. Do not substitute a newer host Bun for this check.
 - If the optional Docker test target is run manually, verify it contains `/app/docker-compose.yml` and `/app/docker-entrypoint.sh` inherited from source, and all deployment tests run without missing-file errors. A host-mounted full repository is not sufficient evidence of the image contents.

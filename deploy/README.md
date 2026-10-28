@@ -82,7 +82,7 @@ sudo install -m 600 -o canvas-deploy -g canvas-deploy deploy/production.env.exam
 
 持久化 `production.env` 只放部署运行参数，不放 AI API Key、Agent Token 或 Codex 登录凭据；服务端业务密钥由应用自身写入数据卷。Jenkins artifacts 不包含该文件。
 
-反向代理必须支持 SSE（关闭流式响应缓冲），保持请求 Host，在外部启用 HTTPS。根据上游生成请求配置代理时限，不在本次配置中擅自改动业务请求超时。
+反向代理必须支持 SSE（关闭流式响应缓冲），保持请求 Host，在外部启用 HTTPS，并将请求体上限设为 500MB（`client_max_body_size 500m;`），否则带图片或大文件的 Agent 请求会在代理层被 413 拒绝。根据上游生成请求配置代理时限，不在本次配置中擅自改动业务请求超时。
 
 ## 容器与持久化
 
