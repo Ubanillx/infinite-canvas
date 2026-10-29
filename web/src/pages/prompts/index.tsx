@@ -8,7 +8,7 @@ import { saveAs } from "file-saver";
 import { PromptCard } from "@/components/prompts/prompt-card";
 import { usePromptList } from "@/components/prompts/use-prompt-list";
 import { PromptDetailDialog } from "./components/prompt-detail-dialog";
-import { PromptEditorDialog } from "./components/prompt-editor-dialog";
+import { PromptEditorDialog } from "@/components/prompts/prompt-editor-dialog";
 import { useCopyText } from "@/hooks/use-copy-text";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { ALL_PROMPTS_OPTION, type Prompt } from "@/services/api/prompts";

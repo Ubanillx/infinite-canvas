@@ -67,6 +67,7 @@ export default {
         delete: "Delete",
         deleteConfirm: "Delete “{{title}}”? It will also disappear from the shared library.",
         save: "Save to workspace",
+        saveToLibrary: "Save to Prompt Library",
         saved: "Prompt saved to workspace",
         deleted: "Prompt deleted",
         saveFailed: "Failed to save prompt",

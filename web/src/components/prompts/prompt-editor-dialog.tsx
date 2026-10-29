@@ -13,9 +13,10 @@ import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 
 type PromptForm = Pick<WorkspacePromptInput, "title" | "prompt" | "shared"> & { tagsText: string };
 
-export function PromptEditorDialog({ open, prompt, onClose, onSave, onError }: {
+export function PromptEditorDialog({ open, prompt, draft, onClose, onSave, onError }: {
     open: boolean;
     prompt: Prompt | null;
+    draft?: { title: string; prompt: string } | null;
     onClose: () => void;
     onSave: (input: WorkspacePromptInput, id?: string) => Promise<void>;
     onError: (error: unknown) => void;
@@ -33,10 +34,10 @@ export function PromptEditorDialog({ open, prompt, onClose, onSave, onError }: {
 
     useEffect(() => {
         if (!open) return;
-        form.setFieldsValue({ title: prompt?.title || "", prompt: prompt?.prompt || "", tagsText: prompt?.tags.join(", ") || "", shared: prompt?.shared || false });
+        form.setFieldsValue({ title: prompt?.title || draft?.title || "", prompt: prompt?.prompt || draft?.prompt || "", tagsText: prompt?.tags.join(", ") || "", shared: prompt?.shared || false });
         setCoverDataUrl(undefined);
         setCoverPreview(prompt?.coverUrl || "");
-    }, [form, open, prompt]);
+    }, [form, open, prompt, draft]);
 
     const save = async () => {
         try {

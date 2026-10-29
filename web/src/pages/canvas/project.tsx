@@ -36,6 +36,7 @@ import { CanvasNodeSplitDialog, type CanvasImageSplitParams } from "@/components
 import { CanvasNodeUpscaleDialog, type CanvasImageUpscaleParams } from "@/components/canvas/canvas-node-upscale-dialog";
 import { buildNodeGenerationContext, buildNodeGenerationInputs, buildNodeResponseMessages, hydrateNodeGenerationContext, type NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
 import { CanvasNodeHoverToolbar, CanvasNodeInfoModal } from "@/components/canvas/canvas-node-hover-toolbar";
+import { CanvasSavePromptDialog, type CanvasPromptDraft } from "@/components/canvas/canvas-save-prompt-dialog";
 import { CanvasSelectionToolbar } from "@/components/canvas/canvas-selection-toolbar";
 import { CanvasReversePromptDialog } from "@/components/canvas/canvas-reverse-prompt-dialog";
 import { InfiniteCanvas } from "@/components/canvas/infinite-canvas";
@@ -277,6 +278,7 @@ function InfiniteCanvasPage() {
     const [nodeImageSettingsOpen, setNodeImageSettingsOpen] = useState(false);
     const [dialogNodeId, setDialogNodeId] = useState<string | null>(null);
     const [infoNodeId, setInfoNodeId] = useState<string | null>(null);
+    const [savePromptDraft, setSavePromptDraft] = useState<CanvasPromptDraft | null>(null);
     const [pluginManagerOpen, setPluginManagerOpen] = useState(false);
     const [cropNodeId, setCropNodeId] = useState<string | null>(null);
     const [maskEditNodeId, setMaskEditNodeId] = useState<string | null>(null);
@@ -3349,6 +3351,10 @@ function InfiniteCanvasPage() {
             onUpload={(node) => handleUploadRequest(node.id)}
             onDownload={downloadNodeImage}
             onSaveAsset={(node) => void saveNodeAsset(node)}
+            onSavePrompt={(node) => {
+                const prompt = node.metadata?.composerContent?.trim() || node.metadata?.prompt?.trim() || (node.type === CanvasNodeType.Text ? node.metadata?.content?.trim() : "") || "";
+                setSavePromptDraft({ title: prompt.split(/\r?\n/)[0].slice(0, 32), prompt });
+            }}
             onMaskEdit={(node) => setMaskEditNodeId(node.id)}
             onCrop={(node) => setCropNodeId(node.id)}
             onSplit={(node) => setSplitNodeId(node.id)}
@@ -3560,6 +3566,7 @@ function InfiniteCanvasPage() {
                 <input ref={imageInputRef} type="file" multiple accept="image/*,video/*,audio/mpeg,audio/wav,audio/x-wav,.mp3,.wav" className="hidden" onChange={handleImageInputChange} />
 
                 <CanvasNodeInfoModal node={infoNode} open={Boolean(infoNode)} onClose={() => setInfoNodeId(null)} />
+                <CanvasSavePromptDialog draft={savePromptDraft} onClose={() => setSavePromptDraft(null)} />
                 <CanvasPluginManagerModal open={pluginManagerOpen} onClose={() => setPluginManagerOpen(false)} />
                 <CanvasCreateProjectDialog open={createProjectOpen} initialTemplateId={createTemplateId} onCancel={() => setCreateProjectOpen(false)} onCreated={(id) => { setCreateProjectOpen(false); navigate(`/canvas/${id}`); }} />
                 {insertTemplateOpen ? <CanvasTemplateInsertDialog onClose={() => setInsertTemplateOpen(false)} onInsert={insertTemplate} onCreate={(id) => { setInsertTemplateOpen(false); setCreateTemplateId(id); setCreateProjectOpen(true); }} /> : null}

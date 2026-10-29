@@ -67,6 +67,7 @@ export default {
         delete: "删除",
         deleteConfirm: "确定删除「{{title}}」？共享内容也将不再可见。",
         save: "保存到工作区",
+        saveToLibrary: "保存到提示词库",
         saved: "提示词已保存到工作区",
         deleted: "提示词已删除",
         saveFailed: "保存提示词失败",
