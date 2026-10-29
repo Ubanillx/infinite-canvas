@@ -59,7 +59,11 @@ function fixture(t, reference = "models.json") {
         encoding: "utf8",
         env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, IMPORT_TARGET: target, PREFLIGHT_LOG: preflightLog, RESTART_LOG: restartLog, ...env },
     });
-    return { root, source, target, config, catalog, sourceCatalog, preflightLog, restartLog, run };
+    const runSync = (env = {}) => spawnSync("bash", [script, "--container", "app-id", "--sync-magpie-gateway"], {
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CODEX_HOME: join(root, "missing-host-config"), IMPORT_TARGET: target, PREFLIGHT_LOG: preflightLog, RESTART_LOG: restartLog, ...env },
+    });
+    return { root, source, target, config, catalog, sourceCatalog, preflightLog, restartLog, run, runSync };
 }
 
 for (const absolute of [false, true]) {
@@ -131,7 +135,7 @@ actions.push(action);
 fs.writeFileSync(log, JSON.stringify(actions));
 if (action === "lock") {
   const lock = path.join(root, "magpie.lock"); fs.writeFileSync(lock, ""); console.log(lock);
-} else if (action === "begin") {
+} else if (action === "begin" || action === "begin-sync") {
   const backup = path.join(root, "magpie-backup"); fs.mkdirSync(backup, { recursive: true }); console.log(backup);
 } else if (action === "prepare") {
   fs.writeFileSync(path.join(stage, "magpie-gateway.json"), JSON.stringify({ base_url: "http://172.18.0.1:3425/v1", key: "fixture-private-gateway-key" }), { mode: 0o600 });
@@ -188,6 +192,70 @@ test("container installation refusal rolls Magpie back even after its managed ke
     assert.deepEqual(f.actions(), ["lock", "begin", "prepare", "activate", "commit", "rollback"]);
     assert.equal(readFileSync(join(f.target, "config.toml"), "utf8"), oldConfig);
     assert.equal(existsSync(f.restartLog), false);
+});
+
+test("deployment skips unmanaged providers without host Codex configuration or Magpie setup", t => {
+    const f = fixture(t);
+    const result = f.runSync();
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Magpie gateway sync skipped/);
+    assert.equal(readFileSync(join(f.target, "config.toml"), "utf8"), oldConfig);
+    assert.equal(existsSync(f.restartLog), false);
+    assert.equal(existsSync(f.preflightLog), false);
+    assert.equal(readdirSync(f.target).some(name => name.startsWith(".config-import.")), false);
+});
+
+test("deployment sync preserves container files and key without host config, CLI validation or application restart", t => {
+    const f = gatewayFixture(t);
+    assert.equal(f.runGateway().status, 0);
+    const before = readdirSync(f.target);
+    const config = readFileSync(join(f.target, "config.toml"), "utf8");
+    const auth = readFileSync(join(f.target, "auth.json"), "utf8");
+    const catalog = readFileSync(join(f.target, "imported-model-catalog.json"), "utf8");
+    rmSync(f.source, { recursive: true });
+    rmSync(f.restartLog);
+    rmSync(f.preflightLog);
+    const result = f.runSync({ MAGPIE_TEST_ROOT: f.root });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(f.actions().slice(5), ["lock", "begin-sync", "prepare", "activate", "commit"]);
+    assert.equal(readFileSync(join(f.target, "config.toml"), "utf8"), config);
+    assert.equal(readFileSync(join(f.target, "auth.json"), "utf8"), auth);
+    assert.equal(readFileSync(join(f.target, "imported-model-catalog.json"), "utf8"), catalog);
+    assert.deepEqual(readdirSync(f.target), before);
+    assert.equal(existsSync(f.restartLog), false);
+    assert.equal(existsSync(f.preflightLog), false);
+    assert.doesNotMatch(result.stdout + result.stderr, /fixture-private-gateway-key|existing-container-auth/);
+});
+
+for (const replacement of ["different-private-gateway-key", "http://172.19.0.1:3425/v1"]) {
+    test(`deployment refuses mismatched ${replacement.startsWith("http") ? "gateway" : "key"} before changing the service`, t => {
+        const f = gatewayFixture(t);
+        assert.equal(f.runGateway().status, 0);
+        const name = replacement.startsWith("http") ? "http://172.18.0.1:3425/v1" : "fixture-private-gateway-key";
+        const config = readFileSync(join(f.target, "config.toml"), "utf8").replace(name, replacement);
+        writeFileSync(join(f.target, "config.toml"), config);
+        rmSync(f.restartLog);
+        const result = f.runSync({ MAGPIE_TEST_ROOT: f.root });
+        assert.notEqual(result.status, 0);
+        assert.deepEqual(f.actions().slice(5), ["lock", "begin-sync", "prepare", "rollback"]);
+        assert.match(result.stderr, /does not match/);
+        assert.equal(readFileSync(join(f.target, "config.toml"), "utf8"), config);
+        assert.equal(existsSync(f.restartLog), false);
+        assert.doesNotMatch(result.stdout + result.stderr, /fixture-private-gateway-key|different-private-gateway-key/);
+    });
+}
+
+test("deployment sync failure rolls back the host transaction and retains application configuration", t => {
+    const f = gatewayFixture(t);
+    assert.equal(f.runGateway().status, 0);
+    const config = readFileSync(join(f.target, "config.toml"), "utf8");
+    rmSync(f.restartLog);
+    const result = f.runSync({ MAGPIE_TEST_ROOT: f.root, MAGPIE_ACTIVATION_FAILURE: "1" });
+    assert.notEqual(result.status, 0);
+    assert.deepEqual(f.actions().slice(5), ["lock", "begin-sync", "prepare", "activate", "rollback"]);
+    assert.equal(readFileSync(join(f.target, "config.toml"), "utf8"), config);
+    assert.equal(existsSync(f.restartLog), false);
+    assert.equal(readdirSync(f.target).some(name => name.startsWith(".config-import.")), false);
 });
 
 test("embedded Magpie Bun probe reads its private payload and sends authentication only when requested", async t => {

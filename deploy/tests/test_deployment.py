@@ -45,9 +45,20 @@ if a[0] == "compose":
         previous = os.getenv("APP_IMAGE") == "infinite-canvas:previous"
         scenario = os.getenv("SCENARIO")
         sys.exit(1 if scenario == "rollback-fails" or (scenario == "unhealthy" and not previous) else 0)
-    if "ps" in a and ("-a" not in a or os.getenv("SCENARIO") == "unmanaged"): print("container-id")
+    if "ps" in a and ("-a" not in a or os.getenv("SCENARIO") == "unmanaged"):
+        print("previous-container-id" if os.getenv("APP_IMAGE") == "infinite-canvas:previous" else "container-id")
     sys.exit(0)
 raise SystemExit("Unexpected docker call: " + repr(a))
+'''
+FAKE_MAGPIE_SYNC = r'''#!/usr/bin/env bash
+set -eu
+printf '%s|%s\n' "$*" "$(readlink "$DEPLOY_ROOT/current" || true)" >> "$MAGPIE_SYNC_LOG"
+[[ "$*" == '--container container-id --sync-magpie-gateway' || "$*" == '--container previous-container-id --sync-magpie-gateway' ]]
+if [[ "$2" == container-id ]]; then grep -q '{{.State.Health.Status}}' "$CALL_LOG"; fi
+if [[ "$SCENARIO" == magpie-rollback-fails || ( "$SCENARIO" == magpie-fails && "$2" == container-id ) ]]; then
+    echo 'Magpie gateway synchronization failed' >&2
+    exit 1
+fi
 '''
 
 
@@ -63,7 +74,8 @@ class DeploymentTests(unittest.TestCase):
         docker.write_text(FAKE_DOCKER)
         docker.chmod(0o755)
         self.env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}",
-                        CALL_LOG=str(self.root / "docker-calls"), IMAGE_ID=IMAGE_ID, SHA=SHA)
+                        CALL_LOG=str(self.root / "docker-calls"), IMAGE_ID=IMAGE_ID, SHA=SHA,
+                        DEPLOY_ROOT=str(self.root), MAGPIE_SYNC_LOG=str(self.root / "magpie-sync"))
         self.transport = self.root / "transport"
         (self.transport / "deploy").mkdir(parents=True)
         for name in ["ssh-deploy.sh", "remote-deploy.sh"]:
@@ -72,6 +84,7 @@ class DeploymentTests(unittest.TestCase):
         source.mkdir()
         files = {"image.tar": b"image", "compose.yml": (REPO / "docker-compose.yml").read_bytes(),
                  "remote-deploy.sh": (REPO / "deploy/remote-deploy.sh").read_bytes(),
+                 "import-codex-config.sh": FAKE_MAGPIE_SYNC.encode(),
                  "image-ref": f"infinite-canvas:{RELEASE}\n".encode(),
                  "image-id": (IMAGE_ID + "\n").encode(), "revision": (SHA + "\n").encode()}
         for name, data in files.items():
@@ -130,6 +143,34 @@ class DeploymentTests(unittest.TestCase):
         self.assertFalse(any("down" in c["args"] or "prune" in c["args"] for c in self.calls()))
         self.assertEqual(cache.read_bytes(), b"previous healthy image")
         self.assertEqual((self.root / "releases" / RELEASE / "image.tar").read_bytes(), b"image")
+
+    def test_magpie_sync_runs_after_health_and_before_promoting_current(self):
+        result = self.run_deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / "magpie-sync").read_text().splitlines(),
+                         ["--container container-id --sync-magpie-gateway|"])
+        calls = self.calls()
+        self.assertTrue(any("{{.State.Health.Status}}" in c["args"] for c in calls))
+
+    def test_magpie_failure_keeps_current_and_resyncs_rollback_container(self):
+        previous = self.previous()
+        result = self.run_deploy("magpie-fails")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Previous release restored", result.stderr)
+        self.assertNotIn("Deployment is healthy", result.stdout)
+        self.assertEqual((self.root / "current").resolve(), previous)
+        self.assertFalse((self.root / "shared/image-transfer/image.tar").exists())
+        self.assertEqual((self.root / "magpie-sync").read_text().splitlines(), [
+            "--container container-id --sync-magpie-gateway|releases/previous",
+            "--container previous-container-id --sync-magpie-gateway|releases/previous",
+        ])
+
+    def test_magpie_rollback_sync_failure_is_reported(self):
+        self.previous()
+        result = self.run_deploy("magpie-rollback-fails")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ROLLBACK FAILED", result.stderr)
+        self.assertNotIn("Previous release restored", result.stderr)
 
     def test_first_deploy_failure_keeps_evidence(self):
         result = self.run_deploy("unhealthy")
@@ -225,13 +266,14 @@ class DeploymentTests(unittest.TestCase):
         shutil.copy(REPO / "docker-compose.yml", self.root / "docker-compose.yml")
         (self.root / "deploy").mkdir()
         shutil.copy(REPO / "deploy/remote-deploy.sh", self.root / "deploy/remote-deploy.sh")
+        shutil.copy(REPO / "deploy/import-codex-config.sh", self.root / "deploy/import-codex-config.sh")
         package = (REPO / "Jenkinsfile").read_text().split("stage('Package release')", 1)[1].split("sh '''", 1)[1].split("'''", 1)[0]
         result = subprocess.run(["bash", "-c", package], cwd=self.root, env=dict(self.env, APP_IMAGE=f"infinite-canvas:{RELEASE}", RELEASE_SHA=SHA), text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         directory = self.root / ".ci"
         self.assertEqual((directory / "image.tar").read_bytes(), b"fake-infra-images\n")
         with tarfile.open(directory / "release.tar.gz") as archive:
-            self.assertEqual(set(archive.getnames()), {"compose.yml", "remote-deploy.sh", "image-ref", "image-id", "revision", "SHA256SUMS"})
+            self.assertEqual(set(archive.getnames()), {"compose.yml", "remote-deploy.sh", "import-codex-config.sh", "image-ref", "image-id", "revision", "SHA256SUMS"})
         self.assertIn("  image.tar\n", (directory / "SHA256SUMS").read_text())
         checked = subprocess.run(["sha256sum", "-c", "SHA256SUMS"], cwd=directory, capture_output=True, text=True)
         self.assertEqual(checked.returncode, 0, checked.stderr)

@@ -117,7 +117,7 @@ class MagpieGatewayTests(unittest.TestCase):
                 code = error.code
         self.output += stdout.getvalue() + stderr.getvalue()
         self.assertEqual(code == 0, success, stderr.getvalue())
-        if action == "begin" and success:
+        if action in ("begin", "begin-sync") and success:
             self.backup = stdout.getvalue().strip()
 
     def begin(self):
@@ -145,6 +145,28 @@ class MagpieGatewayTests(unittest.TestCase):
         self.invoke("commit")
         self.assertEqual(self.created, 1)
         self.assertEqual(self.service_env["MAGPIE_ALLOW_IPS"], "172.18.0.99/32")
+        self.assert_private_output()
+
+    def test_deployment_sync_requires_existing_managed_key(self):
+        self.invoke("lock")
+        self.invoke("begin-sync", success=False)
+        self.assertIn("Initialize --magpie-gateway", self.output)
+        self.assertEqual(self.created, 0)
+        self.assertFalse(self.restarts)
+
+    def test_deployment_sync_reuses_key_and_replaces_previous_container_ip(self):
+        self.begin()
+        self.invoke("activate")
+        self.invoke("commit")
+        identity = self.ns["state_file"].read_text()
+        self.client = "172.18.0.5"
+        self.invoke("begin-sync")
+        self.invoke("prepare")
+        self.invoke("activate")
+        self.invoke("commit")
+        self.assertEqual(self.ns["state_file"].read_text(), identity)
+        self.assertEqual(self.created, 1)
+        self.assertEqual(self.service_env["MAGPIE_ALLOW_IPS"], "172.18.0.5/32")
         self.assert_private_output()
 
     def test_early_failure_revokes_only_new_key_without_restarting_service(self):
