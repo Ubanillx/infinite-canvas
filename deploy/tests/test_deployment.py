@@ -18,6 +18,7 @@ REPO = Path(__file__).resolve().parents[2]
 SHA = "a" * 40
 RELEASE = SHA + "-7"
 IMAGE_ID = "sha256:" + "b" * 64
+PREVIOUS_IMAGE = "infinite-canvas:" + "d" * 40 + "-6"
 FAKE_DOCKER = r'''#!/usr/bin/env python3
 import json, os, sys
 from pathlib import Path
@@ -42,11 +43,11 @@ if a[0] == "inspect":
     sys.exit(0)
 if a[0] == "compose":
     if "up" in a:
-        previous = os.getenv("APP_IMAGE") == "infinite-canvas:previous"
+        previous = os.getenv("APP_IMAGE") == os.environ["PREVIOUS_IMAGE"]
         scenario = os.getenv("SCENARIO")
         sys.exit(1 if scenario == "rollback-fails" or (scenario == "unhealthy" and not previous) else 0)
     if "ps" in a and ("-a" not in a or os.getenv("SCENARIO") == "unmanaged"):
-        print("previous-container-id" if os.getenv("APP_IMAGE") == "infinite-canvas:previous" else "container-id")
+        print("previous-container-id" if os.getenv("APP_IMAGE") == os.environ["PREVIOUS_IMAGE"] else "container-id")
     sys.exit(0)
 raise SystemExit("Unexpected docker call: " + repr(a))
 '''
@@ -59,6 +60,12 @@ if [[ "$SCENARIO" == magpie-rollback-fails || ( "$SCENARIO" == magpie-fails && "
     echo 'Magpie gateway synchronization failed' >&2
     exit 1
 fi
+'''
+FAKE_CLEANUP = r'''#!/usr/bin/env bash
+set -eu
+[[ "$(readlink "$DEPLOY_ROOT/current")" == "releases/$SHA-7" ]]
+cat "$1" >> "$CLEANUP_LOG"
+if [[ "$SCENARIO" == cleanup-fails ]]; then exit 31; fi
 '''
 
 
@@ -75,7 +82,8 @@ class DeploymentTests(unittest.TestCase):
         docker.chmod(0o755)
         self.env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}",
                         CALL_LOG=str(self.root / "docker-calls"), IMAGE_ID=IMAGE_ID, SHA=SHA,
-                        DEPLOY_ROOT=str(self.root), MAGPIE_SYNC_LOG=str(self.root / "magpie-sync"))
+                        DEPLOY_ROOT=str(self.root), MAGPIE_SYNC_LOG=str(self.root / "magpie-sync"),
+                        PREVIOUS_IMAGE=PREVIOUS_IMAGE, CLEANUP_LOG=str(self.root / "cleanup-log"))
         self.transport = self.root / "transport"
         (self.transport / "deploy").mkdir(parents=True)
         for name in ["ssh-deploy.sh", "remote-deploy.sh"]:
@@ -85,6 +93,7 @@ class DeploymentTests(unittest.TestCase):
         files = {"image.tar": b"image", "compose.yml": (REPO / "docker-compose.yml").read_bytes(),
                  "remote-deploy.sh": (REPO / "deploy/remote-deploy.sh").read_bytes(),
                  "import-codex-config.sh": FAKE_MAGPIE_SYNC.encode(),
+                 "cleanup-docker.sh": FAKE_CLEANUP.encode(),
                  "image-ref": f"infinite-canvas:{RELEASE}\n".encode(),
                  "image-id": (IMAGE_ID + "\n").encode(), "revision": (SHA + "\n").encode()}
         for name, data in files.items():
@@ -103,8 +112,8 @@ class DeploymentTests(unittest.TestCase):
         previous = self.root / "releases/previous"
         previous.mkdir(parents=True)
         (previous / "compose.yml").write_text("services: {}\n")
-        (previous / "image.env").write_text("APP_IMAGE=infinite-canvas:previous\n")
-        (previous / "image-ref").write_text("infinite-canvas:previous\n")
+        (previous / "image.env").write_text(f"APP_IMAGE={PREVIOUS_IMAGE}\n")
+        (previous / "image-ref").write_text(PREVIOUS_IMAGE + "\n")
         (previous / "runtime.env").write_text("APP_PORT=3000\n")
         (self.root / "current").symlink_to("releases/previous")
         return previous
@@ -139,7 +148,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual((self.root / "current").resolve(), previous)
         up = [c for c in self.calls() if "--wait" in c["args"]]
         self.assertEqual(len(up), 2)
-        self.assertEqual(up[-1]["image"], "infinite-canvas:previous")
+        self.assertEqual(up[-1]["image"], PREVIOUS_IMAGE)
         self.assertFalse(any("down" in c["args"] or "prune" in c["args"] for c in self.calls()))
         self.assertEqual(cache.read_bytes(), b"previous healthy image")
         self.assertEqual((self.root / "releases" / RELEASE / "image.tar").read_bytes(), b"image")
@@ -171,6 +180,47 @@ class DeploymentTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("ROLLBACK FAILED", result.stderr)
         self.assertNotIn("Previous release restored", result.stderr)
+
+    def test_success_records_actual_deployed_pair_and_cleans_after_current_switch(self):
+        self.previous()
+        result = self.run_deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        expected = f"infinite-canvas:{RELEASE}\n{PREVIOUS_IMAGE}\n"
+        self.assertEqual((self.root / "shared/retained-images").read_text(), expected)
+        self.assertEqual((self.root / "cleanup-log").read_text(), expected)
+        self.assertNotIn("cleanup failed", result.stderr)
+
+    def test_failed_release_keeps_retention_record_and_does_not_clean_rollback_images(self):
+        self.previous()
+        retained = self.root / "shared/retained-images"
+        original = PREVIOUS_IMAGE + "\n" + "infinite-canvas:" + "e" * 40 + "-5\n"
+        retained.write_text(original)
+        result = self.run_deploy("unhealthy")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(retained.read_text(), original)
+        self.assertFalse((self.root / "cleanup-log").exists())
+
+    def test_post_deployment_cleanup_failure_does_not_rollback_healthy_release(self):
+        self.previous()
+        result = self.run_deploy("cleanup-fails")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("image cleanup failed", result.stderr)
+        self.assertIn("Deployment is healthy", result.stdout)
+        self.assertEqual((self.root / "current").resolve(), self.root / "releases" / RELEASE)
+
+    def test_retention_publish_failure_invalidates_stale_history_and_skips_image_cleanup(self):
+        self.previous()
+        retained = self.root / "shared/retained-images"
+        retained.write_text(PREVIOUS_IMAGE + "\n")
+        move = self.bin / "mv"
+        move.write_text('#!/usr/bin/env bash\nif [[ "${@: -1}" == */shared/retained-images ]]; then exit 1; fi\nexec /usr/bin/mv "$@"\n')
+        move.chmod(0o755)
+        result = self.run_deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("could not update image retention record", result.stderr)
+        self.assertEqual((self.root / "current").resolve(), self.root / "releases" / RELEASE)
+        self.assertFalse(retained.exists())
+        self.assertFalse((self.root / "cleanup-log").exists())
 
     def test_first_deploy_failure_keeps_evidence(self):
         result = self.run_deploy("unhealthy")
@@ -267,13 +317,14 @@ class DeploymentTests(unittest.TestCase):
         (self.root / "deploy").mkdir()
         shutil.copy(REPO / "deploy/remote-deploy.sh", self.root / "deploy/remote-deploy.sh")
         shutil.copy(REPO / "deploy/import-codex-config.sh", self.root / "deploy/import-codex-config.sh")
+        shutil.copy(REPO / "deploy/cleanup-docker.sh", self.root / "deploy/cleanup-docker.sh")
         package = (REPO / "Jenkinsfile").read_text().split("stage('Package release')", 1)[1].split("sh '''", 1)[1].split("'''", 1)[0]
         result = subprocess.run(["bash", "-c", package], cwd=self.root, env=dict(self.env, APP_IMAGE=f"infinite-canvas:{RELEASE}", RELEASE_SHA=SHA), text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         directory = self.root / ".ci"
         self.assertEqual((directory / "image.tar").read_bytes(), b"fake-infra-images\n")
         with tarfile.open(directory / "release.tar.gz") as archive:
-            self.assertEqual(set(archive.getnames()), {"compose.yml", "remote-deploy.sh", "import-codex-config.sh", "image-ref", "image-id", "revision", "SHA256SUMS"})
+            self.assertEqual(set(archive.getnames()), {"compose.yml", "remote-deploy.sh", "import-codex-config.sh", "cleanup-docker.sh", "image-ref", "image-id", "revision", "SHA256SUMS"})
         self.assertIn("  image.tar\n", (directory / "SHA256SUMS").read_text())
         checked = subprocess.run(["sha256sum", "-c", "SHA256SUMS"], cwd=directory, capture_output=True, text=True)
         self.assertEqual(checked.returncode, 0, checked.stderr)
@@ -294,7 +345,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("Invalid SSH host", result.stderr)
 
-    def ssh_transport(self, fail=False, preflight=False, scenario="success", rsync_fail=False):
+    def ssh_transport(self, fail=False, preflight=False, scenario="success", rsync_fail=False, mode=None):
         fake = '''#!/usr/bin/env python3
 import json, os, shlex, subprocess, sys
 with open(os.environ["CALL_LOG"], "a") as f: f.write(json.dumps(sys.argv) + "\\n")
@@ -306,6 +357,10 @@ if os.path.basename(sys.argv[0]) == "rsync":
     result = subprocess.run([*shlex.split(rsh), "-l", "deploy", "deploy.example.com", "rsync --server fixture"])
     sys.exit(23 if os.getenv("RSYNC_FAIL") == "1" else result.returncode)
 if os.path.basename(sys.argv[0]) == "ssh": sys.stdin.buffer.read()
+if os.path.basename(sys.argv[0]) == "scp" and sys.argv[-2].endswith("/shared/retained-images"):
+    if os.getenv("SCENARIO") == "retention-download-fails": sys.exit(19)
+    from pathlib import Path
+    Path(sys.argv[-1]).write_text("infinite-canvas:" + os.environ["SHA"] + "-7\\n" + os.environ["PREVIOUS_IMAGE"] + "\\n")
 '''
         for name in ["ssh", "scp", "rsync"]:
             path = self.bin / name
@@ -316,16 +371,16 @@ if os.path.basename(sys.argv[0]) == "ssh": sys.stdin.buffer.read()
                    COMPOSE_PROJECT="test", RELEASE_SHA=SHA, BUILD_NUMBER="7", SSH_FAIL="1" if fail else "0",
                    SSH_PREFLIGHT="1" if preflight else "0", SCENARIO=scenario,
                    RSYNC_FAIL="1" if rsync_fail else "0")
-        return subprocess.run(["bash", str(REPO / "deploy/ssh-deploy.sh")], cwd=self.transport,
+        return subprocess.run(["bash", str(REPO / "deploy/ssh-deploy.sh"), *([mode] if mode else [])], cwd=self.transport,
                               env=env, stdin=subprocess.DEVNULL, text=True, capture_output=True)
 
     def test_ssh_transport_requires_pinned_host_and_checks_each_hop(self):
         result = self.ssh_transport()
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls()
-        self.assertEqual(len(calls), 5)
+        self.assertEqual(len(calls), 6)
         hops = [call for call in calls if Path(call[0]).name in ["ssh", "scp"]]
-        self.assertEqual(len(hops), 4)
+        self.assertEqual(len(hops), 5)
         for call in hops:
             self.assertIn("StrictHostKeyChecking=yes", call)
             self.assertIn("UserKnownHostsFile=/secret/hosts", call)
@@ -337,6 +392,57 @@ if os.path.basename(sys.argv[0]) == "ssh": sys.stdin.buffer.read()
             self.assertIn(option, sync)
         self.assertNotIn("--inplace", sync)
         self.assertNotIn("--delete", sync)
+
+    def test_ssh_downloads_retained_pair_only_after_successful_activation(self):
+        result = self.ssh_transport()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.transport / ".ci/retained-images").read_text(),
+                         f"infinite-canvas:{RELEASE}\n{PREVIOUS_IMAGE}\n")
+        self.assertTrue(self.calls()[-1][-2].endswith("/shared/retained-images"))
+
+    def test_unknown_activation_outcome_invalidates_local_retention_before_cleanup(self):
+        state = self.transport / ".ci/retained-images"
+        state.parent.mkdir()
+        state.write_text(PREVIOUS_IMAGE + "\n")
+        result = self.ssh_transport(scenario="retention-download-fails")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(state.exists())
+        self.assertIn("image retention download", result.stderr)
+
+    def test_prebuild_retention_discovery_refreshes_stale_local_history(self):
+        self.previous()
+        expected = PREVIOUS_IMAGE + "\n" + "infinite-canvas:" + "e" * 40 + "-5\n"
+        (self.root / "shared/retained-images").write_text(expected)
+        local = self.transport / ".ci/retained-images"
+        local.parent.mkdir()
+        local.write_text(f"infinite-canvas:{RELEASE}\n")
+        result = self.ssh_transport(preflight=True, mode="--retention")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(local.read_text(), expected)
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_retention_discovery_rejects_record_missing_actual_current(self):
+        self.previous()
+        (self.root / "shared/retained-images").write_text(f"infinite-canvas:{RELEASE}\n")
+        result = self.ssh_transport(preflight=True, mode="--retention")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not include the current release", result.stderr)
+        self.assertFalse((self.transport / ".ci/retained-images").exists())
+
+    def test_first_retention_discovery_does_not_infer_history_from_image_dates(self):
+        result = self.ssh_transport(preflight=True, mode="--retention")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.transport / ".ci/retained-images").exists())
+
+    def test_retention_discovery_rejects_redirected_shared_directory(self):
+        shared = self.root / "shared"
+        original = self.root / "original-shared"
+        shared.rename(original)
+        shared.symlink_to(original)
+        result = self.ssh_transport(preflight=True, mode="--retention")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Shared directory cannot be a symlink", result.stderr)
+        self.assertFalse((self.transport / ".ci/retained-images").exists())
 
     def test_delta_failure_stops_before_release_upload_or_activation(self):
         cache = self.root / "shared/image-transfer/image.tar"
@@ -420,7 +526,7 @@ os.execv("/usr/bin/rsync", args)
         shutil.rmtree(self.root / "incoming")
         result = self.ssh_transport(preflight=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(self.calls()), 8)
+        self.assertEqual(len(self.calls()), 9)
         self.assertTrue((self.root / "incoming" / RELEASE).is_dir())
         self.assertNotIn("must-not-be-logged", result.stdout + result.stderr)
 
