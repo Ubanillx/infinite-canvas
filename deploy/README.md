@@ -61,7 +61,7 @@ Jenkins 显式启用 BuildKit，复用同一 Docker 构建节点上的层缓存�
 
 ### 镜像打包与差量传输
 
-Jenkins 保留未压缩的 `.ci/image.tar`，不再先 gzip 完整镜像、再把它放入第二层压缩包。`.ci/release.tar.gz` 只包含 Compose、部署脚本、镜像标识、版本和 SHA256SUMS；校验清单仍包含独立传输的完整 `image.tar`。
+Jenkins 保留未压缩的 `.ci/image.tar`，不再先 gzip 完整镜像、再把它放入第二层压缩包。`.ci/release.tar.gz` 只包含 Compose、部署及 Magpie 网关脚本、镜像标识、版本和 SHA256SUMS；校验清单包含所有脚本及独立传输的完整 `image.tar`，不包含宿主机配置、Key 或备份。
 
 应用镜像通过 rsync 的数据块匹配复用部署主机 `shared/image-transfer/image.tar`，只压缩和发送缺失的数据块；不是自制 Docker 层协议，也不需要 rsync daemon、镜像仓库、新端口或额外凭据。rsync 复用同一脚本内的 SSH 参数，继续校验私钥、known_hosts、主机公钥和端口。双方均需安装带安全更新的 rsync，Ubuntu/Debian 可由管理员执行 `sudo apt-get update && sudo apt-get install -y rsync`；缺少时预检明确失败，不在发布中自动安装或降低鉴权。
 
@@ -191,11 +191,21 @@ bash import-codex-config.sh --container 应用容器名 --magpie-gateway --resta
 - 当前仅支持单个 Docker bridge 网络的 IPv4 应用容器、宿主机顶层默认供应商 `magpie`、HTTP 回环地址端口 3425；有默认 profile、TLS、`EnvironmentFile` 或冲突的服务覆盖时拒绝自动调整，不降级 TLS，不猜测多个网络的出口。
 - 通过 Magpie 官方 `gateway-key` CLI 创建独立命名 Key，重复执行复用脚本已有且仍启用的 Key；已撤销、禁用、改名或不匹配的 Key 不会被静默重建。服务只新增脚本专用的 `magpie.service.d/zz-infinite-canvas-gateway.conf`，保留原 unit、代理环境和提供商凭证。
 - 先绑定 Docker 网关地址，并暂不放行容器，验证带 Key 的请求返回 403；再只放行容器的 `/32` 地址，验证无 Key 返回 401、有效 Key 返回 200。通过后才改为 `0.0.0.0:3425` 并复核认证，保留宿主机原 `127.0.0.1` 访问。过程中 Magpie 会重启三次，本机 CLI 暂时不可用；应用仅在 `--restart` 时重启。使用 Magpie 自带就绪等待，不添加新的超时或重试策略。
-- 白名单为 Magpie 应用层的 `MAGPIE_ALLOW_IPS`，不是主机防火墙规则；不发布额外 Docker 端口、不修改防火墙或启用 host 网络。除选定应用容器外，其他远程 IP 不放行；宿主机自身地址仍按 Magpie 官方规则允许。容器重建导致 IP 改变后必须重新运行脚本更新白名单；不要把整个网段加入名单绕过问题。
+- 白名单为 Magpie 应用层的 `MAGPIE_ALLOW_IPS`，不是主机防火墙规则；不发布额外 Docker 端口、不修改防火墙或启用 host 网络。除选定应用容器外，其他远程 IP 不放行；宿主机自身地址仍按 Magpie 官方规则允许。CI/CD 发布和自动回滚后会同步实际容器 IP；不要把整个网段加入名单绕过问题。
 - 容器新增独立的 `infinite_canvas_magpie` 供应商，地址为 `http://Docker网关:3425/v1`，关闭 WebSocket，并在 600 权限的 `config.toml` 中保存网关 Bearer Token；不复制宿主机 `auth.json`，保留容器已有认证文件、模型选择、已迁移的模型目录和其他供应商配置。宿主机 Codex 配置与上游供应商密钥不改动。此模式不依赖临时 `docker exec -e` 注入，应用重启后配置仍保留。
 - 主机 Key 状态和私有事务备份位于 `${XDG_STATE_HOME:-~/.local/state}/infinite-canvas/`，目录 700、文件 600；备份中的 `transaction.json` 包含旧服务覆盖和旧 Key 状态，容器文件另按普通导入规则备份。所有 Key 创建输出、CLI 校验输出均不打印；这些状态、配置和备份包含凭证，不得上传、提交或贴到聊天中。
 - 网关拒绝策略、认证检查、容器 CLI 校验或文件安装失败时，尝试恢复本次服务覆盖、旧 Key 状态及容器文件，仅撤销本次新建的 Key，不恢复整个 Magpie Key 仓库覆盖其他客户端。恢复失败会保留私有备份并明确提示人工处理。应用配置成功提交后，若最后的应用重启失败，保留已提交配置与 Key，待手动重启，不撤销正在使用的凭证。
 - 检查仅使用读取模型列表的请求，不发送生成请求；脚本成功不代表真实模型对话已验收。完成后刷新网页并新建 Codex 对话，历史会话可能仍保留原供应商。
+
+首次初始化后，Jenkins 无需额外开关：`remote-deploy.sh` 在应用健康检查通过、切换 current 前，调用发布包中的 `import-codex-config.sh --sync-magpie-gateway`。同步读取容器实际网络和现有私有 Key，将白名单替换为当前容器 IPv4 `/32`，验证未放行 IP 返回 403、无 Key 返回 401、有效 Key 返回 200；不重新导入 Codex 配置或额外重启应用。其他供应商输出明确跳过日志。同步沿用上述三次 Magpie 重启，本机 CLI 在此期间短暂不可用。
+
+Jenkins SSH 凭据的用户必须是原 Magpie 服务所属的非 root 用户，HOME/XDG 配置和状态目录须与首次初始化一致；非交互 SSH 的 PATH 必须能找到 `magpie`、`python3`、`flock`，并能访问当前用户运行中的 `magpie.service`。已有受管供应商但找不到原 Key 状态、Key 失效或容器配置不匹配时，发布会失败并尝试恢复上一镜像，再同步回滚容器的新 IP；回滚同步失败也明确报告。同步不新建替代 Key、不覆盖容器配置；Docker 网关地址或 Key 不匹配时，需以原服务用户重新执行显式初始化。
+
+在 CI/CD 之外手工重建或回滚容器时，使用新版脚本同步，项目名按实际修改：
+
+```bash
+bash import-codex-config.sh --project infinite-canvas --sync-magpie-gateway
+```
 
 参考：[Magpie 网关与远程客户端](https://github.com/yetone/magpie/blob/main/docs/reference.md#connecting-anything-else)、[Codex 供应商配置](https://developers.openai.com/codex/config-reference/)。
 
