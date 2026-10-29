@@ -16,4 +16,4 @@ description: 当前项目后续值得处理的事项
 - 本地 Agent 接入后续：按[本地 Agent 接入规划](/zh-CN/docs/progress/local-agent-integration-plan)把 Claude Code CLI Adapter 升级为 Claude Agent SDK Adapter，并完善工具队列体验。
 - Pi 引擎后续：本地 Skill、自动模型发现、逐模型协议与参数推断、引擎身份和历史隔离已移入待测试；仍需补齐上下文压缩和工具集精简（全部 35 个工具的 schema 约占 5000 tokens 以上，每轮都会发送），并补充 Pi 引擎的链路说明文档。
 - Agent 附件后续：本地文件中心、产物回画布和消息元数据 v2 已移入待测试；按[文件附件规划](/zh-CN/docs/progress/agent-file-attachments-plan)后续评估文件节点类型（PDF/压缩包直接上画布）、图片改走文件中心，以及需要跨设备时改用服务端媒体 + 签名下载的方案。
-- Agent Skill 后续：补充网络检索安装、Skill 资源文件管理和可控的本地记忆沉淀；Pi 引擎暂不支持在画布内新建或编辑 Skill（复用 Codex 技能页写入的同一份文件），编辑入口开放前需要先确认两个引擎的写入冲突处理。
+- Agent Skill 后续：ZIP/文件夹导入及 Pi 与 Codex 的创建、编辑、删除和草稿生成对齐已移入待测试；继续补充网络检索安装、资源文件编辑管理和可控的本地记忆沉淀。
