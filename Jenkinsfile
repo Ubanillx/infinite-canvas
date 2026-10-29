@@ -34,7 +34,6 @@ pipeline {
         }
         stage('Cleanup build node') {
             steps {
-                sh 'bash deploy/cleanup-docker.sh --build-cache'
                 withCredentials([
                     sshUserPrivateKey(credentialsId: 'infinite-canvas-deploy-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
                     file(credentialsId: 'infinite-canvas-known-hosts', variable: 'KNOWN_HOSTS')
@@ -95,7 +94,7 @@ pipeline {
         always {
             sh 'rm -f .ci/image.tar .ci/release.tar.gz .ci/infra-images.tar.gz'
             script {
-                if (env.RELEASE_SHA && fileExists('deploy/cleanup-docker.sh')) {
+                if (currentBuild.currentResult != 'ABORTED' && env.RELEASE_SHA && fileExists('deploy/cleanup-docker.sh')) {
                     sh 'bash deploy/cleanup-docker.sh .ci/retained-images --build-cache || echo "Warning: build-node Docker cleanup failed" >&2'
                 }
                 if (env.PACKAGE_READY == 'true') {

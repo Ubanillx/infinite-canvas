@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 if [[ $# == 1 && "$1" == --build-cache ]]; then
-    docker builder prune --all --force
+    docker builder prune --force
     exit 0
 fi
 state="${1:?retained image record}"
@@ -49,5 +49,5 @@ else
     echo 'Image cleanup skipped: no successful deployment record; existing images are preserved.'
 fi
 if "$cache"; then
-    docker builder prune --all --force
+    docker builder prune --force
 fi

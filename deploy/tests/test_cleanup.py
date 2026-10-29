@@ -85,7 +85,7 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(self.remaining(), {row["ref"] for row in [self.current, self.previous, self.running,
                                                                  self.stopped, self.alias, self.manual, self.infra]})
         self.assertEqual([a for a in self.calls() if a[:2] == ["builder", "prune"]],
-                         [["builder", "prune", "--all", "--force"]])
+                         [["builder", "prune", "--force"]])
         self.assertTrue(json.loads(self.state.read_text())["cache_pruned"])
         self.assertTrue(all(a[:2] in [["image", "ls"], ["container", "ls"], ["container", "inspect"],
                                      ["image", "rm"], ["builder", "prune"]] for a in self.calls()))
@@ -104,7 +104,7 @@ class CleanupTests(unittest.TestCase):
                                 env=dict(os.environ, PATH=f"{self.root}:{os.environ['PATH']}",
                                          DOCKER_STATE=str(self.state), CALL_LOG=str(self.log)))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.calls(), [["builder", "prune", "--all", "--force"]])
+        self.assertEqual(self.calls(), [["builder", "prune", "--force"]])
 
     def test_unknown_history_only_prunes_build_cache(self):
         self.retained.unlink()
@@ -112,7 +112,7 @@ class CleanupTests(unittest.TestCase):
         result = self.run_cleanup()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.remaining(), before)
-        self.assertEqual(self.calls(), [["builder", "prune", "--all", "--force"]])
+        self.assertEqual(self.calls(), [["builder", "prune", "--force"]])
         self.assertIn("no successful deployment record", result.stdout)
 
     def test_corrupt_or_ambiguous_history_stops_before_mutation(self):
