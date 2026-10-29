@@ -10,6 +10,7 @@ Usage: bash import-codex-config.sh [options]
   --project NAME    Compose project (default: $COMPOSE_PROJECT or infinite-canvas)
   --container NAME  Use a specific running application container
   --magpie-gateway  Configure the host Magpie user service and a private container key
+  --sync-magpie-gateway  Refresh an existing gateway allowlist without importing config
   --restart         Restart the application after importing (interrupts active work)
   --help            Show this help
 
@@ -19,7 +20,9 @@ Host files, container sessions and skills are not moved or deleted.
 Run as the host user whose Codex configuration should be imported.
 --magpie-gateway restarts Magpie, preserves loopback access, and allows only the
 selected container IPv4 address remotely. Requires Linux, Python 3, flock and an active
-current-user magpie.service. Re-run after the application container IP changes.
+current-user magpie.service. CI/CD calls --sync-magpie-gateway after recreating app.
+Sync skips providers other than infinite_canvas_magpie and requires the original
+Magpie service owner and managed key state; it never creates a replacement key.
 HELP
 }
 
@@ -28,6 +31,7 @@ project="${COMPOSE_PROJECT:-infinite-canvas}"
 container=""
 restart=false
 magpie=false
+sync_magpie=false
 while (($#)); do
     case "$1" in
         --source|--project|--container)
@@ -40,19 +44,26 @@ while (($#)); do
             shift 2 ;;
         --restart) restart=true; shift ;;
         --magpie-gateway) magpie=true; shift ;;
+        --sync-magpie-gateway) sync_magpie=true; shift ;;
         --help|-h) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
     esac
 done
 
-[[ -f "$source_home/config.toml" && -r "$source_home/config.toml" ]] || {
-    echo "Cannot read $source_home/config.toml; use --source to select the host Codex home." >&2
-    exit 1
-}
+if "$sync_magpie" && { "$magpie" || "$restart"; }; then
+    echo '--sync-magpie-gateway cannot be combined with --magpie-gateway or --restart.' >&2
+    exit 2
+fi
 files=(config.toml)
-if ! "$magpie" && [[ -e "$source_home/auth.json" || -L "$source_home/auth.json" ]]; then
-    [[ -f "$source_home/auth.json" && -r "$source_home/auth.json" ]] || { echo 'Cannot read host auth.json.' >&2; exit 1; }
-    files+=(auth.json)
+if ! "$sync_magpie"; then
+    [[ -f "$source_home/config.toml" && -r "$source_home/config.toml" ]] || {
+        echo "Cannot read $source_home/config.toml; use --source to select the host Codex home." >&2
+        exit 1
+    }
+    if ! "$magpie" && [[ -e "$source_home/auth.json" || -L "$source_home/auth.json" ]]; then
+        [[ -f "$source_home/auth.json" && -r "$source_home/auth.json" ]] || { echo 'Cannot read host auth.json.' >&2; exit 1; }
+        files+=(auth.json)
+    fi
 fi
 if [[ -z "$container" ]]; then
     ids="$(docker ps -q --filter "label=com.docker.compose.project=$project" --filter label=com.docker.compose.service=app)"
@@ -213,7 +224,7 @@ try:
         fd = os.open(lock_file, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         os.close(fd)
         print(lock_file)
-    elif action == "begin":
+    elif action in ("begin", "begin-sync"):
         env = process_env()
         require(env.get("HOME") == os.environ.get("HOME") and env.get("XDG_CONFIG_HOME", str(Path.home() / ".config")) == os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")), "The Magpie service uses another HOME/XDG_CONFIG_HOME; run with that user's configuration.")
         require(not env.get("MAGPIE_TLS_CERT") and not env.get("MAGPIE_TLS_KEY"), "Existing Magpie TLS configuration is not changed automatically.")
@@ -224,6 +235,8 @@ try:
         require(previous_drop is None or previous_drop.startswith(marker), "The target drop-in is not owned by this script; refusing to overwrite it.")
         previous_state = snapshot(state_file)
         identity = json.loads(previous_state) if previous_state is not None else None
+        if action == "begin-sync":
+            require(identity is not None and previous_drop is not None, "Initialize --magpie-gateway as the Magpie service owner first; CI sync requires that same user and managed key state.")
         if identity is not None:
             require(all(isinstance(identity.get(k), str) and identity[k] for k in ("id", "name", "key")), "Invalid managed Magpie key state; restore its private backup before retrying.")
             require(any(row[:3] == [identity["id"], identity["name"], "enabled"] for row in key_rows()), "The managed gateway key was revoked, renamed or disabled; refusing to recreate it silently.")
@@ -295,6 +308,38 @@ except Exception as error:
 PY
 }
 
+check_magpie_container() {
+docker exec -e "MAGPIE_SYNC_STAGE=$stage" "$container" bun -e '
+    const fs = require("node:fs");
+    const path = require("node:path");
+    try {
+        const file = path.join(process.env.CODEX_HOME || path.join(process.env.HOME, ".codex"), "config.toml");
+        const config = fs.existsSync(file) ? Bun.TOML.parse(fs.readFileSync(file, "utf8")) : {};
+        if (config.model_provider !== "infinite_canvas_magpie") {
+            if (process.env.MAGPIE_SYNC_STAGE) throw new Error();
+            console.log("unmanaged"); process.exit(0);
+        }
+        if (process.env.MAGPIE_SYNC_STAGE) {
+            const gateway = JSON.parse(fs.readFileSync(path.join(process.env.MAGPIE_SYNC_STAGE, "magpie-gateway.json"), "utf8"));
+            const provider = config.model_providers?.infinite_canvas_magpie;
+            if (config.profile || provider?.base_url !== gateway.base_url || provider?.experimental_bearer_token !== gateway.key || provider?.requires_openai_auth !== false) throw new Error();
+        }
+        console.log("managed");
+    } catch {
+        console.error("Container Magpie configuration does not match the managed gateway. Run --magpie-gateway as the Magpie service owner to initialize or repair it.");
+        process.exit(1);
+    }
+'
+}
+if "$sync_magpie"; then
+    provider_mode="$(check_magpie_container)"
+    if [[ "$provider_mode" == unmanaged ]]; then
+        echo 'Magpie gateway sync skipped: app does not use the managed Magpie provider.'
+        exit 0
+    fi
+    magpie=true
+fi
+
 # Use the container user so imported credentials remain readable without root/chown.
 stage="$(docker exec "$container" sh -eu -c '
     umask 077
@@ -303,23 +348,25 @@ stage="$(docker exec "$container" sh -eu -c '
     home="$(realpath "$home")"
     mktemp -d "$home/.config-import.XXXXXX"
 ')"
-tar -C "$source_home" -chf - -- "${files[@]}" | docker exec -i "$container" tar -xf - -C "$stage"
+if ! "$sync_magpie"; then
+    tar -C "$source_home" -chf - -- "${files[@]}" | docker exec -i "$container" tar -xf - -C "$stage"
 
-catalog_source="$(docker exec -e "CODEX_IMPORT_STAGE=$stage" "$container" bun -e '
+    catalog_source="$(docker exec -e "CODEX_IMPORT_STAGE=$stage" "$container" bun -e '
     try {
         const text = require("node:fs").readFileSync(process.env.CODEX_IMPORT_STAGE + "/config.toml", "utf8");
         const catalog = Bun.TOML.parse(text).model_catalog_json;
         if (catalog !== undefined && (typeof catalog !== "string" || !catalog)) throw new Error();
         process.stdout.write(catalog || "");
     } catch { console.error("Cannot read model_catalog_json from host config.toml; no container files were replaced."); process.exit(1); }
-')"
-if [[ -n "$catalog_source" ]]; then
-    [[ "$catalog_source" == /* ]] || catalog_source="$source_home/$catalog_source"
-    [[ -f "$catalog_source" && -r "$catalog_source" ]] || {
-        echo 'The host model_catalog_json file is missing or unreadable; fix the host configuration before importing.' >&2
-        exit 1
-    }
-    docker exec -i "$container" sh -eu -c 'umask 077; cat > "$1/imported-model-catalog.json"' sh "$stage" < "$catalog_source"
+    ')"
+    if [[ -n "$catalog_source" ]]; then
+        [[ "$catalog_source" == /* ]] || catalog_source="$source_home/$catalog_source"
+        [[ -f "$catalog_source" && -r "$catalog_source" ]] || {
+            echo 'The host model_catalog_json file is missing or unreadable; fix the host configuration before importing.' >&2
+            exit 1
+        }
+        docker exec -i "$container" sh -eu -c 'umask 077; cat > "$1/imported-model-catalog.json"' sh "$stage" < "$catalog_source"
+    fi
 fi
 
 if "$magpie"; then
@@ -328,8 +375,21 @@ if "$magpie"; then
     magpie_lock_path="$(magpie_gateway lock)"
     exec {magpie_lock_fd}<>"$magpie_lock_path"
     flock -n "$magpie_lock_fd" || { echo 'Another Magpie gateway import is running; no host changes were made.' >&2; exit 1; }
-    magpie_backup="$(magpie_gateway begin)"
+    if "$sync_magpie"; then
+        magpie_backup="$(magpie_gateway begin-sync)"
+    else
+        magpie_backup="$(magpie_gateway begin)"
+    fi
     magpie_gateway prepare
+fi
+
+if "$sync_magpie"; then
+    check_magpie_container >/dev/null
+    echo 'Synchronizing Magpie gateway for the current application container.'
+    magpie_gateway activate
+    magpie_gateway commit
+    magpie_complete=true
+    exit 0
 fi
 
 # Parse with the runtime already shipped in the image; never print source contents.

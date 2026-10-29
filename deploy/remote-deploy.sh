@@ -24,7 +24,7 @@ mkdir -p "$root/releases"
 mkdir "$destination"
 # Extract only the fixed, non-secret deployment payload, never arbitrary paths.
 tar -xzf "$incoming/release.tar.gz" -C "$destination" --no-same-owner --no-same-permissions \
-    compose.yml remote-deploy.sh image-ref image-id revision SHA256SUMS
+    compose.yml remote-deploy.sh import-codex-config.sh image-ref image-id revision SHA256SUMS
 [[ -f "$incoming/image.tar" && ! -L "$incoming/image.tar" ]] || { echo 'Missing regular image.tar transfer' >&2; exit 1; }
 mv "$incoming/image.tar" "$destination/image.tar"
 chmod 600 "$destination/image.tar"
@@ -46,6 +46,12 @@ install -m 600 "$root/shared/production.env" runtime.env
 compose() {
     local dir="$1"; shift
     APP_IMAGE="$(cat "$dir/image-ref")" docker compose --project-name "$project" --env-file "$dir/runtime.env" --env-file "$dir/image.env" -f "$dir/compose.yml" "$@"
+}
+sync_magpie_gateway() {
+    local app
+    app="$(compose "$1" ps -q app)" || return
+    [[ -n "$app" ]] || { echo 'Cannot find app container for Magpie synchronization' >&2; return 1; }
+    bash "$destination/import-codex-config.sh" --container "$app" --sync-magpie-gateway
 }
 compose "$destination" config --quiet
 previous=""
@@ -73,7 +79,8 @@ rollback() {
     trap - EXIT INT TERM
     if [[ -n "$previous" ]]; then
         echo 'Deployment failed; restoring the previous image (data is not rolled back)' >&2
-        if compose "$previous" up -d --no-deps --no-build --pull never --wait --wait-timeout 120 app; then
+        if compose "$previous" up -d --no-deps --no-build --pull never --wait --wait-timeout 120 app \
+            && sync_magpie_gateway "$previous"; then
             echo 'Previous release restored' >&2
         else
             echo 'ROLLBACK FAILED: manual intervention required' >&2
@@ -90,6 +97,7 @@ compose "$destination" up -d --no-build --pull never --wait --wait-timeout 120
 container="$(compose "$destination" ps -q app)"
 [[ -n "$container" && "$(docker inspect --format '{{.Image}}' "$container")" == "$image_id" ]]
 [[ "$(docker inspect --format '{{.State.Health.Status}}' "$container")" == healthy ]]
+sync_magpie_gateway "$destination"
 ln -s "releases/$release" "$root/.current-$release"
 mv -Tf "$root/.current-$release" "$root/current"
 trap - EXIT INT TERM

@@ -58,10 +58,11 @@ pipeline {
                     docker save "$APP_IMAGE" > .ci/image.tar
                     cp docker-compose.yml .ci/compose.yml
                     cp deploy/remote-deploy.sh .ci/remote-deploy.sh
+          cp deploy/import-codex-config.sh .ci/import-codex-config.sh
                     printf '%s\n' "$APP_IMAGE" > .ci/image-ref
                     printf '%s\n' "$RELEASE_SHA" > .ci/revision
-                    (cd .ci && sha256sum image.tar compose.yml remote-deploy.sh image-ref image-id revision > SHA256SUMS)
-                    tar -C .ci -czf .ci/release.tar.gz compose.yml remote-deploy.sh image-ref image-id revision SHA256SUMS
+          (cd .ci && sha256sum image.tar compose.yml remote-deploy.sh import-codex-config.sh image-ref image-id revision > SHA256SUMS)
+          tar -C .ci -czf .ci/release.tar.gz compose.yml remote-deploy.sh import-codex-config.sh image-ref image-id revision SHA256SUMS
                 '''
                 script { env.PACKAGE_READY = 'true' }
             }
