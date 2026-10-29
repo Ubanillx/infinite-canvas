@@ -2,7 +2,7 @@ import * as React from "react"
 import { Select as SelectPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
-import { ChevronDownIcon, CheckIcon, ChevronUpIcon } from "lucide-react"
+import { CheckIcon } from "lucide-react"
 
 function Select({
   ...props
@@ -32,12 +32,10 @@ function SelectValue({
 function SelectTrigger({
   className,
   size = "default",
-  hideChevron = false,
   children,
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Trigger> & {
   size?: "sm" | "default"
-  hideChevron?: boolean
 }) {
   return (
     <SelectPrimitive.Trigger
@@ -50,11 +48,6 @@ function SelectTrigger({
       {...props}
     >
       {children}
-      {!hideChevron ? (
-        <SelectPrimitive.Icon asChild>
-          <ChevronDownIcon className="canvas-select-chevron pointer-events-none size-4 text-muted-foreground" />
-        </SelectPrimitive.Icon>
-      ) : null}
     </SelectPrimitive.Trigger>
   )
 }
@@ -64,9 +57,8 @@ function SelectContent({
   children,
   position = "item-aligned",
   align = "center",
-  hideScrollButtons = false,
   ...props
-}: React.ComponentProps<typeof SelectPrimitive.Content> & { hideScrollButtons?: boolean }) {
+}: React.ComponentProps<typeof SelectPrimitive.Content>) {
   return (
     <SelectPrimitive.Portal>
       <SelectPrimitive.Content
@@ -77,7 +69,6 @@ function SelectContent({
         align={align}
         {...props}
       >
-        {!hideScrollButtons && <SelectScrollUpButton />}
         <SelectPrimitive.Viewport
           data-position={position}
           className={cn(
@@ -87,7 +78,6 @@ function SelectContent({
         >
           {children}
         </SelectPrimitive.Viewport>
-        {!hideScrollButtons && <SelectScrollDownButton />}
       </SelectPrimitive.Content>
     </SelectPrimitive.Portal>
   )
@@ -143,52 +133,12 @@ function SelectSeparator({
   )
 }
 
-function SelectScrollUpButton({
-  className,
-  ...props
-}: React.ComponentProps<typeof SelectPrimitive.ScrollUpButton>) {
-  return (
-    <SelectPrimitive.ScrollUpButton
-      data-slot="select-scroll-up-button"
-      className={cn(
-        "z-10 flex cursor-default items-center justify-center bg-popover py-1 [&_svg:not([class*='size-'])]:size-4",
-        className
-      )}
-      {...props}
-    >
-      <ChevronUpIcon
-      />
-    </SelectPrimitive.ScrollUpButton>
-  )
-}
-
-function SelectScrollDownButton({
-  className,
-  ...props
-}: React.ComponentProps<typeof SelectPrimitive.ScrollDownButton>) {
-  return (
-    <SelectPrimitive.ScrollDownButton
-      data-slot="select-scroll-down-button"
-      className={cn(
-        "z-10 flex cursor-default items-center justify-center bg-popover py-1 [&_svg:not([class*='size-'])]:size-4",
-        className
-      )}
-      {...props}
-    >
-      <ChevronDownIcon
-      />
-    </SelectPrimitive.ScrollDownButton>
-  )
-}
-
 export {
   Select,
   SelectContent,
   SelectGroup,
   SelectItem,
   SelectLabel,
-  SelectScrollDownButton,
-  SelectScrollUpButton,
   SelectSeparator,
   SelectTrigger,
   SelectValue,

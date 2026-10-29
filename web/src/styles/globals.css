@@ -145,9 +145,16 @@
     textarea::-webkit-resizer {
         display: none;
     }
+    select {
+        appearance: none;
+    }
     html {
         @apply font-sans;
     }
+}
+
+.ant-select .ant-select-arrow {
+    display: none;
 }
 
 @layer utilities {
@@ -365,7 +372,6 @@
 
     .canvas-composer-tools .canvas-composer-mode-button span,
     .canvas-composer-tools .canvas-model-picker-text,
-    .canvas-composer-tools .canvas-select-chevron,
     .canvas-composer-tools .canvas-composer-icon.ant-btn > span:not(.ant-btn-icon) {
         display: none;
     }
@@ -409,8 +415,7 @@
             padding-inline: 0.75rem;
         }
 
-        .canvas-composer-tools .canvas-model-picker-text,
-        .canvas-composer-tools .canvas-select-chevron {
+        .canvas-composer-tools .canvas-model-picker-text {
             display: inline;
         }
     }

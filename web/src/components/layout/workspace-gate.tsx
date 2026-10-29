@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Button, Form, Input, Popover } from "antd";
-import { ArrowLeft, ArrowUpRight, Check, ChevronDown, FolderClosed, LayoutGrid, Plus } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Check, FolderClosed, LayoutGrid, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { WorkspaceAmbientBackground } from "@/components/layout/workspace-ambient-background";
@@ -213,7 +213,6 @@ export function WorkspaceSwitcher() {
     >
         <button ref={triggerRef} type="button" title={workspace.name} aria-label={t("topNav.workspaceTrigger", { name: workspace.name })} aria-haspopup="dialog" aria-expanded={open} className="inline-flex h-8 max-w-28 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm font-medium text-foreground transition-colors hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground sm:max-w-40">
             <span className="truncate">{workspace.name}</span>
-            <ChevronDown className={`size-3.5 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} aria-hidden="true" />
         </button>
     </Popover>;
 }

@@ -1,6 +1,6 @@
 import { useImperativeHandle, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
 import { Button, Dropdown, Tooltip } from "antd";
-import { ArrowUp, Check, ChevronUp, Cpu, FileText, FolderUp, Gauge, Hand, ImagePlus, LayoutGrid, LoaderCircle, RefreshCw, ShieldAlert, ShieldCheck, ShieldOff, Square, X, Zap } from "lucide-react";
+import { ArrowUp, Check, Cpu, FileText, FolderUp, Gauge, Hand, ImagePlus, LayoutGrid, LoaderCircle, RefreshCw, ShieldAlert, ShieldCheck, ShieldOff, Square, X, Zap } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
@@ -174,12 +174,11 @@ function AgentModelControls({ models, model, reasoningEffort, onModelChange, onR
             <Tooltip title={t("agent.composer.model", { model: current.displayName || current.model })} placement="top" open={modelOpen ? false : undefined}>
                 <span className="inline-flex min-w-0 max-w-[65%]">
                     <Select value={model} open={modelOpen} onOpenChange={setModelOpen} onValueChange={onModelChange}>
-                        <SelectTrigger hideChevron className="h-8 min-w-0 max-w-64 justify-start gap-1.5 rounded-md border-0 bg-transparent px-2 text-xs font-medium shadow-none hover:bg-black/5 focus-visible:ring-1 focus-visible:ring-current/20 dark:bg-transparent dark:hover:bg-white/10" aria-label={t("agent.composer.selectModel", { model: current.displayName || current.model })}>
+                        <SelectTrigger className="h-8 min-w-0 max-w-64 justify-start gap-1.5 rounded-md border-0 bg-transparent px-2 text-xs font-medium shadow-none hover:bg-black/5 focus-visible:ring-1 focus-visible:ring-current/20 dark:bg-transparent dark:hover:bg-white/10" aria-label={t("agent.composer.selectModel", { model: current.displayName || current.model })}>
                             <Cpu className="size-3.5 shrink-0 opacity-70" strokeWidth={1.6} />
                             <span className="min-w-0 flex-1 truncate text-left">{modelLabel(current)}</span>
-                            <ChevronUp className="size-3 opacity-50" strokeWidth={1.6} />
                         </SelectTrigger>
-                        <SelectContent hideScrollButtons data-canvas-no-zoom position="popper" side="top" align="start" sideOffset={6} className="z-[1200] w-64 rounded-xl border border-border/70 bg-popover p-1 shadow-sm">
+                        <SelectContent data-canvas-no-zoom position="popper" side="top" align="start" sideOffset={6} className="z-[1200] w-64 rounded-xl border border-border/70 bg-popover p-1 shadow-sm">
                             {models.map((item) => <SelectItem key={item.model} value={item.model}>{modelLabel(item)}</SelectItem>)}
                         </SelectContent>
                     </Select>
@@ -188,10 +187,9 @@ function AgentModelControls({ models, model, reasoningEffort, onModelChange, onR
             {current.supportedReasoningEfforts.some((item) => item.reasoningEffort !== "none") && <Tooltip title={t("agent.composer.reasoning", { effort: effortLabel(reasoningEffort) })} placement="top" open={reasoningOpen ? false : undefined}>
                 <span className="inline-flex shrink-0">
                     <Select value={reasoningEffort} open={reasoningOpen} onOpenChange={setReasoningOpen} onValueChange={(value) => onReasoningEffortChange(value as AgentReasoningEffort)}>
-                        <SelectTrigger hideChevron className="h-8 min-w-0 max-w-64 justify-start gap-1.5 rounded-md border-0 bg-transparent px-2 text-xs font-medium shadow-none hover:bg-black/5 focus-visible:ring-1 focus-visible:ring-current/20 dark:bg-transparent dark:hover:bg-white/10" aria-label={t("agent.composer.selectReasoning", { effort: effortLabel(reasoningEffort) })}>
+                        <SelectTrigger className="h-8 min-w-0 max-w-64 justify-start gap-1.5 rounded-md border-0 bg-transparent px-2 text-xs font-medium shadow-none hover:bg-black/5 focus-visible:ring-1 focus-visible:ring-current/20 dark:bg-transparent dark:hover:bg-white/10" aria-label={t("agent.composer.selectReasoning", { effort: effortLabel(reasoningEffort) })}>
                             <Gauge className="size-3.5 opacity-70" strokeWidth={1.6} />
                             <span>{effortLabel(reasoningEffort)}</span>
-                            <ChevronUp className="size-3 opacity-50" strokeWidth={1.6} />
                         </SelectTrigger>
                         <SelectContent data-canvas-no-zoom position="popper" side="top" align="start" sideOffset={6} className="z-[1200] min-w-32 rounded-xl border border-border/70 bg-popover p-1 shadow-sm">
                             {current.supportedReasoningEfforts.map((item) => <SelectItem key={item.reasoningEffort} value={item.reasoningEffort}>{effortLabel(item.reasoningEffort)}</SelectItem>)}
