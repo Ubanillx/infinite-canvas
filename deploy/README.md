@@ -46,28 +46,38 @@ sudo apt-get install -y docker-buildx-plugin
 
 ### 构建缓存
 
-Jenkins 显式启用 BuildKit，复用同一 Docker 构建节点上的层缓存和下载缓存，不需要新增镜像仓库或部署凭据：
+Jenkins 显式启用 BuildKit，Dockerfile 按下述结构复用尚未被清理的层缓存和下载缓存，不需要新增镜像仓库或部署凭据。CI 现在在构建前和任务结束后主动清理未使用缓存，优先控制磁盘占用，跨次构建可能需要重新下载和编译：
 
 - 前端与 Agent 各有独立的依赖层和编译层，依赖安装仅依赖各自的 `package.json` / `package-lock.json`。修改源码不重装依赖；只修改一端不会因共用构建链而重编译另一端。前端使用根目录的 `VERSION` / `CHANGELOG.md`，这些文件变化仍会正常触发前端编译。
 - npm 通过 BuildKit 挂载缓存下载包，继续执行 `npm ci` 并校验锁文件，不共享或复用宿主机的 `node_modules`。Python 依赖按固定版本清单安装，pip 下载缓存不再被禁用；清单变化时可复用未变化的包。
 - 系统软件包与索引使用带锁的 APT 缓存，关闭镜像内自动删除下载包的配置。Office、OCR、Python 等运行环境独立于应用源码，未变化时直接复用完整安装层；APT/npm/pip 下载缓存不打进最终运行镜像。
 - `.local` 调试产物与本地数据不再进入构建上下文。Jenkins 分别显示 `Build image`、`Package release` 和 `SSH deploy`，构建日志中的 `CACHED` 表示层缓存命中。构建缓存与下节的传输缓存相互独立，不省略本地镜像导出或远端加载。
 
-首次使用新结构仍需完整下载和安装。后续构建须复用同一 Docker builder 及其数据目录；清理 Jenkins 工作区不会清理该缓存，但切换构建主机、使用临时 Docker daemon、手动 prune 或 Docker 自动回收均可能使缓存失效，届时正常重新下载。若 `docker-linux` 标签对应多台主机，各自维护本地缓存，本方案不跨节点同步缓存，也不调整缓存保留期限或磁盘限额。不要在每次发布后执行 `docker builder prune` / `docker system prune`。
+首次使用新结构仍需完整下载和安装。清理 Jenkins 工作区不会清理 Docker builder 缓存；CI 通过独立的 `docker builder prune --all --force` 回收未使用缓存，包括可重新生成的下载缓存。若 `docker-linux` 标签对应多台主机，各自清理本机默认 Docker daemon 的构建缓存，不跨节点同步缓存，不额外设置过期天数、磁盘水位或大小限额。构建节点应保持专用，清理会影响同一 daemon 下其他任务的缓存命中率。
 
-验收时对比首次构建、无源码变化的再次构建、单端源码修改、单端锁文件修改和 Python 清单修改的日志；预期只重跑受影响的步骤，不应恢复已取消的测试或冒烟阶段。镜像复制清单、非 root 运行用户、SSH 校验、回滚和数据卷保持不变。
+验收时对比缓存仍存在和已被回收时的构建日志、依赖下载与磁盘占用；缓存存在时应只重跑受影响的步骤，不以此承诺每次发布的提速比例。原来已取消的 CI 测试与冒烟阶段不恢复，手动测试目标仍可使用。
 
 参考：[Docker 构建缓存优化](https://docs.docker.com/build/cache/optimize/)。
 
+### 镜像保留与自动清理
+
+- `Cleanup build node` 阶段先清理构建缓存，再通过已固定主机公钥的 SSH 读取部署机 `shared/retained-images`；读取期间复用部署锁，并核对清单包含实际 current。Jenkins 在构建前按这份记录清理旧应用镜像。连接失败或记录损坏时停止镜像删除及本次构建，不使用过期的本地清单猜测版本。
+- 健康检查、Magpie 同步及 current 切换完成后，部署机原子写入当前镜像与切换前的健康镜像，并在部署锁内执行镜像清理。首次发布只有当前镜像；没有成功发布记录时保留已有镜像，只清理 Jenkins 构建缓存。版本按实际健康发布记录识别，不按创建时间或构建号排序。
+- 清理脚本只处理本项目 `infinite-canvas:<40位SHA>-<构建号>` 标签；保留清单中的镜像、相同内容的其他标签，以及所有运行或停止的容器引用的镜像。按标签执行不带 force 的 `docker image rm`，不删除容器、网络、数据卷、基础服务镜像、手工调试标签、历史发布配置或差量传输基线。
+- SSH 激活前先使 Jenkins 本地保留记录失效，成功后再下载新的清单；连接中断或下载失败时保留本地镜像，下一次构建前重新向部署机查询。发布失败不更新部署机清单。健康切换后的清理失败只告警，不回滚健康应用；无法发布新清单时废弃旧清单并跳过镜像删除。
+- Jenkins 的 `post always` 先删除本次临时镜像归档，再清理旧应用镜像和构建缓存，最后归档小型元数据；成功与失败任务均执行。构建前清理失败会停止构建，结束后的清理失败保留原结果并告警。首次启用时若 Jenkins 已完全无法写状态，仍需先释放空间让流水线能够启动；构建和打包期间仍须容纳当前、上一版、新构建及完整镜像归档的峰值空间。
+
+参考：[Docker 镜像删除](https://docs.docker.com/reference/cli/docker/image/rm/)、[Docker 构建缓存清理](https://docs.docker.com/reference/cli/docker/builder/prune/)。
+
 ### 镜像打包与差量传输
 
-Jenkins 保留未压缩的 `.ci/image.tar`，不再先 gzip 完整镜像、再把它放入第二层压缩包。`.ci/release.tar.gz` 只包含 Compose、部署及 Magpie 网关脚本、镜像标识、版本和 SHA256SUMS；校验清单包含所有脚本及独立传输的完整 `image.tar`，不包含宿主机配置、Key 或备份。
+Jenkins 保留未压缩的 `.ci/image.tar`，不再先 gzip 完整镜像、再把它放入第二层压缩包。`.ci/release.tar.gz` 只包含 Compose、部署/网关/镜像清理脚本、镜像标识、版本和 SHA256SUMS；校验清单包含所有脚本及独立传输的完整 `image.tar`，不包含宿主机配置、Key 或备份。
 
 应用镜像通过 rsync 的数据块匹配复用部署主机 `shared/image-transfer/image.tar`，只压缩和发送缺失的数据块；不是自制 Docker 层协议，也不需要 rsync daemon、镜像仓库、新端口或额外凭据。rsync 复用同一脚本内的 SSH 参数，继续校验私钥、known_hosts、主机公钥和端口。双方均需安装带安全更新的 rsync，Ubuntu/Debian 可由管理员执行 `sudo apt-get update && sudo apt-get install -y rsync`；缺少时预检明确失败，不在发布中自动安装或降低鉴权。
 
 - 首次发布、传输基线缺失或镜像整体变化时，可能仍传完整镜像；后续未变化的系统、依赖和应用内容可按块复用。日志 `Literal data` 是新传数据量，`Matched data` 是复用数据量，并非保证某个固定提速比例。
 - rsync 用 `--copy-dest` 只读比对旧基线，在本次 `incoming/<SHA>-<BUILD>/` 内生成新归档，不使用 `--inplace`、硬链接或删除同步。启用内容校验，接收后仍执行原 SHA256、image ID、revision 和容器健康校验；传输失败不会进入发布激活，不自动重试或自动降级成其他传输方式。
-- 只有健康发布完成后，才将新归档先移入缓存临时文件，再在缓存目录内原子替换基线。失败发布保留原基线和 current；缓存替换失败仅告警，不回滚已健康的新版本。旧 Docker 镜像与发布配置继续保留，回滚不依赖传输缓存。
+- 只有健康发布完成后，才将新归档先移入缓存临时文件，再在缓存目录内原子替换基线。失败发布保留原基线和 current；缓存替换失败仅告警，不回滚已健康的新版本。发布配置继续保留，应用镜像按上述策略保留当前及上一健康版，回滚不依赖传输缓存。
 - 代价是 Jenkins 打包时需要保存完整未压缩归档，部署主机稳态额外保留一份未压缩归档，更新期间还需容纳新归档。缓存为私有目录、归档权限 600，不属于业务数据卷，不自动调整磁盘限额或回收策略；更新失败遗留文件由管理员确认后处理。删除传输缓存不会删除聊天/画布，但会使下一次传输变为全量。
 
 基础服务镜像仍仅在远端缺失时按原方式导出、压缩和传输。本地 `docker save` 与远端 `docker load` 仍处理完整归档，主要优化重复压缩和网络传输；真实耗时与传输量应在连续 Jenkins 发布中确认。
@@ -217,7 +227,7 @@ bash import-codex-config.sh --project infinite-canvas --sync-magpie-gateway
 
 默认部署与回滚各使用 `--wait-timeout 120`（已确认）；构建后的隔离容器冒烟检查也最多等待 120 秒。不做无条件重试。容器健康探针不另设自定义阈值，沿用 Docker 默认的 30 秒检查间隔、30 秒检查超时和 3 次失败阈值；只影响容器健康状态，不改变 AI 业务超时。
 
-更新前不执行 down。成功后才更新 current，将已校验镜像归档提升为传输基线并移除本次元数据包；保留历史 Compose、运行配置和 Docker 镜像供回滚，脚本不自动清理旧镜像/卷。管理员应按备份和回滚策略维护磁盘，不要全局 prune。
+更新前不执行 down。成功后才更新 current，将已校验镜像归档提升为传输基线并移除本次元数据包；历史 Compose 与运行配置继续保留，应用镜像自动保留当前及上一健康版，数据卷不参与清理。管理员仍需维护数据库备份、失败传输文件与磁盘容量，自动清理不能替代扩容或备份。
 
 失败时自动用旧版本 `up`，即使恢复成功 Jenkins 仍判本次发布失败；回滚也失败时明确报告 `ROLLBACK FAILED`。首次部署失败没有旧版可恢复，保留容器与传输文件供调查。镜像/配置回滚只回滚 `app`，不回滚 PostgreSQL、对象存储、业务密钥、媒体或 Agent/Codex 数据；数据库结构与对象存储内容不会随版本回退，出现不兼容数据变更时必须先备份并准备人工恢复，不能只依赖镜像回滚。
 
@@ -229,13 +239,15 @@ set -Eeuo pipefail
 cd /opt/infinite-canvas
 exec 9>.deploy.lock
 flock -n 9
-# 替换为 releases 中一个已经验证过的 SHA-BUILD 版本 ID
+# 目标必须是保留清单中的健康版本；更旧版本的镜像可能已经被清理。
 release_id=替换成目标版本ID
 [[ "$release_id" =~ ^[a-f0-9]{40}-[0-9]+$ ]]
 release_dir="/opt/infinite-canvas/releases/$release_id"
+grep -Fxq -- "$(cat "$release_dir/image-ref")" shared/retained-images
 APP_IMAGE="$(cat "$release_dir/image-ref")" docker compose -p infinite-canvas --env-file "$release_dir/runtime.env" --env-file "$release_dir/image.env" -f "$release_dir/compose.yml" up -d --no-build --pull never --wait --wait-timeout 120
 container="$(APP_IMAGE="$(cat "$release_dir/image-ref")" docker compose -p infinite-canvas --env-file "$release_dir/runtime.env" --env-file "$release_dir/image.env" -f "$release_dir/compose.yml" ps -q app)"
 test "$(docker inspect --format '{{.Image}}' "$container")" = "$(cat "$release_dir/image-id")"
+bash current/import-codex-config.sh --container "$container" --sync-magpie-gateway
 ln -s "releases/$release_id" ".manual-$release_id"
 mv -Tf ".manual-$release_id" current
 )
