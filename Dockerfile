@@ -37,7 +37,7 @@ FROM source AS test
 RUN --mount=type=cache,id=infinite-canvas-apt-cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,id=infinite-canvas-apt-lists,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends python3 util-linux rsync
-RUN node --test deploy/tests/healthcheck.test.mjs deploy/tests/import-codex-config.test.mjs && python3 deploy/tests/test_deployment.py -v && python3 deploy/tests/test_magpie_gateway.py -v
+RUN node --test deploy/tests/healthcheck.test.mjs deploy/tests/import-codex-config.test.mjs && python3 deploy/tests/test_deployment.py -v && python3 deploy/tests/test_magpie_gateway.py -v && python3 deploy/tests/test_cleanup.py -v
 RUN cd /app/web && bun test tests src/server/ai-response.test.mjs
 RUN cd /app/canvas-agent && npm test
 

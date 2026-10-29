@@ -32,6 +32,18 @@ pipeline {
                 }
             }
         }
+        stage('Cleanup build node') {
+            steps {
+                sh 'bash deploy/cleanup-docker.sh --build-cache'
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'infinite-canvas-deploy-ssh', keyFileVariable: 'DEPLOY_KEY', usernameVariable: 'DEPLOY_USER'),
+                    file(credentialsId: 'infinite-canvas-known-hosts', variable: 'KNOWN_HOSTS')
+                ]) {
+                    sh 'bash deploy/ssh-deploy.sh --retention'
+                }
+                sh 'bash deploy/cleanup-docker.sh .ci/retained-images'
+            }
+        }
         stage('Build image') {
             steps {
                 sh '''#!/usr/bin/env bash
@@ -58,11 +70,12 @@ pipeline {
                     docker save "$APP_IMAGE" > .ci/image.tar
                     cp docker-compose.yml .ci/compose.yml
                     cp deploy/remote-deploy.sh .ci/remote-deploy.sh
-          cp deploy/import-codex-config.sh .ci/import-codex-config.sh
+                    cp deploy/import-codex-config.sh .ci/import-codex-config.sh
+                    cp deploy/cleanup-docker.sh .ci/cleanup-docker.sh
                     printf '%s\n' "$APP_IMAGE" > .ci/image-ref
                     printf '%s\n' "$RELEASE_SHA" > .ci/revision
-          (cd .ci && sha256sum image.tar compose.yml remote-deploy.sh import-codex-config.sh image-ref image-id revision > SHA256SUMS)
-          tar -C .ci -czf .ci/release.tar.gz compose.yml remote-deploy.sh import-codex-config.sh image-ref image-id revision SHA256SUMS
+                    (cd .ci && sha256sum image.tar compose.yml remote-deploy.sh import-codex-config.sh cleanup-docker.sh image-ref image-id revision > SHA256SUMS)
+                    tar -C .ci -czf .ci/release.tar.gz compose.yml remote-deploy.sh import-codex-config.sh cleanup-docker.sh image-ref image-id revision SHA256SUMS
                 '''
                 script { env.PACKAGE_READY = 'true' }
             }
@@ -80,12 +93,15 @@ pipeline {
     }
     post {
         always {
+            sh 'rm -f .ci/image.tar .ci/release.tar.gz .ci/infra-images.tar.gz'
             script {
+                if (env.RELEASE_SHA && fileExists('deploy/cleanup-docker.sh')) {
+                    sh 'bash deploy/cleanup-docker.sh .ci/retained-images --build-cache || echo "Warning: build-node Docker cleanup failed" >&2'
+                }
                 if (env.PACKAGE_READY == 'true') {
                     archiveArtifacts artifacts: '.ci/revision,.ci/image-ref,.ci/image-id,.ci/SHA256SUMS', allowEmptyArchive: true
                 }
             }
-            sh 'rm -f .ci/image.tar .ci/release.tar.gz .ci/infra-images.tar.gz'
         }
     }
 }

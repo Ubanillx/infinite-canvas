@@ -24,7 +24,7 @@ mkdir -p "$root/releases"
 mkdir "$destination"
 # Extract only the fixed, non-secret deployment payload, never arbitrary paths.
 tar -xzf "$incoming/release.tar.gz" -C "$destination" --no-same-owner --no-same-permissions \
-    compose.yml remote-deploy.sh import-codex-config.sh image-ref image-id revision SHA256SUMS
+    compose.yml remote-deploy.sh import-codex-config.sh cleanup-docker.sh image-ref image-id revision SHA256SUMS
 [[ -f "$incoming/image.tar" && ! -L "$incoming/image.tar" ]] || { echo 'Missing regular image.tar transfer' >&2; exit 1; }
 mv "$incoming/image.tar" "$destination/image.tar"
 chmod 600 "$destination/image.tar"
@@ -55,10 +55,13 @@ sync_magpie_gateway() {
 }
 compose "$destination" config --quiet
 previous=""
+previous_image=""
 [[ ! -e "$root/current" || -L "$root/current" ]] || { echo 'current must be a managed symlink' >&2; exit 1; }
 if [[ -L "$root/current" ]]; then
     previous="$(realpath "$root/current")"
     [[ "$previous" == "$root/releases/"* && -f "$previous/image.env" && -f "$previous/image-ref" && -f "$previous/runtime.env" && -f "$previous/compose.yml" ]] || { echo 'Invalid current release' >&2; exit 1; }
+    previous_image="$(cat "$previous/image-ref")"
+    [[ "$previous_image" =~ ^infinite-canvas:[a-f0-9]{40}-[0-9]+$ ]] || { echo 'Invalid previous image reference' >&2; exit 1; }
 elif [[ -n "$(compose "$destination" ps -a -q app)" ]]; then
     echo 'Existing containers are not managed by this release directory; migrate explicitly first' >&2
     exit 1
@@ -70,10 +73,14 @@ else
 fi
 # ssh-deploy.sh 会在激活前传输缺失的数据服务镜像；这里再次校验，避免直接运行本脚本时静默失败。
 # 缺少时给出明确提示，而不是让 compose 在此处静默拉取或长时间等待。
-for image in postgres:17-alpine rustfs/rustfs:latest amazon/aws-cli:latest; do
-    docker image inspect --format '{{.Id}}' "$image" >/dev/null 2>&1 \
-        || { echo "Missing infrastructure image $image; preload it on the deploy host first" >&2; exit 1; }
+for infrastructure_image in postgres:17-alpine rustfs/rustfs:latest amazon/aws-cli:latest; do
+    docker image inspect --format '{{.Id}}' "$infrastructure_image" >/dev/null 2>&1 \
+        || { echo "Missing infrastructure image $infrastructure_image; preload it on the deploy host first" >&2; exit 1; }
 done
+retention="$root/shared/.retained-images-$release"
+[[ ! -e "$retention" && ! -L "$retention" && ! -L "$root/shared/retained-images" ]] || { echo 'Unsafe image retention record path' >&2; exit 1; }
+printf '%s\n' "$image" > "$retention"
+if [[ -n "$previous_image" ]]; then printf '%s\n' "$previous_image" >> "$retention"; fi
 rollback() {
     local status=$?
     trap - EXIT INT TERM
@@ -88,6 +95,7 @@ rollback() {
     else
         echo 'First deployment failed: no previous release; preserving containers and files for investigation' >&2
     fi
+    rm -f "$retention" || echo 'Warning: could not remove temporary image retention record' >&2
     exit "$status"
 }
 trap rollback EXIT
@@ -101,6 +109,14 @@ sync_magpie_gateway "$destination"
 ln -s "releases/$release" "$root/.current-$release"
 mv -Tf "$root/.current-$release" "$root/current"
 trap - EXIT INT TERM
+if mv -fT "$retention" "$root/shared/retained-images"; then
+    bash "$destination/cleanup-docker.sh" "$root/shared/retained-images" \
+        || echo 'Warning: deployment image cleanup failed; the healthy release is retained' >&2
+else
+    # An old record must not authorize a later cleanup after the current pointer changed.
+    rm -f "$root/shared/retained-images" "$retention" || true
+    echo 'Warning: could not update image retention record; image cleanup skipped' >&2
+fi
 # Replace the delta basis only after health checks; rsync never edits it in place.
 mv -fT "$destination/image.tar" "$cache/.image-$release.tar" \
     && mv -fT "$cache/.image-$release.tar" "$cache/image.tar" \

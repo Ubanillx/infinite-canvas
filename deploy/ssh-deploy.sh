@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 set +x
+umask 077
 : "${DEPLOY_HOST:?}" "${DEPLOY_USER:?}" "${DEPLOY_KEY:?}" "${KNOWN_HOSTS:?}"
 : "${DEPLOY_DIR:?}" "${COMPOSE_PROJECT:?}" "${RELEASE_SHA:?}" "${BUILD_NUMBER:?}"
 DEPLOY_PORT="${DEPLOY_PORT:-22}"
@@ -21,6 +22,26 @@ fi
 command -v rsync >/dev/null || { echo 'Install rsync on the Jenkins build node first' >&2; exit 1; }
 stage='remote preflight'
 trap 'status=$?; printf "SSH deployment failed during %s (exit %s)\n" "$stage" "$status" >&2' ERR
+if [[ "${1:-}" == --retention ]]; then
+    stage='image retention discovery'
+    mkdir -p .ci
+    rm -f .ci/retained-images .ci/retained-images.pending
+    retained="$(ssh "${ssh_opts[@]}" -p "$DEPLOY_PORT" "$target" "set -eu
+test -d '$DEPLOY_DIR/shared' || exit 0
+test \"\$(realpath '$DEPLOY_DIR')\" = '$DEPLOY_DIR' || { echo 'Deployment directory cannot be a symlink' >&2; exit 1; }
+test \"\$(realpath '$DEPLOY_DIR/shared')\" = '$DEPLOY_DIR/shared' || { echo 'Shared directory cannot be a symlink' >&2; exit 1; }
+exec 9>'$DEPLOY_DIR/.deploy.lock'
+flock -n 9 || { echo 'Another deployment is active' >&2; exit 1; }
+test ! -L '$DEPLOY_DIR/shared/retained-images' || { echo 'Image retention record cannot be a symlink' >&2; exit 1; }
+if test -f '$DEPLOY_DIR/shared/retained-images'; then
+    test -L '$DEPLOY_DIR/current' || { echo 'No managed current release for image retention' >&2; exit 1; }
+    grep -Fxq -- \"\$(cat '$DEPLOY_DIR/current/image-ref')\" '$DEPLOY_DIR/shared/retained-images' || { echo 'Image retention record does not include the current release' >&2; exit 1; }
+    cat '$DEPLOY_DIR/shared/retained-images'
+fi")"
+    if [[ -n "$retained" ]]; then printf '%s\n' "$retained" > .ci/retained-images; fi
+    exit 0
+fi
+(( $# == 0 )) || { echo 'Unknown deployment operation' >&2; exit 2; }
 preflight_output="$(ssh "${ssh_opts[@]}" -p "$DEPLOY_PORT" "$target" "set -eu
 umask 077
 test -d '$DEPLOY_DIR/shared' || { echo 'Missing deployment directory: $DEPLOY_DIR/shared' >&2; exit 1; }
@@ -56,4 +77,13 @@ stage='release upload'
 scp "${ssh_opts[@]}" -P "$DEPLOY_PORT" .ci/release.tar.gz "$target:$DEPLOY_DIR/incoming/$release/release.tar.gz"
 # The script itself is sent over the authenticated channel, not executed from an unchecked archive.
 stage='remote activation'
+mkdir -p .ci
+# An interrupted SSH activation has an unknown outcome; never prune from stale local history.
+rm -f .ci/retained-images .ci/retained-images.pending
 ssh "${ssh_opts[@]}" -p "$DEPLOY_PORT" "$target" "bash -s -- '$DEPLOY_DIR' '$release' '$COMPOSE_PROJECT'" < deploy/remote-deploy.sh
+stage='image retention download'
+scp "${ssh_opts[@]}" -P "$DEPLOY_PORT" "$target:$DEPLOY_DIR/shared/retained-images" .ci/retained-images.pending
+read -r retained_current < .ci/retained-images.pending
+[[ "$retained_current" == "infinite-canvas:$release" ]] || { echo 'Deployment image retention record does not match this release' >&2; exit 1; }
+chmod 600 .ci/retained-images.pending
+mv -fT .ci/retained-images.pending .ci/retained-images
