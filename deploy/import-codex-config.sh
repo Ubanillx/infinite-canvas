@@ -127,6 +127,8 @@ def require(ok, message):
         raise SetupError(message)
 
 def run(args, *, data=None, env=None, check=True):
+    if args[0] == "magpie":
+        args = [magpie_executable, *args[1:]]
     result = subprocess.run(args, input=data, text=True, capture_output=True, env=env)
     require(not check or result.returncode == 0, "Command failed: " + " ".join(args[:3]) + "; command output suppressed to protect credentials.")
     return result.stdout.strip()
@@ -180,7 +182,7 @@ def process_env():
     pid = int(show("MainPID"))
     require(pid > 0 and show("ActiveState") == "active", "An active current-user magpie.service is required. Stop any manually started Magpie, run `magpie daemon install`, then retry; do not use sudo.")
     require(Path("/proc", str(pid)).stat().st_uid == os.getuid(), "Magpie service must run as the current user.")
-    require(Path(os.readlink(f"/proc/{pid}/exe")).resolve() == Path(shutil.which("magpie")).resolve(), "The running service and the magpie command must use the same executable; restart the service after updating Magpie.")
+    require(Path(os.readlink(f"/proc/{pid}/exe")).resolve() == Path(magpie_executable).resolve(), "The running service and the magpie command must use the same executable; restart the service after updating Magpie.")
     entries = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
     return dict(e.decode().split("=", 1) for e in entries if b"=" in e)
 
@@ -216,7 +218,8 @@ try {
 
 try:
     require(sys.platform == "linux" and os.getuid() != 0, "Run Magpie setup on Linux as its non-root host user, not with sudo.")
-    require(shutil.which("magpie") is not None, "magpie must be available on the host PATH.")
+    magpie_executable = shutil.which("magpie") or os.environ.get("MAGPIE_EXECUTABLE")
+    require(magpie_executable is not None and Path(magpie_executable).is_absolute() and Path(magpie_executable).is_file() and os.access(magpie_executable, os.X_OK), "Cannot find an executable Magpie CLI for this host user.")
     if action == "lock":
         private_dir(state_dir)
         lock_file = state_dir / "magpie-gateway.lock"
@@ -338,6 +341,15 @@ if "$sync_magpie"; then
         exit 0
     fi
     magpie=true
+fi
+
+# Non-interactive SSH does not load the service owner's interactive PATH.
+if "$magpie" && ! command -v magpie >/dev/null; then
+    magpie_pid="$(systemctl --user show magpie.service --property=MainPID --value)"
+    [[ "$magpie_pid" =~ ^[1-9][0-9]*$ ]] || { echo 'An active current-user magpie.service is required.' >&2; exit 1; }
+    MAGPIE_EXECUTABLE="$(readlink -f "/proc/$magpie_pid/exe")"
+    [[ -x "$MAGPIE_EXECUTABLE" ]] || { echo 'Cannot locate the running Magpie executable.' >&2; exit 1; }
+    export MAGPIE_EXECUTABLE
 fi
 
 # Use the container user so imported credentials remain readable without root/chown.

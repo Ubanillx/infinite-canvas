@@ -209,7 +209,7 @@ bash import-codex-config.sh --container 应用容器名 --magpie-gateway --resta
 
 首次初始化后，Jenkins 无需额外开关：`remote-deploy.sh` 在应用健康检查通过、切换 current 前，调用发布包中的 `import-codex-config.sh --sync-magpie-gateway`。同步读取容器实际网络和现有私有 Key，将白名单替换为当前容器 IPv4 `/32`，验证未放行 IP 返回 403、无 Key 返回 401、有效 Key 返回 200；不重新导入 Codex 配置或额外重启应用。其他供应商输出明确跳过日志。同步沿用上述三次 Magpie 重启，本机 CLI 在此期间短暂不可用。
 
-Jenkins SSH 凭据的用户必须是原 Magpie 服务所属的非 root 用户，HOME/XDG 配置和状态目录须与首次初始化一致；非交互 SSH 的 PATH 必须能找到 `magpie`、`python3`、`flock`，并能访问当前用户运行中的 `magpie.service`。已有受管供应商但找不到原 Key 状态、Key 失效或容器配置不匹配时，发布会失败并尝试恢复上一镜像，再同步回滚容器的新 IP；回滚同步失败也明确报告。同步不新建替代 Key、不覆盖容器配置；Docker 网关地址或 Key 不匹配时，需以原服务用户重新执行显式初始化。
+Jenkins SSH 凭据的用户必须是原 Magpie 服务所属的非 root 用户，HOME/XDG 配置和状态目录须与首次初始化一致；非交互 SSH 需能找到 `python3`、`flock`、`systemctl` 和 `readlink`，并能访问当前用户运行中的 `magpie.service`。如果 SSH 的 PATH 中没有 `magpie`（例如命令只在交互 shell 中配置），脚本从该服务的运行进程取得 CLI 的绝对路径，仍核验进程归属与可执行文件一致。已有受管供应商但找不到原 Key 状态、Key 失效或容器配置不匹配时，发布会失败并尝试恢复上一镜像，再同步回滚容器的新 IP；回滚同步失败也明确报告。同步不新建替代 Key、不覆盖容器配置；Docker 网关地址或 Key 不匹配时，需以原服务用户重新执行显式初始化。
 
 在 CI/CD 之外手工重建或回滚容器时，使用新版脚本同步，项目名按实际修改：
 

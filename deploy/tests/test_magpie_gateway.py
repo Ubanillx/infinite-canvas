@@ -43,6 +43,7 @@ class MagpieGatewayTests(unittest.TestCase):
         self.keys = {"existing-id": {"name": "existing-client", "key": "unrelated-private-key", "enabled": True}}
         self.created = 0
         self.restarts = []
+        self.magpie_commands = []
         self.probes = []
         self.ignore_acl = False
         self.ignore_auth = False
@@ -75,16 +76,20 @@ class MagpieGatewayTests(unittest.TestCase):
                        "Environment": shlex.join(f"{k}={v}" for k, v in self.unit_env().items())}[prop]
             else:
                 self.assertIn("daemon-reload", args)
-        elif args[:3] == ["magpie", "daemon", "restart"]:
+        elif args[1:3] == ["daemon", "restart"] and Path(args[0]).resolve() == Path(sys.executable).resolve():
+            self.magpie_commands.append(args[0])
             self.service_env = self.unit_env()
             self.restarts.append(self.service_env["MAGPIE_ADDR"])
-        elif args[:3] == ["magpie", "gateway-key", "list"]:
+        elif args[1:3] == ["gateway-key", "list"] and Path(args[0]).resolve() == Path(sys.executable).resolve():
+            self.magpie_commands.append(args[0])
             out = "ID NAME STATE GATEWAY_KEY\n" + "\n".join(f"{k} {v['name']} {'enabled' if v['enabled'] else 'disabled'} ****" for k, v in self.keys.items())
-        elif args[:3] == ["magpie", "gateway-key", "add"]:
+        elif args[1:3] == ["gateway-key", "add"] and Path(args[0]).resolve() == Path(sys.executable).resolve():
+            self.magpie_commands.append(args[0])
             self.created += 1
             out = f"sk-magpie-key-fixture-private-{self.created}"
             self.keys[f"created-{self.created}"] = {"name": args[3], "key": out, "enabled": True}
-        elif args[:3] == ["magpie", "gateway-key", "remove"]:
+        elif args[1:3] == ["gateway-key", "remove"] and Path(args[0]).resolve() == Path(sys.executable).resolve():
+            self.magpie_commands.append(args[0])
             self.keys.pop(args[3])
         elif args[:2] == ["docker", "inspect"]:
             out = json.dumps({"app-network": {"IPAddress": self.client, "Gateway": self.gateway}})
@@ -168,6 +173,20 @@ class MagpieGatewayTests(unittest.TestCase):
         self.assertEqual(self.created, 1)
         self.assertEqual(self.service_env["MAGPIE_ALLOW_IPS"], "172.18.0.5/32")
         self.assert_private_output()
+
+    def test_sync_uses_running_service_binary_without_noninteractive_path(self):
+        self.begin()
+        self.invoke("activate")
+        self.invoke("commit")
+        self.magpie_commands.clear()
+        with patch("shutil.which", return_value=None), patch.dict(os.environ, {"MAGPIE_EXECUTABLE": str(Path(sys.executable).resolve())}):
+            self.invoke("lock")
+            self.invoke("begin-sync")
+            self.invoke("prepare")
+            self.invoke("activate")
+            self.invoke("commit")
+        self.assertTrue(self.magpie_commands)
+        self.assertEqual({str(Path(path).resolve()) for path in self.magpie_commands}, {str(Path(sys.executable).resolve())})
 
     def test_early_failure_revokes_only_new_key_without_restarting_service(self):
         self.begin()
