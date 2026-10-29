@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 if [[ $# == 1 && "$1" == --build-cache ]]; then
     docker builder prune --force
+    docker image prune --force
     exit 0
 fi
 state="${1:?retained image record}"
@@ -50,4 +51,5 @@ else
 fi
 if "$cache"; then
     docker builder prune --force
+    docker image prune --force
 fi

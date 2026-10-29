@@ -98,6 +98,7 @@
 
 ## 项目注意事项
 
+- Jenkins 虚拟机整机卡死或构建写入阻塞时，同时检查客机文件系统、Docker/containerd 和 PVE LVM-thin 存储池；客机 `df` 有空闲不能排除底层池耗尽。清理后确认 Discard/fstrim 能使底层占用下降，未取得证据前不得归因于缓存清理或反复重启；不得直接删除 Docker/containerd 内部文件或数据卷来释放空间。
 - 服务端数据层为 PostgreSQL + S3 兼容对象存储（默认 RustFS）；本地开发先执行 `docker compose -f docker-compose.middleware.yml up -d --wait`，端口默认 5433/9010，避开 5432/9000。
 - 对象存储上传必须显式传 `ContentLength`：RustFS 对不带长度的 chunked 流式上传会直接失败，浏览器上传已天然带长度，服务端不要改成无长度的 `Readable`。
 - CI 兼容性回归须使用 Dockerfile 固定的运行时版本和实际复制清单；仅在宿主机新版运行时或挂载完整仓库通过，不能视为容器内测试通过。

@@ -53,7 +53,7 @@ Jenkins 显式启用 BuildKit，Dockerfile 按下述结构复用尚未被清理�
 - 系统软件包与索引使用带锁的 APT 缓存，关闭镜像内自动删除下载包的配置。Office、OCR、Python 等运行环境独立于应用源码，未变化时直接复用完整安装层；APT/npm/pip 下载缓存不打进最终运行镜像。
 - `.local` 调试产物与本地数据不再进入构建上下文。Jenkins 分别显示 `Build image`、`Package release` 和 `SSH deploy`，构建日志中的 `CACHED` 表示层缓存命中。构建缓存与下节的传输缓存相互独立，不省略本地镜像导出或远端加载。
 
-首次使用新结构仍需完整下载和安装。清理 Jenkins 工作区不会清理 Docker builder 缓存；CI 通过独立的 `docker builder prune --force` 回收悬空构建缓存，不再使用 `--all` 清除全部未使用缓存。这不保证所有下载缓存都能保留，也不保证磁盘不会耗尽。若 `docker-linux` 标签对应多台主机，各自清理本机默认 Docker daemon 的构建缓存，不跨节点同步缓存，不额外设置过期天数、磁盘水位或大小限额。构建节点应保持专用，清理仍可能影响同一 daemon 下其他任务的缓存命中率。
+首次使用新结构仍需完整下载和安装。清理 Jenkins 工作区不会清理 Docker builder 缓存；CI 通过独立的 `docker builder prune --force` 回收悬空构建缓存，再用 `docker image prune --force` 回收无标签且未被容器引用的镜像，不使用 `--all`。这不保证所有下载缓存都能保留，也不保证磁盘不会耗尽。若 `docker-linux` 标签对应多台主机，各自清理本机默认 Docker daemon 的构建缓存，不跨节点同步缓存，不额外设置过期天数、磁盘水位或大小限额。构建节点应保持专用，清理仍可能影响同一 daemon 下其他任务的缓存命中率。
 
 验收时对比缓存仍存在和已被回收时的构建日志、依赖下载与磁盘占用；缓存存在时应只重跑受影响的步骤，不以此承诺每次发布的提速比例。原来已取消的 CI 测试与冒烟阶段不恢复，手动测试目标仍可使用。
 
@@ -63,11 +63,21 @@ Jenkins 显式启用 BuildKit，Dockerfile 按下述结构复用尚未被清理�
 
 - `Cleanup build node` 阶段通过已固定主机公钥的 SSH 读取部署机 `shared/retained-images`；读取期间复用部署锁，并核对清单包含实际 current。Jenkins 在构建前只按这份记录清理旧应用镜像，不清理构建缓存。连接失败或记录损坏时停止镜像删除及本次构建，不使用过期的本地清单猜测版本。
 - 健康检查、Magpie 同步及 current 切换完成后，部署机原子写入当前镜像与切换前的健康镜像，并在部署锁内执行镜像清理。首次发布只有当前镜像；没有成功发布记录时保留已有镜像，只清理 Jenkins 构建缓存。版本按实际健康发布记录识别，不按创建时间或构建号排序。
-- 清理脚本只处理本项目 `infinite-canvas:<40位SHA>-<构建号>` 标签；保留清单中的镜像、相同内容的其他标签，以及所有运行或停止的容器引用的镜像。按标签执行不带 force 的 `docker image rm`，不删除容器、网络、数据卷、基础服务镜像、手工调试标签、历史发布配置或差量传输基线。
+- 按保留清单删除时只处理本项目 `infinite-canvas:<40位SHA>-<构建号>` 标签；保留清单中的镜像、相同内容的其他标签，以及所有运行或停止的容器引用的镜像。按标签执行不带 force 的 `docker image rm`，不删除容器、网络、数据卷、基础服务镜像、手工调试标签、历史发布配置或差量传输基线。构建节点结束时另用不带 `--all` 的 `docker image prune --force` 清理无标签残留，由 Docker 保护容器引用和带标签镜像。
 - SSH 激活前先使 Jenkins 本地保留记录失效，成功后再下载新的清单；连接中断或下载失败时保留本地镜像，下一次构建前重新向部署机查询。发布失败不更新部署机清单。健康切换后的清理失败只告警，不回滚健康应用；无法发布新清单时废弃旧清单并跳过镜像删除。
 - Jenkins 的 `post always` 先删除本次临时镜像归档，再清理旧应用镜像和悬空构建缓存，最后归档小型元数据；成功与失败任务均执行，已取消任务跳过 Docker 清理，避免取消后继续启动耗时的镜像删除或缓存回收。构建前镜像清理失败会停止构建，结束后的清理失败保留原结果并告警。首次启用时若 Jenkins 已完全无法写状态，仍需先释放空间让流水线能够启动；构建和打包期间仍须容纳当前、上一版、新构建及完整镜像归档的峰值空间。
 
 参考：[Docker 镜像删除](https://docs.docker.com/reference/cli/docker/image/rm/)、[Docker 构建缓存清理](https://docs.docker.com/reference/cli/docker/builder/prune/)。
+
+### Jenkins 与虚拟机存储排查
+
+容量统计需分别检查 Jenkins 工作区和历史构建、用户下载/编译缓存、Docker 镜像及构建缓存。使用 containerd 镜像存储时，大文件可能位于 `/var/lib/containerd`，不能只看 `/var/lib/docker`；镜像包含压缩内容、解压层和共享层，不应把列表中每个镜像大小直接相加。删除镜像应使用 Docker CLI，不直接删除 containerd 或 Docker 的内部文件。
+
+Jenkins 运行在 PVE LVM-thin 虚拟机中时，还必须检查 PVE 的 `pvesm status` 和 `lvs` 数据池占用。虚拟机内 `df` 有空闲不代表底层池有空间；池耗尽可能使 QEMU 进入 `io-error`，表现为 SSH、网页和整机同时无响应。先恢复底层容量，再检查并恢复虚拟机运行状态，不能只反复重启 Jenkins 或虚拟机。
+
+虚拟磁盘需启用 PVE `Discard`，并由 Ubuntu 的 `fstrim.timer` 回收已释放块，才能把客机空闲归还给 thin pool。仅在 Ubuntu 删除文件而未贯通回收时，底层已分配空间不会下降。修改磁盘选项后检查 PVE 是否有待生效配置，必要时正常关机再启动；以实际池占用下降确认回收成功。扩容与共享存储池容量仍由 PVE 管理员维护，不在 CI 中添加宿主机存储或数据卷删除操作。
+
+参考：[PVE Trim/Discard](https://pve.proxmox.com/pve-docs/chapter-qm.html#qm_hard_disk_discard)、[Docker 无标签镜像清理](https://docs.docker.com/reference/cli/docker/image/prune/)。
 
 ### 镜像打包与差量传输
 

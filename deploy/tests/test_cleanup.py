@@ -39,6 +39,8 @@ elif a[:2] == ["builder", "prune"]:
     if os.getenv("PRUNE_FAIL"): sys.exit(19)
     state["cache_pruned"] = True
     file.write_text(json.dumps(state))
+elif a[:2] == ["image", "prune"]:
+    if os.getenv("IMAGE_PRUNE_FAIL"): sys.exit(20)
 else:
     sys.exit("Unexpected Docker call: " + repr(a))
 '''
@@ -87,8 +89,10 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual([a for a in self.calls() if a[:2] == ["builder", "prune"]],
                          [["builder", "prune", "--force"]])
         self.assertTrue(json.loads(self.state.read_text())["cache_pruned"])
+        self.assertEqual([a for a in self.calls() if a[:2] == ["image", "prune"]],
+                         [["image", "prune", "--force"]])
         self.assertTrue(all(a[:2] in [["image", "ls"], ["container", "ls"], ["container", "inspect"],
-                                     ["image", "rm"], ["builder", "prune"]] for a in self.calls()))
+                                     ["image", "rm"], ["builder", "prune"], ["image", "prune"]] for a in self.calls()))
         self.assertTrue(all("--force" not in a and "-f" not in a for a in self.calls() if a[:2] == ["image", "rm"]))
 
     def test_first_success_can_have_only_one_retained_image(self):
@@ -98,21 +102,22 @@ class CleanupTests(unittest.TestCase):
         self.assertIn(self.current["ref"], self.remaining())
         self.assertNotIn(self.previous["ref"], self.remaining())
         self.assertFalse(any(a[:2] == ["builder", "prune"] for a in self.calls()))
+        self.assertFalse(any(a[:2] == ["image", "prune"] for a in self.calls()))
 
-    def test_cache_only_mode_does_not_require_or_delete_any_images(self):
+    def test_cache_only_mode_prunes_dangling_images_without_retention_or_all_flag(self):
         result = subprocess.run(["bash", str(REPO / "deploy/cleanup-docker.sh"), "--build-cache"], text=True, capture_output=True,
                                 env=dict(os.environ, PATH=f"{self.root}:{os.environ['PATH']}",
                                          DOCKER_STATE=str(self.state), CALL_LOG=str(self.log)))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.calls(), [["builder", "prune", "--force"]])
+        self.assertEqual(self.calls(), [["builder", "prune", "--force"], ["image", "prune", "--force"]])
 
-    def test_unknown_history_only_prunes_build_cache(self):
+    def test_unknown_history_prunes_only_build_cache_and_dangling_images(self):
         self.retained.unlink()
         before = self.remaining()
         result = self.run_cleanup()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.remaining(), before)
-        self.assertEqual(self.calls(), [["builder", "prune", "--force"]])
+        self.assertEqual(self.calls(), [["builder", "prune", "--force"], ["image", "prune", "--force"]])
         self.assertIn("no successful deployment record", result.stdout)
 
     def test_corrupt_or_ambiguous_history_stops_before_mutation(self):
@@ -145,6 +150,12 @@ class CleanupTests(unittest.TestCase):
 
     def test_cache_cleanup_failure_remains_visible_and_retained_images_survive(self):
         result = self.run_cleanup(PRUNE_FAIL="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(self.current["ref"], self.remaining())
+        self.assertIn(self.previous["ref"], self.remaining())
+
+    def test_dangling_image_cleanup_failure_remains_visible_and_retained_images_survive(self):
+        result = self.run_cleanup(IMAGE_PRUNE_FAIL="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(self.current["ref"], self.remaining())
         self.assertIn(self.previous["ref"], self.remaining())
