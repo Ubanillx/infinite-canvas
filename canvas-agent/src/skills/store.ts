@@ -413,7 +413,7 @@ function skillImportFiles(value: unknown) {
     const paths = new Set<string>();
     for (const item of value) {
         if (!item || typeof item.path !== "string" || typeof item.content !== "string") throw new SkillStoreError("Skill 文件数据无效", 400);
-        const file = item.path.replace(/\\/g, "/");
+        const file: string = item.path.replace(/\\/g, "/");
         const segments = file.split("/");
         if (segments.some((segment) => !segment || segment === "." || segment === ".." || /[<>:"|?*\x00-\x1f]|[. ]$/.test(segment) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(segment))) throw new SkillStoreError("Skill 包含不安全的文件路径", 400);
         if (segments.includes("__MACOSX") || segments.at(-1) === ".DS_Store") continue;
