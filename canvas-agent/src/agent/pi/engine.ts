@@ -1,10 +1,12 @@
 import crypto from "node:crypto";
 
 import { Agent, type AgentEvent, type AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
+import { normalizeContext, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 
 import type { CanvasSession } from "../../canvas/session.js";
 import { AGENT_PROMPT } from "../../config.js";
+import { canvasPrivateValues, parseSkillDraft, skillDraftPrompt, SKILL_DRAFT_OUTPUT_SCHEMA, type SkillDraftSource } from "../../skills/draft.js";
 import { logger } from "../../utils/logger.js";
 import { errorMessage } from "../../utils/value.js";
 import type { AgentAttachment, AgentEmit } from "../types.js";
@@ -33,6 +35,7 @@ export type PiRunOptions = {
 type PiRuntime = { agent: Agent; threadId: string; skillsFingerprint: string };
 
 const runtimes = new Map<string, PiRuntime>();
+const skillDrafts = new Map<string, AbortController>();
 let piQueue: Promise<unknown> = Promise.resolve();
 
 /** 串行执行一次 pi turn，事件形状与 Codex 引擎保持一致。 */
@@ -42,8 +45,58 @@ export async function runPiTurn(prompt: string, emit: AgentEmit, attachments: Ag
     await piQueue;
 }
 
+/** 使用独立的只读上下文提炼草稿，不调用画布工具、不改写聊天历史。 */
+export async function generatePiSkillDraft(cwd: string, input: SkillDraftSource & { model?: string; effort?: string }) {
+    const key = normalizeCwd(cwd);
+    const controller = new AbortController();
+    skillDrafts.set(key, controller);
+    const queued = piQueue.catch(() => undefined).then(async () => {
+        controller.signal.throwIfAborted();
+        const resolved = resolvePiModel(await readPiChannels(), input.model || "");
+        let prompt = skillDraftPrompt(input);
+        let privateValues = input.source === "canvas" ? canvasPrivateValues(input.snapshot) : [];
+        if (input.source === "conversation") {
+            const thread = await new PiThreadStore(cwd).read(input.threadId);
+            const turns = thread?.turns.filter((turn) => turn.status === "completed") || [];
+            if (!turns.length) throw new Error("当前对话还没有可提炼的已完成内容");
+            const messages = turns.flatMap((turn) => turn.messages.filter((message) => message.role === "user" || message.role === "assistant").map(({ role, text }) => ({ role, text })));
+            prompt += `\n\n已完成的对话：\n${JSON.stringify(messages)}`;
+            privateValues = [input.threadId, ...turns.map((turn) => turn.turnId)];
+        }
+        const reasoning = thinkingLevel(input.effort, resolved.model);
+        const stream = await streamFor(resolved.model, normalizeContext({
+            systemPrompt: "你是 Pi 的 Skill 提炼助手。只生成可编辑草稿，通过 submit_skill_draft 提交结果，或直接返回符合该工具参数结构的 JSON。不得执行任何操作。",
+            messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
+            tools: [{ name: "submit_skill_draft", description: "提交一个可编辑的 Skill 草稿，不保存文件。", parameters: Type.Unsafe(SKILL_DRAFT_OUTPUT_SCHEMA) }],
+        }), { apiKey: resolved.apiKey, signal: controller.signal, reasoning: reasoning === "off" ? undefined : reasoning });
+        const result = await stream.result();
+        if (controller.signal.aborted || result.stopReason === "aborted") throw new Error("Skill 草稿生成已取消");
+        if (result.stopReason === "error") throw new Error(result.errorMessage || "Pi 生成 Skill 草稿失败");
+        const submitted = result.content.find((item) => item.type === "toolCall" && item.name === "submit_skill_draft");
+        let value: unknown;
+        if (submitted?.type === "toolCall") value = submitted.argumentsError ? undefined : submitted.arguments;
+        else {
+            try { value = JSON.parse(textOf(result)); }
+            catch { throw new Error("Pi 返回的 Skill 草稿不是有效 JSON"); }
+        }
+        return parseSkillDraft(value, "Pi", privateValues);
+    });
+    piQueue = queued;
+    try { return await queued; }
+    catch (error) {
+        if (controller.signal.aborted) throw new Error("Skill 草稿生成已取消");
+        throw error;
+    }
+    finally { if (skillDrafts.get(key) === controller) skillDrafts.delete(key); }
+}
+
 /** 中断指定工作区正在运行的 pi turn。 */
 export function interruptPiTurn(cwd?: string) {
+    const draft = cwd ? skillDrafts.get(normalizeCwd(cwd)) : skillDrafts.values().next().value;
+    if (draft) {
+        draft.abort();
+        return true;
+    }
     const prefix = cwd ? `${normalizeCwd(cwd)}\0` : "";
     const active = [...runtimes.entries()].find(([key, runtime]) => key.startsWith(prefix) && runtime.agent.state.isStreaming);
     if (!active) return false;

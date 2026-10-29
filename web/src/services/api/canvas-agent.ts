@@ -51,6 +51,7 @@ export type AgentSkillDraft = { name: string; displayName: string; description: 
 export type AgentSkillDraftInput = { source: "conversation" | "canvas"; threadId: string; clientId: string; model?: string; effort?: AgentReasoningEffort };
 export type AgentSkillsResponse = { ok?: boolean; data?: AgentSkillSummary[]; errors?: unknown[] };
 export type AgentSkillResponse = { ok?: boolean; data?: AgentSkillDetail };
+export type AgentSkillImportFile = { path: string; content: string };
 export type AgentSkillDraftResponse = { ok?: boolean; data?: AgentSkillDraft };
 export type AgentModelsResponse = { ok?: boolean; data?: Array<{ id: string; model: string; displayName: string; defaultReasoningEffort: AgentReasoningEffort; supportedReasoningEfforts: Array<{ reasoningEffort: AgentReasoningEffort; description?: string }>; isDefault?: boolean }> };
 export type AgentPiThread = { id: string; preview: string; name: string | null; cwd: string; status: string; createdAt: number; updatedAt: number };
@@ -217,29 +218,33 @@ export function fetchAgentSkills(endpoint: string, token: string, engine: "codex
         : fetchCodexSkills(endpoint, token, forceReload);
 }
 
-/** Pi 引擎只支持启停，编辑和删除仍由文件系统或 Codex 技能页负责。 */
+/** Pi 的启停状态独立保存，Skill 文件管理与 Codex 共用。 */
 export function setPiSkillEnabled(endpoint: string, token: string, skill: Pick<AgentSkillSummary, "name">, enabled: boolean) {
     return fetchAgentJson<{ ok?: boolean; data?: AgentSkillSummary[] }>(endpoint, token, `/agent/pi/skills/${encodeURIComponent(skill.name)}/enabled`, jsonPost({ enabled }));
 }
 
-export function fetchCodexSkill(endpoint: string, token: string, name: string) {
-    return fetchAgentJson<AgentSkillResponse>(endpoint, token, `/agent/codex/skills/${encodeURIComponent(name)}`);
+export function fetchAgentSkill(endpoint: string, token: string, name: string) {
+    return fetchAgentJson<AgentSkillResponse>(endpoint, token, `/agent/skills/${encodeURIComponent(name)}`);
 }
 
-export function createCodexSkill(endpoint: string, token: string, input: AgentSkillInput) {
-    return fetchAgentJson<AgentSkillResponse>(endpoint, token, "/agent/codex/skills", jsonPost(input));
+export function createAgentSkill(endpoint: string, token: string, input: AgentSkillInput) {
+    return fetchAgentJson<AgentSkillResponse>(endpoint, token, "/agent/skills", jsonPost(input));
 }
 
-export function createCodexSkillDraft(endpoint: string, token: string, input: AgentSkillDraftInput) {
-    return fetchAgentJson<AgentSkillDraftResponse>(endpoint, token, "/agent/codex/skills/draft", jsonPost(input));
+export function importAgentSkill(endpoint: string, token: string, files: AgentSkillImportFile[]) {
+    return fetchAgentJson<AgentSkillResponse>(endpoint, token, "/agent/skills/import", jsonPost({ files }));
 }
 
-export function updateCodexSkill(endpoint: string, token: string, name: string, input: AgentSkillInput) {
-    return fetchAgentJson<AgentSkillResponse>(endpoint, token, `/agent/codex/skills/${encodeURIComponent(name)}`, jsonPost(input));
+export function createAgentSkillDraft(endpoint: string, token: string, engine: "codex" | "pi", input: AgentSkillDraftInput) {
+    return fetchAgentJson<AgentSkillDraftResponse>(endpoint, token, `/agent/${engine}/skills/draft`, jsonPost(input));
 }
 
-export function deleteCodexSkill(endpoint: string, token: string, name: string, expectedRevision: string) {
-    return fetchAgentJson<{ ok?: boolean }>(endpoint, token, `/agent/codex/skills/${encodeURIComponent(name)}/delete`, jsonPost({ expectedRevision }));
+export function updateAgentSkill(endpoint: string, token: string, name: string, input: AgentSkillInput) {
+    return fetchAgentJson<AgentSkillResponse>(endpoint, token, `/agent/skills/${encodeURIComponent(name)}`, jsonPost(input));
+}
+
+export function deleteAgentSkill(endpoint: string, token: string, name: string, expectedRevision: string) {
+    return fetchAgentJson<{ ok?: boolean }>(endpoint, token, `/agent/skills/${encodeURIComponent(name)}/delete`, jsonPost({ expectedRevision }));
 }
 
 export function setCodexSkillEnabled(endpoint: string, token: string, skill: Pick<AgentSkillSummary, "name" | "path">, enabled: boolean) {

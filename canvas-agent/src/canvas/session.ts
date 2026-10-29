@@ -25,7 +25,7 @@ export type ConversationState = {
     error?: string;
 };
 type McpInventoryItem = { name: string; authStatus?: string };
-export const AGENT_PROTOCOL_VERSION = 9;
+export const AGENT_PROTOCOL_VERSION = 10;
 
 const SITE_TOOLS = new Set<ToolName>([
     "site_navigate",

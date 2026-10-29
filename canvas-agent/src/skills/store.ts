@@ -37,6 +37,8 @@ export type CreateManagedSkillInput = {
     interface?: ManagedSkillInterface | null;
 };
 
+export type ImportManagedSkillFile = { path: string; content: string };
+
 export type UpdateManagedSkillInput = {
     description: string;
     instructions: string;
@@ -111,6 +113,43 @@ export class SkillStore {
                 const openAiFile = path.join(skillDir, "agents", "openai.yaml");
                 if (skillInterface) await this.writeOpenAi(openAiFile, {}, skillInterface);
                 return await this.readDetail(name, skillFile, openAiFile);
+            } catch (error) {
+                await fs.rm(skillDir, { recursive: true, force: true }).catch(() => undefined);
+                throw error;
+            }
+        });
+    }
+
+    /** 自动定位上传文件中的 Skill 入口，保留正文、元数据及所有配套资源。 */
+    import(filesInput: ImportManagedSkillFile[]) {
+        return this.mutate(async () => {
+            const files = skillImportFiles(filesInput);
+            const entries = [...files.keys()].filter((file) => path.posix.basename(file) === "SKILL.md");
+            const roots = entries.filter((file) => !entries.some((parent) => parent !== file && file.startsWith(parent.slice(0, -"SKILL.md".length))));
+            if (!roots.length) throw new SkillStoreError("未找到 SKILL.md，请上传有效的 Skill ZIP 包或文件夹", 400);
+            if (roots.length !== 1) throw new SkillStoreError("检测到多个 Skill，请选择单个 Skill 的 ZIP 包或文件夹", 400);
+            const entry = roots[0]!;
+            const prefix = entry.slice(0, -"SKILL.md".length);
+            const document = parseSkill(files.get(entry)!.toString("utf8"));
+            const name = skillName(document.frontmatter.name);
+            if ([...files.keys()].some((file) => file.toLowerCase() === `${prefix}agents`.toLowerCase())) throw new SkillStoreError("Skill agents 路径必须是目录", 400);
+            const openAi = files.get(`${prefix}agents/openai.yaml`);
+            if (openAi) parseOpenAi(openAi.toString("utf8"), name);
+            await this.ensureRoot();
+            const skillDir = path.resolve(this.skillsPath, name);
+            if (!inside(this.skillsPath, skillDir)) throw new SkillStoreError("Skill 路径不安全", 400);
+            if (await lstatOptional(skillDir)) throw new SkillStoreError("同名 Skill 已存在，请先修改 Skill 名称或删除已有 Skill", 409);
+            await fs.mkdir(skillDir);
+            try {
+                for (const [file, content] of files) {
+                    if (!file.startsWith(prefix) || file === entry) continue;
+                    const target = path.join(skillDir, file.slice(prefix.length));
+                    await fs.mkdir(path.dirname(target), { recursive: true });
+                    await fs.writeFile(target, content, { flag: "wx" });
+                }
+                const skillFile = path.join(skillDir, "SKILL.md");
+                await fs.writeFile(skillFile, files.get(entry)!, { flag: "wx" });
+                return await this.readDetail(name, skillFile, path.join(skillDir, "agents", "openai.yaml"));
             } catch (error) {
                 await fs.rm(skillDir, { recursive: true, force: true }).catch(() => undefined);
                 throw error;
@@ -322,14 +361,20 @@ function serializeSkill(frontmatter: Record<string, unknown>, instructions: stri
 
 async function readSkill(filePath: string, expectedName: string): Promise<SkillDocument> {
     const raw = await fs.readFile(filePath, "utf8");
+    return parseSkill(raw, expectedName);
+}
+
+function parseSkill(raw: string, expectedName?: string): SkillDocument {
+    if (!/^\uFEFF?---\r?\n/.test(raw)) throw new SkillStoreError("SKILL.md 必须以 YAML frontmatter 开头，包含 name 和 description", 400);
     let parsed: matter.GrayMatterFile<string>;
     try {
-        parsed = matter(raw);
+        parsed = matter(raw, { engines: { yaml: (source: string) => parseYaml(source) } });
     } catch {
         throw new SkillStoreError("SKILL.md frontmatter 格式无效", 409);
     }
     const frontmatter = recordValue(parsed.data);
-    if (frontmatter.name !== expectedName) throw new SkillStoreError("SKILL.md 中的名称与目录不一致", 409);
+    const name = skillName(frontmatter.name);
+    if (expectedName && name !== expectedName) throw new SkillStoreError("SKILL.md 中的名称与目录不一致", 409);
     return {
         raw,
         frontmatter,
@@ -342,6 +387,10 @@ async function readOpenAi(filePath: string, expectedName: string): Promise<OpenA
     const entry = await lstatOptional(filePath);
     if (!entry) return { raw: "", data: {} };
     const raw = await fs.readFile(filePath, "utf8");
+    return parseOpenAi(raw, expectedName);
+}
+
+function parseOpenAi(raw: string, expectedName: string): OpenAiDocument {
     let data: Record<string, unknown>;
     try {
         const parsed = parseYaml(raw);
@@ -356,6 +405,32 @@ async function readOpenAi(filePath: string, expectedName: string): Promise<OpenA
     const value = data.interface as Record<string, unknown> | null | undefined;
     const skillInterface = skillInterfaceValue({ displayName: value?.display_name, shortDescription: value?.short_description, defaultPrompt: value?.default_prompt }, expectedName);
     return { raw, data, ...(skillInterface ? { interface: skillInterface } : {}) };
+}
+
+function skillImportFiles(value: unknown) {
+    if (!Array.isArray(value) || !value.length) throw new SkillStoreError("未选择可导入的 Skill 文件", 400);
+    const files = new Map<string, Buffer>();
+    const paths = new Set<string>();
+    for (const item of value) {
+        if (!item || typeof item.path !== "string" || typeof item.content !== "string") throw new SkillStoreError("Skill 文件数据无效", 400);
+        const file = item.path.replace(/\\/g, "/");
+        const segments = file.split("/");
+        if (segments.some((segment) => !segment || segment === "." || segment === ".." || /[<>:"|?*\x00-\x1f]|[. ]$/.test(segment) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(segment))) throw new SkillStoreError("Skill 包含不安全的文件路径", 400);
+        if (segments.includes("__MACOSX") || segments.at(-1) === ".DS_Store") continue;
+        const key = file.toLowerCase();
+        if (paths.has(key)) throw new SkillStoreError(`Skill 包含重复文件路径：${file}`, 400);
+        const content = Buffer.from(item.content, "base64");
+        if (content.toString("base64") !== item.content) throw new SkillStoreError("Skill 文件编码无效", 400);
+        paths.add(key);
+        files.set(file, content);
+    }
+    for (const file of paths) {
+        const segments = file.split("/");
+        while (segments.pop() && segments.length) {
+            if (paths.has(segments.join("/"))) throw new SkillStoreError("Skill 文件与目录路径冲突", 400);
+        }
+    }
+    return files;
 }
 
 async function restoreSkillFiles(skillFile: string, skillRaw: string, openAiFile: string, openAiRaw: string) {

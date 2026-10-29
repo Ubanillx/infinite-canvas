@@ -6,7 +6,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 
 import { runClaudeTurn } from "../agent/claude.js";
 import { fileCenterFor, FILE_LIMITS, FileCenterError } from "../agent/file-center.js";
-import { interruptPiTurn, releasePiRuntime, runPiTurn } from "../agent/pi/engine.js";
+import { generatePiSkillDraft, interruptPiTurn, releasePiRuntime, runPiTurn } from "../agent/pi/engine.js";
 import { piModelOptions, readPiChannels } from "../agent/pi/model.js";
 import { loadPiSkills, PiSkillError, piSkillSummaries, setPiSkillEnabled } from "../agent/pi/skills.js";
 import { PiThreadStore, readPiThread } from "../agent/pi/store.js";
@@ -19,6 +19,7 @@ import { DEFAULT_PORT, ensureRequestWorkspace, ensureSiteWorkspace, loadConfig, 
 import { logger } from "../utils/logger.js";
 import { checkVersions } from "../version-check.js";
 import { SkillStore, SkillStoreError } from "../skills/store.js";
+import type { SkillDraftSource } from "../skills/draft.js";
 
 /** 启动仅监听本机的 Canvas Agent HTTP 服务。 */
 export function startHttpServer() {
@@ -296,7 +297,9 @@ export function startHttpServer() {
         const result = await listCodexSkills(emit, workspace.workspacePath, String(req.query.forceReload || "") === "1");
         res.json({ ok: true, data: result.skills.map((skill) => ({ ...skill, managed: skillStore.isManagedPath(skill.path) })), errors: result.errors });
     }));
-    app.post("/agent/codex/skills/draft", codexMutation(async (req, res) => {
+    app.post("/agent/:engine/skills/draft", piMutation(async (req, res) => {
+        const engine = routeParam(req.params.engine);
+        if (engine !== "codex" && engine !== "pi") return res.status(400).json({ ok: false, error: "不支持的引擎" });
         const workspace = requestWorkspace(config, req);
         const source = String(req.body?.source || "");
         if (source !== "conversation" && source !== "canvas") return res.status(400).json({ ok: false, error: "Skill 草稿来源无效" });
@@ -304,24 +307,29 @@ export function startHttpServer() {
         if (!clientId || !session.hasClient(clientId)) return res.status(409).json({ ok: false, error: "发起提炼的网页已断开，请重新连接后再试" });
         const model = String(req.body?.model || "") || undefined;
         const effort = reasoningEffort(req.body?.effort);
+        if (session.conversationStateSnapshot.engine !== engine) return res.status(409).json({ ok: false, error: "当前引擎已切换，请同步后重试" });
+        let input: SkillDraftSource;
+        if (source === "conversation") {
+            const threadId = String(req.body?.threadId || "");
+            if (!threadId) return res.status(409).json({ ok: false, error: "当前没有可提炼的对话" });
+            if (threadId !== (workspace.activeThreadId || "")) return res.status(409).json({ ok: false, error: "当前对话已在其他页面切换，请同步后重试" });
+            if (engine === "codex") {
+                const history = await readCodexThread(emit, threadId, workspace.workspacePath);
+                if (!history.messages.some((message) => message.role === "user" && message.turnId)) return res.status(409).json({ ok: false, error: "当前对话还没有可提炼的已完成内容" });
+            }
+            input = { source, threadId };
+        } else {
+            const snapshot = session.canvasStateForClient(clientId);
+            if (!snapshot || (snapshot as Record<string, unknown>).hasCanvas === false) return res.status(409).json({ ok: false, error: "当前页面没有可提炼的画布" });
+            input = { source, snapshot };
+        }
         const previousCodexState = session.codexStateSnapshot;
         currentRuntime().skillDraftRunning = true;
         try {
-            if (source === "conversation") {
-                const threadId = String(req.body?.threadId || "");
-                if (!threadId) return res.status(409).json({ ok: false, error: "当前没有可提炼的对话" });
-                if (threadId !== (workspace.activeThreadId || "")) return res.status(409).json({ ok: false, error: "当前对话已在其他页面切换，请同步后重试" });
-                const history = await readCodexThread(emit, threadId, workspace.workspacePath);
-                if (!history.messages.some((message) => message.role === "user" && message.turnId)) return res.status(409).json({ ok: false, error: "当前对话还没有可提炼的已完成内容" });
-                session.setCodexState({ busy: true, threadId, turnId: "" }, { preserveReplay: true });
-                const data = await generateCodexSkillDraft(emit, workspace.workspacePath, { source, threadId, model, effort });
-                if (!session.hasClient(clientId)) return res.status(409).json({ ok: false, error: "发起提炼的网页已断开，请重新连接后再试" });
-                return res.json({ ok: true, data });
-            }
-            const snapshot = session.canvasStateForClient(clientId);
-            if (!snapshot || (snapshot as Record<string, unknown>).hasCanvas === false) return res.status(409).json({ ok: false, error: "当前页面没有可提炼的画布" });
             session.setCodexState({ busy: true, threadId: workspace.activeThreadId || "", turnId: "" }, { preserveReplay: true });
-            const data = await generateCodexSkillDraft(emit, workspace.workspacePath, { source, snapshot, model, effort });
+            const data = engine === "pi"
+                ? await generatePiSkillDraft(workspace.workspacePath, { ...input, model, effort })
+                : await generateCodexSkillDraft(emit, workspace.workspacePath, { ...input, model, effort });
             if (!session.hasClient(clientId)) return res.status(409).json({ ok: false, error: "发起提炼的网页已断开，请重新连接后再试" });
             return res.json({ ok: true, data });
         } finally {
@@ -329,10 +337,15 @@ export function startHttpServer() {
             session.setCodexState(previousCodexState, { preserveReplay: true });
         }
     }));
-    app.get("/agent/codex/skills/:name", route(async (req, res) => {
+    app.get("/agent/skills/:name", route(async (req, res) => {
         res.json({ ok: true, data: await skillStore.get(routeParam(req.params.name)) });
     }));
-    app.post("/agent/codex/skills", codexMutation(async (req, res) => {
+    app.post("/agent/skills/import", piMutation(async (req, res) => {
+        const data = await skillStore.import(req.body?.files);
+        session.emitAll("skills_changed", { forceReload: true });
+        res.status(201).json({ ok: true, data });
+    }));
+    app.post("/agent/skills", piMutation(async (req, res) => {
         const data = await skillStore.create(req.body);
         session.emitAll("skills_changed", { forceReload: true });
         res.status(201).json({ ok: true, data });
@@ -346,12 +359,12 @@ export function startHttpServer() {
         session.emitAll("skills_changed", { forceReload: true });
         res.json({ ok: true, data });
     }));
-    app.post("/agent/codex/skills/:name/delete", codexMutation(async (req, res) => {
+    app.post("/agent/skills/:name/delete", piMutation(async (req, res) => {
         await skillStore.delete(routeParam(req.params.name), String(req.body?.expectedRevision || ""));
         session.emitAll("skills_changed", { forceReload: true });
         res.json({ ok: true });
     }));
-    app.post("/agent/codex/skills/:name", codexMutation(async (req, res) => {
+    app.post("/agent/skills/:name", piMutation(async (req, res) => {
         const data = await skillStore.update(routeParam(req.params.name), req.body);
         session.emitAll("skills_changed", { forceReload: true });
         res.json({ ok: true, data });
@@ -450,12 +463,21 @@ export function startHttpServer() {
     app.get("/agent/pi/skills", route(async (req, res) => {
         const workspace = requestWorkspace(config, req);
         const result = await loadPiSkills(workspace.workspacePath);
-        res.json({ ok: true, data: piSkillSummaries(result.skills), errors: result.errors });
+        const data = await Promise.all(piSkillSummaries(result.skills).map(async (skill) => {
+            const managed = skillStore.isManagedPath(skill.path);
+            if (managed) {
+                try { return { ...skill, managed, interface: (await skillStore.get(skill.name)).interface }; }
+                catch (error) { result.errors.push({ path: skill.path, message: error instanceof Error ? error.message : "读取 Skill 元数据失败" }); }
+            }
+            return { ...skill, managed };
+        }));
+        res.json({ ok: true, data, errors: result.errors });
     }));
     app.post("/agent/pi/skills/:name/enabled", piMutation(async (req, res) => {
         if (typeof req.body?.enabled !== "boolean") return res.status(400).json({ ok: false, error: "Skill 启用状态无效" });
         const workspace = requestWorkspace(config, req);
         const data = await setPiSkillEnabled(workspace.workspacePath, routeParam(req.params.name), req.body.enabled);
+        session.emitAll("skills_changed", { forceReload: true });
         res.json({ ok: true, data });
     }));
     app.get("/agent/pi/threads", route(async (req, res) => {
@@ -736,6 +758,7 @@ export function startHttpServer() {
     app.use((_req, res) => res.status(404).json({ ok: false, error: "not found" }));
     app.use((error: Error, req: Request, res: Response, _next: NextFunction) => {
         logger.error("HTTP request failed", { method: req.method, path: req.path, error });
+        if (req.path === "/agent/skills/import" && (error as { type?: string }).type === "entity.too.large") return void res.status(413).json({ ok: false, error: "导入内容超出 Agent 现有请求大小上限" });
         if (error instanceof FileCenterError) return void res.status(error.statusCode).json({ ok: false, error: error.message });
         if (error instanceof SkillStoreError || error instanceof CodexSkillLookupError || error instanceof PiSkillError) return void res.status(error.statusCode).json({ ok: false, error: error.message });
         res.status(500).json({ ok: false, error: error.message });

@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { App, Button, Collapse, Dropdown, Form, Input, Modal, Select, Switch, Tooltip } from "antd";
 import type { MenuProps } from "antd";
-import { ArrowUpRight, Check, ChevronDown, CircleAlert, FilePenLine, LayoutGrid, LoaderCircle, LockKeyhole, MessageSquareText, Plus, RefreshCw, Search, Trash2, Unplug, Workflow } from "lucide-react";
+import { ArrowUpRight, Check, ChevronDown, CircleAlert, FileArchive, FilePenLine, FolderUp, LayoutGrid, LoaderCircle, LockKeyhole, MessageSquareText, Plus, RefreshCw, Search, Trash2, Unplug, Upload, Workflow } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { canvasThemes } from "@/lib/canvas-theme";
-import { createCodexSkill, createCodexSkillDraft, deleteCodexSkill, fetchCodexSkill, postState, setCodexSkillEnabled, setPiSkillEnabled, updateCodexSkill, type AgentSkillDetail, type AgentSkillDraft, type AgentSkillInterface, type AgentSkillScope, type AgentSkillSummary } from "@/services/api/canvas-agent";
+import { getActiveWorkspace } from "@/lib/workspace";
+import { createAgentSkill, createAgentSkillDraft, deleteAgentSkill, fetchAgentSkill, importAgentSkill, postState, setCodexSkillEnabled, setPiSkillEnabled, updateAgentSkill, type AgentSkillDetail, type AgentSkillDraft, type AgentSkillInterface, type AgentSkillScope, type AgentSkillSummary } from "@/services/api/canvas-agent";
 import { useAgentSkillStore } from "@/stores/use-agent-skill-store";
 import { useAgentStore, type AgentChatItem } from "@/stores/use-agent-store";
 import { useThemeStore } from "@/stores/use-theme-store";
+import { readSkillImportFiles } from "./skill-import";
 
 type ScopeFilter = "all" | AgentSkillScope;
 type SkillDraftSource = "conversation" | "canvas";
@@ -52,6 +54,10 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
     const [createMenuOpen, setCreateMenuOpen] = useState(false);
     const [busySkill, setBusySkill] = useState("");
     const [errorsOpen, setErrorsOpen] = useState(false);
+    const [importing, setImporting] = useState(false);
+    const zipInputRef = useRef<HTMLInputElement>(null);
+    const folderInputRef = useRef<HTMLInputElement>(null);
+    const importInFlight = useRef(false);
     const confirmRef = useRef<{ destroy: () => void } | null>(null);
     const [form] = Form.useForm<SkillFormValues>();
     const endpoint = url.trim().replace(/\/$/, "");
@@ -69,7 +75,7 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
     const connectionIsCurrent = (revision: number) => {
         const agent = useAgentStore.getState();
         const skillsState = useAgentSkillStore.getState();
-        return skillsState.connectionRevision === revision && agent.connected && agent.url.trim().replace(/\/$/, "") === endpoint && agent.token === token;
+        return skillsState.connectionRevision === revision && agent.connected && agent.engine === engine && agent.url.trim().replace(/\/$/, "") === endpoint && agent.token === token;
     };
     useEffect(() => {
         if (draft) setEditor((current) => current || { mode: "create", values: draftFormValues(draft) });
@@ -90,9 +96,34 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
         selectSkill(skill);
         setAgentState({ activeTab: "chat" });
     };
+    const importSkill = async (files: File[], source: "zip" | "folder") => {
+        if (!files.length || importInFlight.current) return;
+        const connectionRevision = useAgentSkillStore.getState().connectionRevision;
+        const workspaceId = getActiveWorkspace()?.id;
+        const isCurrent = () => connectionIsCurrent(connectionRevision) && getActiveWorkspace()?.id === workspaceId;
+        if (!isCurrent()) return;
+        importInFlight.current = true;
+        setImporting(true);
+        try {
+            const entries = await readSkillImportFiles(files, source);
+            if (!isCurrent()) return;
+            const response = await importAgentSkill(endpoint, token, entries);
+            if (!isCurrent()) return;
+            if (!response.data) throw new Error(t("agent.skillManager.importFailed"));
+            setQuery("");
+            setScope("repo");
+            await refresh();
+            if (isCurrent()) message.success(t("agent.skillManager.imported", { name: response.data.interface?.displayName || response.data.name }));
+        } catch (error) {
+            if (isCurrent()) message.error(error instanceof Error ? error.message : t("agent.skillManager.importFailed"));
+        } finally {
+            importInFlight.current = false;
+            setImporting(false);
+        }
+    };
     const generateDraft = async (source: SkillDraftSource) => {
         const agent = useAgentStore.getState();
-        if (agent.sending || agent.waiting) return message.warning(t("agent.skillManager.codexBusy"));
+        if (agent.sending || agent.waiting) return message.warning(t("agent.skillManager.agentBusy"));
         if (source === "conversation" && !hasSettledConversation(agent.messages, agent.activeThreadId)) return message.warning(t("agent.skillManager.noConversation"));
         if (source === "canvas" && !agent.canvasContext) return message.warning(t("agent.skillManager.noCanvas"));
         if (!clientId) return message.warning(t("agent.skillManager.connecting"));
@@ -104,7 +135,7 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
                 if (!synced) throw new Error(t("agent.skillManager.syncFailed"));
             }
             if (!connectionIsCurrent(connectionRevision)) return;
-            const response = await createCodexSkillDraft(endpoint, token, {
+            const response = await createAgentSkillDraft(endpoint, token, agent.engine, {
                 source,
                 threadId: agent.activeThreadId,
                 clientId,
@@ -122,11 +153,11 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
         }
     };
     const openEdit = async (skill: AgentSkillSummary) => {
-        if (!skill.managed || busySkill || useAgentSkillStore.getState().generatingSource) return;
+        if (!skill.managed || busySkill || importing || useAgentSkillStore.getState().generatingSource) return;
         const connectionRevision = useAgentSkillStore.getState().connectionRevision;
         setBusySkill(skill.path);
         try {
-            const response = await fetchCodexSkill(endpoint, token, skill.name);
+            const response = await fetchAgentSkill(endpoint, token, skill.name);
             if (!connectionIsCurrent(connectionRevision)) return;
             if (!response.data) throw new Error(t("agent.skillManager.contentMissing"));
             setEditor({ mode: "edit", detail: response.data });
@@ -160,8 +191,8 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
         setSaving(true);
         try {
             const input = { description: values.description.trim(), instructions: values.instructions.trim(), interface: skillInterface || null };
-            if (editor.mode === "create") await createCodexSkill(endpoint, token, { name, ...input });
-            else await updateCodexSkill(endpoint, token, name, { ...input, expectedRevision: editor.detail.revision });
+            if (editor.mode === "create") await createAgentSkill(endpoint, token, { name, ...input });
+            else await updateAgentSkill(endpoint, token, name, { ...input, expectedRevision: editor.detail.revision });
             if (!connectionIsCurrent(connectionRevision)) return;
             setDraft(null);
             setEditor(null);
@@ -187,10 +218,10 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
                 if (!connectionIsCurrent(connectionRevision)) return;
                 setBusySkill(skill.path);
                 try {
-                    const response = await fetchCodexSkill(endpoint, token, skill.name);
+                    const response = await fetchAgentSkill(endpoint, token, skill.name);
                     if (!connectionIsCurrent(connectionRevision)) return;
                     if (!response.data) throw new Error(t("agent.skillManager.contentMissing"));
-                    await deleteCodexSkill(endpoint, token, skill.name, response.data.revision);
+                    await deleteAgentSkill(endpoint, token, skill.name, response.data.revision);
                     if (!connectionIsCurrent(connectionRevision)) return;
                     if (selectedSkill?.name === skill.name && selectedSkill.path === skill.path) clearSelection();
                     await refresh();
@@ -225,28 +256,28 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
             if (connectionIsCurrent(connectionRevision)) setBusySkill("");
         }
     };
-    const codexBusy = sending || waiting;
+    const agentBusy = sending || waiting;
     const createMenu: MenuProps = {
         items: [
             {
                 key: "conversation",
                 icon: <MessageSquareText className="size-4" strokeWidth={1.6} />,
-                disabled: codexBusy || !hasConversation,
+                disabled: agentBusy || !hasConversation,
                 label: (
                     <div className="py-0.5">
                         <div className="text-sm">{t("agent.skillManager.fromConversation")}</div>
-                        <div className="mt-0.5 text-xs" style={{ color: theme.node.muted }}>{t(codexBusy ? "agent.skillManager.availableAfterRun" : hasConversation ? "agent.skillManager.conversationDescription" : activeThreadId ? "agent.skillManager.noCompletedContent" : "agent.skillManager.startConversation")}</div>
+                        <div className="mt-0.5 text-xs" style={{ color: theme.node.muted }}>{t(agentBusy ? "agent.skillManager.availableAfterRun" : hasConversation ? "agent.skillManager.conversationDescription" : activeThreadId ? "agent.skillManager.noCompletedContent" : "agent.skillManager.startConversation")}</div>
                     </div>
                 ),
             },
             {
                 key: "canvas",
                 icon: <Workflow className="size-4" strokeWidth={1.6} />,
-                disabled: codexBusy || !hasCanvas,
+                disabled: agentBusy || !hasCanvas,
                 label: (
                     <div className="py-0.5">
                         <div className="text-sm">{t("agent.skillManager.fromCanvas")}</div>
-                        <div className="mt-0.5 text-xs" style={{ color: theme.node.muted }}>{t(codexBusy ? "agent.skillManager.availableAfterRun" : hasCanvas ? "agent.skillManager.canvasDescription" : "agent.skillManager.canvasUnavailable")}</div>
+                        <div className="mt-0.5 text-xs" style={{ color: theme.node.muted }}>{t(agentBusy ? "agent.skillManager.availableAfterRun" : hasCanvas ? "agent.skillManager.canvasDescription" : "agent.skillManager.canvasUnavailable")}</div>
                     </div>
                 ),
             },
@@ -273,20 +304,40 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
 
     return (
         <div className="flex min-h-0 flex-1 flex-col" style={{ color: theme.node.text }}>
+            <input ref={zipInputRef} type="file" accept=".zip,application/zip" className="hidden" aria-label={t("agent.skillManager.importZip")} onChange={(event) => {
+                const files = Array.from(event.currentTarget.files || []);
+                event.currentTarget.value = "";
+                void importSkill(files, "zip");
+            }} />
+            <input ref={(input) => {
+                folderInputRef.current = input;
+                input?.setAttribute("webkitdirectory", "");
+            }} type="file" multiple className="hidden" aria-label={t("agent.skillManager.importFolder")} onChange={(event) => {
+                const files = Array.from(event.currentTarget.files || []);
+                event.currentTarget.value = "";
+                void importSkill(files, "folder");
+            }} />
             <header className="shrink-0 px-6 pb-5 pt-6">
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                     <h2 className="!m-0 text-base font-medium tracking-tight">{t("agent.panel.skills")}</h2>
                     <div className="flex shrink-0 items-center gap-1">
                         <Tooltip title={t("agent.skillManager.reload")} trigger={["hover", "focus"]}>
                             <Button type="text" className="!h-8 !w-8 !min-w-8" style={{ color: theme.node.muted }} aria-label={t("agent.skillManager.reloadSkill")} disabled={!connected || loading} icon={<RefreshCw className={`size-4 ${loading ? "motion-safe:animate-spin" : ""}`} strokeWidth={1.6} />} onClick={() => void refresh()} />
                         </Tooltip>
-                        {piEngine ? null : (
-                            <Dropdown trigger={["click"]} placement="bottomRight" open={createMenuOpen} onOpenChange={setCreateMenuOpen} disabled={!connected || !clientId || Boolean(generatingSource)} menu={createMenu}>
-                                <Button type="text" className="!h-8 !gap-1.5 !px-2 !text-xs" aria-haspopup="menu" aria-expanded={createMenuOpen} disabled={!connected || !clientId} loading={Boolean(generatingSource)} icon={<Plus className="size-4" strokeWidth={1.6} />}>
-                                    {t("agent.skillManager.createSkill")} <ChevronDown className="size-3.5 opacity-60" strokeWidth={1.6} />
-                                </Button>
-                            </Dropdown>
-                        )}
+                        <Dropdown trigger={["click"]} placement="bottomRight" disabled={!connected || importing || saving || agentBusy || Boolean(busySkill) || Boolean(generatingSource)} menu={{
+                            items: [
+                                { key: "zip", icon: <FileArchive className="size-4" strokeWidth={1.6} />, label: t("agent.skillManager.importZip") },
+                                { key: "folder", icon: <FolderUp className="size-4" strokeWidth={1.6} />, label: t("agent.skillManager.importFolder") },
+                            ],
+                            onClick: ({ key }) => (key === "zip" ? zipInputRef : folderInputRef).current?.click(),
+                        }}>
+                            <Button type="text" className="!h-8 !gap-1.5 !px-2 !text-xs" aria-haspopup="menu" disabled={!connected || saving || agentBusy || Boolean(busySkill) || Boolean(generatingSource)} loading={importing} icon={<Upload className="size-4" strokeWidth={1.6} />}>{t(importing ? "agent.skillManager.importing" : "agent.skillManager.importSkill")}</Button>
+                        </Dropdown>
+                        <Dropdown trigger={["click"]} placement="bottomRight" open={createMenuOpen} onOpenChange={setCreateMenuOpen} disabled={!connected || !clientId || importing || Boolean(generatingSource)} menu={createMenu}>
+                            <Button type="text" className="!h-8 !gap-1.5 !px-2 !text-xs" aria-haspopup="menu" aria-expanded={createMenuOpen} disabled={!connected || !clientId || importing} loading={Boolean(generatingSource)} icon={<Plus className="size-4" strokeWidth={1.6} />}>
+                                {t("agent.skillManager.createSkill")} <ChevronDown className="size-3.5 opacity-60" strokeWidth={1.6} />
+                            </Button>
+                        </Dropdown>
                     </div>
                 </div>
                 <p className="!mb-0 !mt-1.5 text-xs leading-5" style={{ color: theme.node.muted }}>{t(piEngine ? "agent.panel.piSkillsHint" : "agent.skillManager.localDescription")}</p>
@@ -334,15 +385,15 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
                                     </div>
                                     <div className="mt-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 pl-7">
                                         <label className="inline-flex items-center gap-2 text-[11px]" style={{ color: theme.node.muted }}>
-                                            <Switch size="small" aria-label={t("agent.skillManager.toggleNamed", { name: skill.interface?.displayName || skill.name })} checked={skill.enabled} loading={busy} disabled={!connected || Boolean(busySkill) || Boolean(generatingSource)} onChange={(enabled) => void toggleEnabled(skill, enabled)} />
+                                            <Switch size="small" aria-label={t("agent.skillManager.toggleNamed", { name: skill.interface?.displayName || skill.name })} checked={skill.enabled} loading={busy} disabled={!connected || importing || Boolean(busySkill) || Boolean(generatingSource)} onChange={(enabled) => void toggleEnabled(skill, enabled)} />
                                             {t(skill.enabled ? "agent.skillManager.enabled" : "agent.skillManager.disabled")}
                                         </label>
                                         <div className="flex items-center gap-0.5">
                                             <Button type="text" size="small" className="!h-8 !px-2 !text-xs" disabled={!connected || !skill.enabled || Boolean(busySkill)} icon={selected ? <Check className="size-3.5" strokeWidth={1.6} /> : <ArrowUpRight className="size-3.5" strokeWidth={1.6} />} onClick={() => useSkill(skill)}>{t(selected ? "agent.skillManager.selected" : "agent.skillManager.use")}</Button>
-                                            {skill.managed && !piEngine ? (
+                                            {skill.managed ? (
                                                 <>
-                                                    <Tooltip title={t("common.edit")} trigger={["hover", "focus"]}><Button type="text" className="!h-8 !w-8 !min-w-8" style={{ color: theme.node.muted }} aria-label={t("agent.skillManager.editNamed", { name: skill.interface?.displayName || skill.name })} disabled={!connected || Boolean(busySkill) || Boolean(generatingSource)} icon={<FilePenLine className="size-3.5" strokeWidth={1.6} />} onClick={() => void openEdit(skill)} /></Tooltip>
-                                                    <Tooltip title={t("common.delete")} trigger={["hover", "focus"]}><Button danger type="text" className="!h-8 !w-8 !min-w-8" aria-label={t("agent.skillManager.deleteNamed", { name: skill.interface?.displayName || skill.name })} disabled={!connected || Boolean(busySkill) || Boolean(generatingSource)} icon={<Trash2 className="size-3.5" strokeWidth={1.6} />} onClick={() => confirmDelete(skill)} /></Tooltip>
+                                                    <Tooltip title={t("common.edit")}><Button type="text" className="!h-8 !w-8 !min-w-8" style={{ color: theme.node.muted }} aria-label={t("agent.skillManager.editNamed", { name: skill.interface?.displayName || skill.name })} disabled={!connected || importing || Boolean(busySkill) || Boolean(generatingSource)} icon={<FilePenLine className="size-3.5" strokeWidth={1.6} />} onClick={() => void openEdit(skill)} /></Tooltip>
+                                                    <Tooltip title={t("common.delete")}><Button danger type="text" className="!h-8 !w-8 !min-w-8" aria-label={t("agent.skillManager.deleteNamed", { name: skill.interface?.displayName || skill.name })} disabled={!connected || importing || Boolean(busySkill) || Boolean(generatingSource)} icon={<Trash2 className="size-3.5" strokeWidth={1.6} />} onClick={() => confirmDelete(skill)} /></Tooltip>
                                                 </>
                                             ) : null}
                                         </div>
@@ -355,7 +406,7 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
                     <div className="mx-auto flex max-w-64 flex-col items-center px-3 pt-[clamp(48px,12vh,120px)] text-center" role="status">
                         {!connected ? <Unplug className="size-8" strokeWidth={1.3} style={{ color: theme.node.faint }} /> : skills.length ? <Search className="size-8" strokeWidth={1.3} style={{ color: theme.node.faint }} /> : <LayoutGrid className="size-8" strokeWidth={1.3} style={{ color: theme.node.faint }} />}
                         <div className="mt-5 text-sm font-medium">{t(!connected ? "agent.skillManager.connectToView" : skills.length ? "agent.skillManager.noMatch" : "agent.skillManager.none")}</div>
-                        <div className="mt-2 text-xs leading-6" style={{ color: theme.node.muted }}>{t(!connected ? "agent.skillManager.connectDescription" : skills.length ? "agent.skillManager.tryAnotherFilter" : piEngine ? "agent.skillManager.installAndReload" : "agent.skillManager.createOrInstall")}</div>
+                        <div className="mt-2 text-xs leading-6" style={{ color: theme.node.muted }}>{t(!connected ? "agent.skillManager.connectDescription" : skills.length ? "agent.skillManager.tryAnotherFilter" : "agent.skillManager.createOrInstall")}</div>
                     </div>
                 )}
             </div>
@@ -385,7 +436,7 @@ export function AgentSkillsView({ clientId }: { clientId: string }) {
                 onOk={() => void saveSkill()}
             >
                 <div className="mb-5 text-xs" style={{ color: theme.node.muted }}>{t("agent.skillManager.saveLocation")} · <span className="font-mono">.agents/skills</span></div>
-                <Form key={editor?.mode === "edit" ? editor.detail.revision : `create:${editor?.values?.name || "blank"}`} form={form} initialValues={editorValues} layout="vertical" requiredMark="optional" preserve={false}>
+                <Form form={form} initialValues={editorValues} layout="vertical" requiredMark="optional" preserve={false} clearOnDestroy>
                     <div className="mb-3 text-xs font-medium" style={{ color: theme.node.muted }}>{t("agent.skillManager.basicInfo")}</div>
                     <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
                         <Form.Item name="name" label={t("agent.skillManager.identifier")} extra={t("agent.skillManager.identifierExtra")} rules={[{ required: true, message: t("agent.skillManager.identifierRequired") }, { max: 64, message: t("agent.skillManager.identifierMax") }, { pattern: skillNamePattern, message: t("agent.skillManager.identifierPattern") }]}>

@@ -14,7 +14,7 @@ import { createReadSkillTool, loadPiSkills, piSkillSummaries, resolveExplicitSki
 import { piToolSchema } from "./tools.js";
 import { PiThreadStore, readPiThread, settledTurnIds, threadMessages } from "./store.js";
 import { piModelOptions, readPiChannels, resolvePiModel, type PiChannel } from "./model.js";
-import { interruptPiTurn, releasePiRuntime, runPiTurn } from "./engine.js";
+import { generatePiSkillDraft, interruptPiTurn, releasePiRuntime, runPiTurn } from "./engine.js";
 import { CanvasSession } from "../../canvas/session.js";
 
 const temporaryDirectories: string[] = [];
@@ -418,4 +418,101 @@ test("Skill 指纹随启停变化，用于重建运行时", async () => {
     await setPiSkillEnabled(workspace, "alpha-skill", false);
     const after = skillsFingerprint((await loadPiSkills(workspace)).skills);
     assert.notEqual(before, after);
+});
+
+test("Pi Skill 草稿使用所选模型，支持对话与画布来源、校验和停止，且不改写历史", async (t) => {
+    const dataDir = await temporaryWorkspace();
+    const cwd = await temporaryWorkspace();
+    const previous = process.env.INFINITE_CANVAS_DATA_DIR;
+    process.env.INFINITE_CANVAS_DATA_DIR = dataDir;
+    const draft = { name: "pi-workflow", displayName: "Pi 工作流", description: "复用已完成的商品创作步骤", instructions: "分析产品信息，再组织可复用的生成步骤。", shortDescription: "", defaultPrompt: "使用 $pi-workflow 完成任务。" };
+    let output: Record<string, unknown> = draft;
+    let mode = "tool";
+    let request: Record<string, any> = {};
+    const server = createServer(async (req, res) => {
+        let body = "";
+        for await (const chunk of req) body += chunk;
+        request = JSON.parse(body);
+        if (mode === "error") {
+            res.writeHead(401, { "content-type": "application/json" });
+            return res.end(JSON.stringify({ error: { message: "draft credential rejected", type: "invalid_api_key" } }));
+        }
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        const chunk = (delta: unknown, finish_reason: string | null = null) => res.write(`data: ${JSON.stringify({ id: "draft", object: "chat.completion.chunk", created: 1, model: "selected-model", choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
+        chunk({ role: "assistant" });
+        if (mode === "abort") {
+            chunk({ content: "partial" });
+            setImmediate(() => interruptPiTurn(cwd));
+            return;
+        }
+        if (mode === "text") chunk({ content: JSON.stringify(output) });
+        else chunk({ tool_calls: [{ index: 0, id: "draft-call", type: "function", function: { name: "submit_skill_draft", arguments: JSON.stringify(output) } }] });
+        chunk({}, mode === "text" ? "stop" : "tool_calls");
+        res.end("data: [DONE]\n\n");
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const store = new PiThreadStore(cwd);
+    const thread = await store.create();
+    await store.saveTurn(thread.id, { turnId: "completed-turn", userText: "创作商品图片", startedAt: 1, finishedAt: 2, status: "completed", messages: [
+        { itemId: "user", turnId: "completed-turn", role: "user", text: "已完成任务的输入" },
+        { itemId: "assistant", turnId: "completed-turn", role: "assistant", text: "已完成任务的步骤" },
+        { itemId: "tool", turnId: "completed-turn", role: "tool", text: "不应提炼的工具日志" },
+    ] }, [{ role: "user", content: "历史保留", timestamp: 1 }]);
+    await store.saveTurn(thread.id, { turnId: "failed-turn", userText: "失败任务", startedAt: 3, finishedAt: 4, status: "failed", messages: [
+        { itemId: "user", turnId: "failed-turn", role: "user", text: "不应提炼的失败任务" },
+    ] }, [{ role: "user", content: "历史保留", timestamp: 1 }]);
+    const before = await store.read(thread.id);
+    const conversation = { source: "conversation" as const, threadId: thread.id, model: "draft::selected-model", effort: "none" };
+    try {
+        await fs.writeFile(path.join(dataDir, "config.json"), JSON.stringify({ config: { channels: [{ id: "draft", name: "Draft", baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`, apiKey: "draft-key", apiFormat: "openai", models: [
+            { name: "other-model", capability: "text", apiFormat: "openai-completions", reasoning: false },
+            { name: "selected-model", capability: "text", apiFormat: "openai-completions", reasoning: false },
+        ] }] } }));
+        await t.test("对话来源使用独立上下文和唯一草稿工具", async () => {
+            assert.deepEqual(await generatePiSkillDraft(cwd, conversation), draft);
+            assert.equal(request.model, "selected-model");
+            assert.deepEqual(request.tools.map((tool: any) => tool.function.name), ["submit_skill_draft"]);
+            const text = JSON.stringify(request.messages);
+            assert.match(text, /已完成任务的输入/);
+            assert.match(text, /已完成任务的步骤/);
+            assert.doesNotMatch(text, /不应提炼的工具日志|不应提炼的失败任务/);
+        });
+        await t.test("画布来源复用清理规则并接受 JSON 文本结果", async () => {
+            mode = "text";
+            assert.deepEqual(await generatePiSkillDraft(cwd, { source: "canvas", model: conversation.model, snapshot: { nodes: [{ id: "private-node-id", type: "text", title: "产品流程", metadata: { content: "分析产品，再生成图片", apiKey: "private-test-token" } }], connections: [] } }), draft);
+            assert.doesNotMatch(JSON.stringify(request.messages), /private-node-id|private-test-token/);
+            assert.match(JSON.stringify(request.messages), /产品流程/);
+        });
+        await t.test("无已完成对话时拒绝生成", async () => {
+            const empty = await store.create();
+            await assert.rejects(generatePiSkillDraft(cwd, { ...conversation, threadId: empty.id }), /没有可提炼的已完成内容/);
+        });
+        await t.test("拒绝格式错误、无效默认提示词与敏感结果", async () => {
+            mode = "tool";
+            output = { ...draft, name: "Invalid_Name" };
+            await assert.rejects(generatePiSkillDraft(cwd, conversation), /格式不正确/);
+            output = { ...draft, defaultPrompt: "缺少调用标记" };
+            await assert.rejects(generatePiSkillDraft(cwd, conversation), /格式不正确/);
+            output = { ...draft, instructions: "复制 https://example.com/private-result" };
+            await assert.rejects(generatePiSkillDraft(cwd, conversation), /包含外部地址/);
+            output = draft;
+        });
+        await t.test("上游错误与停止后仍能继续生成", async () => {
+            mode = "error";
+            await assert.rejects(generatePiSkillDraft(cwd, conversation), /draft credential rejected/);
+            mode = "abort";
+            await assert.rejects(generatePiSkillDraft(cwd, conversation), /已取消/);
+            assert.equal(interruptPiTurn(cwd), false);
+            mode = "tool";
+            assert.deepEqual(await generatePiSkillDraft(cwd, conversation), draft);
+        });
+        assert.deepEqual(await store.read(thread.id), before, "提炼草稿不得改写原始对话");
+        await assert.rejects(fs.access(path.join(cwd, ".agents", "skills")), "确认前不得写入 Skill 文件");
+    } finally {
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        if (previous === undefined) delete process.env.INFINITE_CANVAS_DATA_DIR;
+        else process.env.INFINITE_CANVAS_DATA_DIR = previous;
+    }
 });
