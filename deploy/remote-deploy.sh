@@ -7,8 +7,13 @@ project="${3:?compose project}"
 [[ "$root" =~ ^/opt/[a-zA-Z0-9][a-zA-Z0-9_-]*$ && "$release" =~ ^[a-f0-9]{40}-[0-9]+$ && "$project" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || exit 2
 [[ -d "$root/shared" && -f "$root/shared/production.env" ]] || { echo 'Initialize shared/production.env first' >&2; exit 1; }
 [[ "$(realpath "$root")" == "$root" ]] || { echo 'Deployment directory cannot be a symlink' >&2; exit 1; }
+[[ "$(realpath "$root/shared")" == "$root/shared" ]] || { echo 'Shared directory cannot be a symlink' >&2; exit 1; }
 exec 9>"$root/.deploy.lock"
 flock -n 9 || { echo 'Another deployment is active' >&2; exit 1; }
+cache="$root/shared/image-transfer"
+[[ ! -L "$cache" && ! -L "$cache/image.tar" ]] || { echo 'Image transfer cache cannot be a symlink' >&2; exit 1; }
+[[ ! -e "$cache/image.tar" || -f "$cache/image.tar" ]] || { echo 'Image transfer cache must be a regular file' >&2; exit 1; }
+mkdir -p "$cache"
 docker info >/dev/null
 docker compose version
 docker compose up --help | grep -q -- '--wait-timeout'
@@ -19,14 +24,17 @@ mkdir -p "$root/releases"
 mkdir "$destination"
 # Extract only the fixed, non-secret deployment payload, never arbitrary paths.
 tar -xzf "$incoming/release.tar.gz" -C "$destination" --no-same-owner --no-same-permissions \
-    image.tar.gz compose.yml remote-deploy.sh image-ref image-id revision SHA256SUMS
+    compose.yml remote-deploy.sh image-ref image-id revision SHA256SUMS
+[[ -f "$incoming/image.tar" && ! -L "$incoming/image.tar" ]] || { echo 'Missing regular image.tar transfer' >&2; exit 1; }
+mv "$incoming/image.tar" "$destination/image.tar"
+chmod 600 "$destination/image.tar"
 cd "$destination"
 sha256sum -c SHA256SUMS
 image="$(cat image-ref)"
 image_id="$(cat image-id)"
 revision="$(cat revision)"
 [[ "$image" == "infinite-canvas:$release" && "$image_id" =~ ^sha256:[a-f0-9]{64}$ && "$revision" == "${release%-*}" ]] || exit 2
-gzip -dc image.tar.gz | docker load
+docker load < image.tar
 [[ "$(docker image inspect --format '{{.Id}}' "$image")" == "$image_id" ]] || { echo 'Loaded image does not match build' >&2; exit 1; }
 [[ "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" == "$revision" ]] || exit 1
 printf 'APP_IMAGE=%s\n' "$image" > image.env
@@ -85,5 +93,9 @@ container="$(compose "$destination" ps -q app)"
 ln -s "releases/$release" "$root/.current-$release"
 mv -Tf "$root/.current-$release" "$root/current"
 trap - EXIT INT TERM
-rm -f "$destination/image.tar.gz" "$incoming/release.tar.gz" || echo 'Warning: could not remove transfer archives' >&2
+# Replace the delta basis only after health checks; rsync never edits it in place.
+mv -fT "$destination/image.tar" "$cache/.image-$release.tar" \
+    && mv -fT "$cache/.image-$release.tar" "$cache/image.tar" \
+    || echo 'Warning: could not update image transfer cache' >&2
+rm -f "$incoming/release.tar.gz" || echo 'Warning: could not remove release archive' >&2
 echo "Deployment is healthy: $release ($image_id)"

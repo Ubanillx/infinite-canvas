@@ -1,10 +1,13 @@
 """Linux deployment contracts with a fake Docker CLI; never touches a Docker socket."""
 import fcntl
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import shutil
+import random
+import re
 import subprocess
 import tarfile
 import tempfile
@@ -61,10 +64,13 @@ class DeploymentTests(unittest.TestCase):
         docker.chmod(0o755)
         self.env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}",
                         CALL_LOG=str(self.root / "docker-calls"), IMAGE_ID=IMAGE_ID, SHA=SHA)
+        self.transport = self.root / "transport"
+        (self.transport / "deploy").mkdir(parents=True)
+        for name in ["ssh-deploy.sh", "remote-deploy.sh"]:
+            shutil.copy(REPO / "deploy" / name, self.transport / "deploy" / name)
         source = self.root / "payload"
         source.mkdir()
-        files = {"image.tar.gz": __import__("gzip").compress(b"image"),
-                 "compose.yml": (REPO / "docker-compose.yml").read_bytes(),
+        files = {"image.tar": b"image", "compose.yml": (REPO / "docker-compose.yml").read_bytes(),
                  "remote-deploy.sh": (REPO / "deploy/remote-deploy.sh").read_bytes(),
                  "image-ref": f"infinite-canvas:{RELEASE}\n".encode(),
                  "image-id": (IMAGE_ID + "\n").encode(), "revision": (SHA + "\n").encode()}
@@ -74,9 +80,11 @@ class DeploymentTests(unittest.TestCase):
         (source / "SHA256SUMS").write_text(sums)
         incoming = self.root / "incoming" / RELEASE
         incoming.mkdir(parents=True)
+        (incoming / "image.tar").write_bytes(files["image.tar"])
         with tarfile.open(incoming / "release.tar.gz", "w:gz") as archive:
             for path in source.iterdir():
-                archive.add(path, arcname=path.name)
+                if path.name != "image.tar":
+                    archive.add(path, arcname=path.name)
 
     def previous(self):
         previous = self.root / "releases/previous"
@@ -102,10 +110,16 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual((self.root / "current").resolve(), self.root / "releases" / RELEASE)
         up = [c for c in self.calls() if "up" in c["args"] and "--wait" in c["args"]]
         self.assertEqual(up[0]["args"][-2:], ["--wait-timeout", "120"])
-        self.assertFalse((self.root / "releases" / RELEASE / "image.tar.gz").exists())
+        self.assertFalse((self.root / "releases" / RELEASE / "image.tar").exists())
+        cache = self.root / "shared/image-transfer/image.tar"
+        self.assertEqual(cache.read_bytes(), b"image")
+        self.assertEqual(cache.stat().st_mode & 0o777, 0o600)
 
     def test_unhealthy_update_restores_previous_and_still_fails(self):
         previous = self.previous()
+        cache = self.root / "shared/image-transfer/image.tar"
+        cache.parent.mkdir()
+        cache.write_bytes(b"previous healthy image")
         result = self.run_deploy("unhealthy")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Previous release restored", result.stderr)
@@ -114,13 +128,16 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(len(up), 2)
         self.assertEqual(up[-1]["image"], "infinite-canvas:previous")
         self.assertFalse(any("down" in c["args"] or "prune" in c["args"] for c in self.calls()))
+        self.assertEqual(cache.read_bytes(), b"previous healthy image")
+        self.assertEqual((self.root / "releases" / RELEASE / "image.tar").read_bytes(), b"image")
 
     def test_first_deploy_failure_keeps_evidence(self):
         result = self.run_deploy("unhealthy")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("no previous release", result.stderr)
         self.assertFalse((self.root / "current").exists())
-        self.assertTrue((self.root / "releases" / RELEASE / "image.tar.gz").exists())
+        self.assertTrue((self.root / "releases" / RELEASE / "image.tar").exists())
+        self.assertFalse((self.root / "shared/image-transfer/image.tar").exists())
 
     def test_rollback_failure_is_explicit(self):
         self.previous()
@@ -161,14 +178,63 @@ class DeploymentTests(unittest.TestCase):
         self.assertFalse(any("--wait" in c["args"] for c in self.calls()))
 
     def test_checksum_mismatch_fails_before_loading_image(self):
-        source = self.root / "payload"
-        (source / "image.tar.gz").write_bytes(b"changed after hashing")
-        with tarfile.open(self.root / "incoming" / RELEASE / "release.tar.gz", "w:gz") as archive:
-            for path in source.iterdir():
-                archive.add(path, arcname=path.name)
+        cache = self.root / "shared/image-transfer/image.tar"
+        cache.parent.mkdir()
+        cache.write_bytes(b"previous verified basis")
+        (self.root / "incoming" / RELEASE / "image.tar").write_bytes(b"changed after hashing")
         result = self.run_deploy()
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(any("load" in c["args"] for c in self.calls()))
+        self.assertEqual(cache.read_bytes(), b"previous verified basis")
+
+    def test_missing_or_symlink_image_is_rejected_before_load(self):
+        image = self.root / "incoming" / RELEASE / "image.tar"
+        image.unlink()
+        for symlink in [False, True]:
+            with self.subTest(symlink=symlink):
+                if symlink:
+                    shutil.rmtree(self.root / "releases" / RELEASE)
+                    image.symlink_to(self.root / "shared/production.env")
+                result = self.run_deploy()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Missing regular image.tar", result.stderr)
+                self.assertFalse(any("load" in c["args"] for c in self.calls()))
+
+    def test_symlink_cache_is_rejected_before_docker_calls(self):
+        cache = self.root / "shared/image-transfer"
+        cache.symlink_to(self.root / "payload", target_is_directory=True)
+        result = self.run_deploy()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cache cannot be a symlink", result.stderr)
+        self.assertFalse(self.calls())
+
+    def test_cache_promotion_failure_does_not_rollback_healthy_release(self):
+        cache = self.root / "shared/image-transfer/image.tar"
+        cache.parent.mkdir()
+        cache.write_bytes(b"previous basis")
+        move = self.bin / "mv"
+        move.write_text('#!/usr/bin/env bash\nif [[ "${@: -1}" == */shared/image-transfer/image.tar ]]; then exit 1; fi\nexec /usr/bin/mv "$@"\n')
+        move.chmod(0o755)
+        result = self.run_deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("could not update image transfer cache", result.stderr)
+        self.assertEqual((self.root / "current").resolve(), self.root / "releases" / RELEASE)
+        self.assertEqual(cache.read_bytes(), b"previous basis")
+
+    def test_package_contains_metadata_only_and_checksums_the_separate_image(self):
+        shutil.copy(REPO / "docker-compose.yml", self.root / "docker-compose.yml")
+        (self.root / "deploy").mkdir()
+        shutil.copy(REPO / "deploy/remote-deploy.sh", self.root / "deploy/remote-deploy.sh")
+        package = (REPO / "Jenkinsfile").read_text().split("stage('Package release')", 1)[1].split("sh '''", 1)[1].split("'''", 1)[0]
+        result = subprocess.run(["bash", "-c", package], cwd=self.root, env=dict(self.env, APP_IMAGE=f"infinite-canvas:{RELEASE}", RELEASE_SHA=SHA), text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        directory = self.root / ".ci"
+        self.assertEqual((directory / "image.tar").read_bytes(), b"fake-infra-images\n")
+        with tarfile.open(directory / "release.tar.gz") as archive:
+            self.assertEqual(set(archive.getnames()), {"compose.yml", "remote-deploy.sh", "image-ref", "image-id", "revision", "SHA256SUMS"})
+        self.assertIn("  image.tar\n", (directory / "SHA256SUMS").read_text())
+        checked = subprocess.run(["sha256sum", "-c", "SHA256SUMS"], cwd=directory, capture_output=True, text=True)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
 
     def test_concurrent_deploy_rejected(self):
         with (self.root / ".deploy.lock").open("w") as lock:
@@ -186,36 +252,105 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("Invalid SSH host", result.stderr)
 
-    def ssh_transport(self, fail=False, preflight=False, scenario="success"):
+    def ssh_transport(self, fail=False, preflight=False, scenario="success", rsync_fail=False):
         fake = '''#!/usr/bin/env python3
-import json, os, subprocess, sys
+import json, os, shlex, subprocess, sys
 with open(os.environ["CALL_LOG"], "a") as f: f.write(json.dumps(sys.argv) + "\\n")
 if os.getenv("SSH_FAIL") == "1": sys.exit(255)
 if os.getenv("SSH_PREFLIGHT") == "1" and sys.argv[-1].startswith("set -eu"):
     sys.exit(subprocess.run(["bash", "-c", sys.argv[-1]]).returncode)
+if os.path.basename(sys.argv[0]) == "rsync":
+    rsh = next(a.split("=", 1)[1] for a in sys.argv if a.startswith("--rsh="))
+    result = subprocess.run([*shlex.split(rsh), "-l", "deploy", "deploy.example.com", "rsync --server fixture"])
+    sys.exit(23 if os.getenv("RSYNC_FAIL") == "1" else result.returncode)
 if os.path.basename(sys.argv[0]) == "ssh": sys.stdin.buffer.read()
 '''
-        for name in ["ssh", "scp"]:
+        for name in ["ssh", "scp", "rsync"]:
             path = self.bin / name
             path.write_text(fake)
             path.chmod(0o755)
         env = dict(self.env, DEPLOY_HOST="deploy.example.com", DEPLOY_USER="deploy",
                    DEPLOY_KEY="/secret/key", KNOWN_HOSTS="/secret/hosts", DEPLOY_DIR=str(self.root),
                    COMPOSE_PROJECT="test", RELEASE_SHA=SHA, BUILD_NUMBER="7", SSH_FAIL="1" if fail else "0",
-                   SSH_PREFLIGHT="1" if preflight else "0", SCENARIO=scenario)
-        return subprocess.run(["bash", str(REPO / "deploy/ssh-deploy.sh")], cwd=REPO,
+                   SSH_PREFLIGHT="1" if preflight else "0", SCENARIO=scenario,
+                   RSYNC_FAIL="1" if rsync_fail else "0")
+        return subprocess.run(["bash", str(REPO / "deploy/ssh-deploy.sh")], cwd=self.transport,
                               env=env, stdin=subprocess.DEVNULL, text=True, capture_output=True)
 
     def test_ssh_transport_requires_pinned_host_and_checks_each_hop(self):
         result = self.ssh_transport()
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls()
-        self.assertEqual(len(calls), 3)
-        for call in calls:
+        self.assertEqual(len(calls), 5)
+        hops = [call for call in calls if Path(call[0]).name in ["ssh", "scp"]]
+        self.assertEqual(len(hops), 4)
+        for call in hops:
             self.assertIn("StrictHostKeyChecking=yes", call)
             self.assertIn("UserKnownHostsFile=/secret/hosts", call)
             self.assertIn("IdentitiesOnly=yes", call)
         self.assertNotIn("/secret/key", result.stdout + result.stderr)
+        sync = next(call for call in calls if Path(call[0]).name == "rsync")
+        self.assertIn("--copy-dest=" + str(self.root / "shared/image-transfer"), sync)
+        for option in ["--checksum", "--compress", "--no-whole-file", "--stats"]:
+            self.assertIn(option, sync)
+        self.assertNotIn("--inplace", sync)
+        self.assertNotIn("--delete", sync)
+
+    def test_delta_failure_stops_before_release_upload_or_activation(self):
+        cache = self.root / "shared/image-transfer/image.tar"
+        cache.parent.mkdir()
+        cache.write_bytes(b"previous basis")
+        result = self.ssh_transport(rsync_fail=True)
+        self.assertEqual(result.returncode, 23)
+        self.assertIn("image delta upload (exit 23)", result.stderr)
+        self.assertEqual(cache.read_bytes(), b"previous basis")
+        self.assertFalse(any(Path(call[0]).name == "scp" for call in self.calls()))
+
+    def test_rsync_ssh_adapter_preserves_quoted_credential_paths(self):
+        self.ssh_transport()
+        key = "/secret/key with spaces'quote"
+        hosts = "/secret/hosts with spaces'quote"
+        result = subprocess.run(["bash", str(REPO / "deploy/ssh-deploy.sh"), "--rsync-ssh", "deploy.example.com", "rsync --server fixture"],
+                                env=dict(self.env, DEPLOY_HOST="deploy.example.com", DEPLOY_USER="deploy", DEPLOY_KEY=key, KNOWN_HOSTS=hosts,
+                                         DEPLOY_DIR=str(self.root), COMPOSE_PROJECT="test", RELEASE_SHA=SHA, BUILD_NUMBER="7", DEPLOY_PORT="2222"),
+                                stdin=subprocess.DEVNULL, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        call = self.calls()[-1]
+        self.assertIn(key, call)
+        self.assertIn("UserKnownHostsFile=" + hosts, call)
+        self.assertEqual(call[-4:], ["-p", "2222", "deploy.example.com", "rsync --server fixture"])
+
+    @unittest.skipUnless(shutil.which("rsync"), "real rsync is required")
+    def test_real_rsync_protocol_uses_pinned_ssh_adapter_without_network(self):
+        ssh = self.bin / "ssh"
+        ssh.write_text('''#!/usr/bin/env python3
+import json, os, sys
+with open(os.environ["CALL_LOG"], "a") as f: f.write(json.dumps(sys.argv) + "\\n")
+args = sys.argv[sys.argv.index("rsync"):]
+os.execv("/usr/bin/rsync", args)
+''')
+        ssh.chmod(0o755)
+        original = random.Random(0).randbytes(1024 * 1024)
+        cache = self.root / "shared/image-transfer/image.tar"
+        cache.parent.mkdir()
+        cache.write_bytes(original)
+        image = original + b"new image config"
+        (self.transport / ".ci").mkdir()
+        (self.transport / ".ci/image.tar").write_bytes(image)
+        incoming = self.root / "incoming" / RELEASE / "image.tar"
+        incoming.unlink()
+        delta = (REPO / "deploy/ssh-deploy.sh").read_text().split("stage='image delta upload'", 1)[1].split("stage='release upload'", 1)[0]
+        result = subprocess.run(["bash", "-ec", delta], cwd=self.transport,
+                                env=dict(self.env, DEPLOY_HOST="deploy.example.com", DEPLOY_USER="deploy", DEPLOY_KEY="/secret/key with spaces'quote",
+                                         KNOWN_HOSTS="/secret/hosts", DEPLOY_DIR=str(self.root), COMPOSE_PROJECT="test", RELEASE_SHA=SHA, BUILD_NUMBER="7",
+                                         DEPLOY_PORT="2222", release=RELEASE, target="deploy@deploy.example.com"), text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(hashlib.sha256(incoming.read_bytes()).digest(), hashlib.sha256(image).digest())
+        self.assertEqual(hashlib.sha256(cache.read_bytes()).digest(), hashlib.sha256(original).digest())
+        self.assertGreater(int(re.search(r"Matched data: ([\d,]+) bytes", result.stdout)[1].replace(",", "")), 0)
+        call = self.calls()[-1]
+        for argument in ["StrictHostKeyChecking=yes", "IdentitiesOnly=yes", "UserKnownHostsFile=/secret/hosts", "/secret/key with spaces'quote", "2222"]:
+            self.assertIn(argument, call)
 
     def test_ssh_failure_stops_before_scp_or_deployment(self):
         result = self.ssh_transport(fail=True)
@@ -243,15 +378,12 @@ if os.path.basename(sys.argv[0]) == "ssh": sys.stdin.buffer.read()
         shutil.rmtree(self.root / "incoming")
         result = self.ssh_transport(preflight=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        # 3 次 ssh/scp 调用 + 预检中的 3 次基础镜像检查。
-        self.assertEqual(len(self.calls()), 6)
+        self.assertEqual(len(self.calls()), 8)
         self.assertTrue((self.root / "incoming" / RELEASE).is_dir())
         self.assertNotIn("must-not-be-logged", result.stdout + result.stderr)
 
     def test_missing_infrastructure_images_are_transferred(self):
-        infra_file = REPO / ".ci" / "infra-images.tar.gz"
-        infra_file.unlink(missing_ok=True)
-        self.addCleanup(lambda: infra_file.unlink(missing_ok=True))
+        infra_file = self.transport / ".ci" / "infra-images.tar.gz"
         shutil.rmtree(self.root / "incoming")
         result = self.ssh_transport(preflight=True, scenario="missing-infra")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -307,6 +439,124 @@ while true; do sleep 0.1; done
         self.assertEqual(process.returncode, 143, stdout + stderr)
         self.assertIn("node-stopped", log.read_text())
         self.assertIn("bun-stopped", log.read_text())
+
+
+class BuildEnvironmentTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(prefix="canvas-build-tools-")
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        docker = self.root / "docker"
+        docker.write_text('''#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["CALL_LOG"], "a") as log:
+    log.write(json.dumps({"args": args, "buildkit": os.getenv("DOCKER_BUILDKIT")}) + "\\n")
+if args == ["buildx", "version"]:
+    if os.environ["BUILDX_STATE"] != "ready":
+        print("docker: 'buildx' is not a docker command" if os.environ["BUILDX_STATE"] == "missing" else "failed to fetch metadata: exec format error", file=sys.stderr)
+        sys.exit(1)
+    print("github.com/docker/buildx fixture"); sys.exit(0)
+if args[:1] == ["build"]:
+    if os.environ["BUILDX_STATE"] != "ready":
+        print("ERROR: BuildKit is enabled but the buildx component is missing or broken.", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(int(os.getenv("BUILD_EXIT", "0")))
+sys.exit("Unexpected Docker call")
+''')
+        docker.chmod(0o755)
+        rsync = self.root / "rsync"
+        rsync.write_text("#!/bin/sh\nexit 0\n")
+        rsync.chmod(0o755)
+        self.log = self.root / "calls.jsonl"
+        self.script = (REPO / "Jenkinsfile").read_text().split("stage('Build image')", 1)[1].split("sh '''", 1)[1].split("'''", 1)[0]
+
+    def run_stage(self, state, build_exit="0"):
+        self.log.unlink(missing_ok=True)
+        result = subprocess.run(["bash", "-c", self.script], cwd=self.root,
+                                env=dict(os.environ, PATH=f"{self.root}:{os.environ['PATH']}", CALL_LOG=str(self.log), BUILDX_STATE=state,
+                                         RELEASE_SHA=SHA, APP_IMAGE=f"infinite-canvas:{RELEASE}", BUILD_EXIT=build_exit), text=True, capture_output=True)
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+        return result, calls
+
+    def test_missing_or_broken_buildx_is_reported_before_building(self):
+        for state in ["missing", "broken"]:
+            with self.subTest(state=state):
+                result, calls = self.run_stage(state)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual([call["args"] for call in calls], [["buildx", "version"]])
+                self.assertIn("docker-buildx-plugin", result.stderr)
+                self.assertIn("Jenkins agent", result.stderr)
+
+    def test_ready_buildx_keeps_existing_buildkit_target_and_image_identity(self):
+        result, calls = self.run_stage("ready")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls[0]["args"], ["buildx", "version"])
+        self.assertEqual(calls[1]["args"], ["build", "--progress=plain", "--target", "runtime", "--label", f"org.opencontainers.image.revision={SHA}", "--tag", f"infinite-canvas:{RELEASE}", "."])
+        self.assertEqual(calls[1]["buildkit"], "1")
+
+    def test_failed_build_is_not_retried_or_downgraded(self):
+        result, calls = self.run_stage("ready", "17")
+        self.assertEqual(result.returncode, 17)
+        self.assertEqual(sum(call["args"][:1] == ["build"] for call in calls), 1)
+        self.assertFalse(any(call["buildkit"] == "0" for call in calls))
+
+
+@unittest.skipUnless(shutil.which("rsync"), "real rsync is required for delta-transfer regression")
+class DeltaTransferTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(prefix="canvas-delta-test-")
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.cache = self.root / "cache"
+        self.cache.mkdir()
+        self.source = self.root / "source/image.tar"
+        self.source.parent.mkdir()
+        self.layer = random.Random(0).randbytes(2 * 1024 * 1024)
+
+    def image(self, revision):
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output, mode="w") as archive:
+            for name, data in [("manifest.json", json.dumps({"revision": revision}).encode()), ("base/layer.tar", self.layer)]:
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
+        return output.getvalue()
+
+    def transfer(self, name):
+        destination = self.root / name
+        destination.mkdir()
+        result = subprocess.run(["rsync", "--times", "--perms", "--chmod=F600", "--checksum", "--compress", "--no-whole-file", "--stats",
+                                 "--copy-dest=" + str(self.cache), str(self.source), str(destination) + "/"],
+                                env=dict(os.environ, LC_ALL="C"), text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(hashlib.sha256((destination / "image.tar").read_bytes()).digest(), hashlib.sha256(self.source.read_bytes()).digest())
+        self.assertEqual((destination / "image.tar").stat().st_mode & 0o777, 0o600)
+        literal = re.search(r"Literal data: ([\d,]+) bytes", result.stdout)
+        self.assertIsNotNone(literal, result.stdout)
+        return int(literal[1].replace(",", ""))
+
+    def test_cold_transfer_then_changed_archive_reuses_basis_without_modifying_it(self):
+        original = self.image("previous")
+        self.source.write_bytes(original)
+        cold = self.transfer("cold")
+        self.assertEqual(cold, len(original))
+        (self.cache / "image.tar").write_bytes(original)
+        self.source.write_bytes(self.image("new-release"))
+        warm = self.transfer("warm")
+        self.assertLess(warm, cold // 4)
+        self.assertEqual(hashlib.sha256((self.cache / "image.tar").read_bytes()).digest(), hashlib.sha256(original).digest())
+
+    def test_corrupt_same_size_and_timestamp_basis_cannot_skip_content_verification(self):
+        original = self.image("current")
+        self.source.write_bytes(original)
+        basis = bytearray(original)
+        basis[4096] ^= 1
+        cached = self.cache / "image.tar"
+        cached.write_bytes(basis)
+        os.utime(cached, (self.source.stat().st_atime, self.source.stat().st_mtime))
+        self.assertLess(self.transfer("repaired"), len(original) // 4)
+        self.assertEqual(hashlib.sha256(cached.read_bytes()).digest(), hashlib.sha256(basis).digest())
 
 
 if __name__ == "__main__":

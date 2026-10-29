@@ -2,7 +2,7 @@
 
 ## 设计与范围
 
-固定 `deploy` 分支 → GitHub Push Webhook → Jenkins 检出并校验远端提交 → 构建镜像 → SSH/SCP 传输镜像包 → 部署主机 Docker Compose 更新 → 健康检查 → 成功切换 current；失败恢复上一版镜像和运行配置。
+固定 `deploy` 分支 → GitHub Push Webhook → Jenkins 检出并校验远端提交 → 构建镜像 → SSH 上的 rsync 差量传输镜像、SCP 传输发布元数据 → 部署主机 Docker Compose 更新 → 健康检查 → 成功切换 current；失败恢复上一版镜像和运行配置。
 
 不需要镜像仓库，也不会在部署主机拉取 Git 或安装 Node/npm 依赖。部署主机与 Jenkins Docker 构建节点须使用相同 CPU 架构。这里是待真实环境验收的部署配置，不代表 Jenkins、Webhook 或目标主机已经配置成功。
 
@@ -10,11 +10,39 @@
 
 ## Jenkins 前置条件
 
-- Linux Agent 标签为 `docker-linux`，装有 Git、Bash、Docker Engine、OpenSSH client、tar、gzip、sha256sum。Docker 支持 BuildKit，构建节点可访问 npm、PyPI、Docker Hub 和系统包源。
+- Linux Agent 标签为 `docker-linux`，装有 Git、Bash、Docker Engine、Docker Buildx CLI 插件、OpenSSH client、rsync、tar、gzip、sha256sum。Docker 支持 BuildKit，执行流水线的同一用户运行 `docker buildx version` 和 `docker info` 均应成功；构建节点可访问 npm、PyPI、Docker Hub 和系统包源。
 - Jenkins 插件：Pipeline、Git、GitHub、Credentials Binding。该方案不依赖 Timestamper、SSH Publisher、SSH Agent 或 Docker Pipeline 插件。
 - 若旧构建提示 `Invalid option type "timestamps"`，说明当前 Jenkins 未提供 Timestamper 选项。仓库已移除该非必需选项；使用最新 deploy 分支重新构建，不要直接回放旧 Jenkinsfile。需要日志时间戳时可由管理员另行安装并配置 Timestamper。
 - Docker 权限相当于主机 root 权限，使用专用可信构建节点和部署账号，不向容器挂载宿主机 Docker socket。
 - 镜像基础版本在 Dockerfile 的 `NODE_IMAGE` / `BUN_IMAGE` 参数中定义；生产可改用审核后的 digest，更新需要重新验收。
+
+### Buildx 缺失或损坏
+
+`BuildKit is enabled but the buildx component is missing or broken` 表示运行 Docker CLI 的 **Jenkins 构建节点**没有可用的 Buildx CLI 插件，不是 Jenkins 插件，也不是应用容器里的程序。流水线先运行 `docker buildx version`，失败时保留原始错误并给出安装位置提示，停止后续构建、打包及部署；不会在发布任务里自动安装软件、替换 Docker 或关闭 BuildKit。当前 Dockerfile 的 `RUN --mount=type=cache` 依赖 BuildKit，不能用 `DOCKER_BUILDKIT=0` 绕过。
+
+先在执行 `Build image` 的同一节点、同一用户及容器环境检查：
+
+```bash
+id -un
+command -v docker
+docker buildx version
+docker info
+```
+
+如果构建节点是 Ubuntu/Debian，且 Docker 来自官方 APT 仓库，由管理员在该环境安装独立插件即可，不需要重装 Engine 或重启应用：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y docker-buildx-plugin
+```
+
+- 提示找不到包时，先用 `apt-cache policy docker-ce-cli docker.io docker-buildx-plugin docker-buildx` 确认现有来源及候选版本，按原 Docker 安装渠道选择匹配的 Buildx 包。不要为了安装插件直接卸载 Docker、切换软件源或整套升级 Engine；官方包的仓库配置见下方链接。
+- 如果 Jenkins Agent 本身运行在容器里，插件需要安装在 **执行 Docker CLI 的 Agent 容器镜像**内。只在 Docker daemon 所在宿主机或部署主机安装无效，挂载 Docker socket 也不会提供 CLI 插件；应由管理员更新自定义 Agent 镜像，不修改本项目的应用 Dockerfile。容器内没有 sudo 时由管理员以 root 安装，临时安装只用于验证，重建容器会丢失。
+- 若插件装在某个管理员的 `~/.docker/cli-plugins`，Jenkins 用户未必能看到；自定义 `DOCKER_CONFIG` 也可能改变用户插件搜索目录。包已安装仍失败时，查看 `docker info` 中的插件警告，检查用户目录是否有优先加载的损坏插件、可执行权限以及二进制 CPU 架构。不要在脚本中自动删除或覆盖这些文件；优先使用发行渠道的软件包与系统级插件目录，而不是临时下载未审核的二进制。
+
+安装后，必须再次以实际 Jenkins 用户、在实际构建环境运行 `docker buildx version`，确认输出版本后再重跑最新 `deploy` 的流水线。管理员用户下成功不能代替该验证。该处理不更改 Docker 登录配置、SSH 凭据、应用鉴权、数据卷或回滚流程。
+
+参考：[Buildx 官方安装说明](https://github.com/docker/buildx#installing)、[Docker Ubuntu APT 安装说明](https://docs.docker.com/engine/install/ubuntu/)、[Docker BuildKit / Buildx 缺失报错说明](https://docs.docker.com/engine/deprecated/#legacy-builder-for-linux-images)。
 
 ### 构建缓存
 
@@ -23,13 +51,28 @@ Jenkins 显式启用 BuildKit，复用同一 Docker 构建节点上的层缓存�
 - 前端与 Agent 各有独立的依赖层和编译层，依赖安装仅依赖各自的 `package.json` / `package-lock.json`。修改源码不重装依赖；只修改一端不会因共用构建链而重编译另一端。前端使用根目录的 `VERSION` / `CHANGELOG.md`，这些文件变化仍会正常触发前端编译。
 - npm 通过 BuildKit 挂载缓存下载包，继续执行 `npm ci` 并校验锁文件，不共享或复用宿主机的 `node_modules`。Python 依赖按固定版本清单安装，pip 下载缓存不再被禁用；清单变化时可复用未变化的包。
 - 系统软件包与索引使用带锁的 APT 缓存，关闭镜像内自动删除下载包的配置。Office、OCR、Python 等运行环境独立于应用源码，未变化时直接复用完整安装层；APT/npm/pip 下载缓存不打进最终运行镜像。
-- `.local` 调试产物与本地数据不再进入构建上下文。Jenkins 分别显示 `Build image`、`Package release` 和 `SSH deploy`，构建日志中的 `CACHED` 表示层缓存命中。缓存不加速后两步的完整镜像导出、压缩、传输和加载。
+- `.local` 调试产物与本地数据不再进入构建上下文。Jenkins 分别显示 `Build image`、`Package release` 和 `SSH deploy`，构建日志中的 `CACHED` 表示层缓存命中。构建缓存与下节的传输缓存相互独立，不省略本地镜像导出或远端加载。
 
 首次使用新结构仍需完整下载和安装。后续构建须复用同一 Docker builder 及其数据目录；清理 Jenkins 工作区不会清理该缓存，但切换构建主机、使用临时 Docker daemon、手动 prune 或 Docker 自动回收均可能使缓存失效，届时正常重新下载。若 `docker-linux` 标签对应多台主机，各自维护本地缓存，本方案不跨节点同步缓存，也不调整缓存保留期限或磁盘限额。不要在每次发布后执行 `docker builder prune` / `docker system prune`。
 
 验收时对比首次构建、无源码变化的再次构建、单端源码修改、单端锁文件修改和 Python 清单修改的日志；预期只重跑受影响的步骤，不应恢复已取消的测试或冒烟阶段。镜像复制清单、非 root 运行用户、SSH 校验、回滚和数据卷保持不变。
 
 参考：[Docker 构建缓存优化](https://docs.docker.com/build/cache/optimize/)。
+
+### 镜像打包与差量传输
+
+Jenkins 保留未压缩的 `.ci/image.tar`，不再先 gzip 完整镜像、再把它放入第二层压缩包。`.ci/release.tar.gz` 只包含 Compose、部署脚本、镜像标识、版本和 SHA256SUMS；校验清单仍包含独立传输的完整 `image.tar`。
+
+应用镜像通过 rsync 的数据块匹配复用部署主机 `shared/image-transfer/image.tar`，只压缩和发送缺失的数据块；不是自制 Docker 层协议，也不需要 rsync daemon、镜像仓库、新端口或额外凭据。rsync 复用同一脚本内的 SSH 参数，继续校验私钥、known_hosts、主机公钥和端口。双方均需安装带安全更新的 rsync，Ubuntu/Debian 可由管理员执行 `sudo apt-get update && sudo apt-get install -y rsync`；缺少时预检明确失败，不在发布中自动安装或降低鉴权。
+
+- 首次发布、传输基线缺失或镜像整体变化时，可能仍传完整镜像；后续未变化的系统、依赖和应用内容可按块复用。日志 `Literal data` 是新传数据量，`Matched data` 是复用数据量，并非保证某个固定提速比例。
+- rsync 用 `--copy-dest` 只读比对旧基线，在本次 `incoming/<SHA>-<BUILD>/` 内生成新归档，不使用 `--inplace`、硬链接或删除同步。启用内容校验，接收后仍执行原 SHA256、image ID、revision 和容器健康校验；传输失败不会进入发布激活，不自动重试或自动降级成其他传输方式。
+- 只有健康发布完成后，才将新归档先移入缓存临时文件，再在缓存目录内原子替换基线。失败发布保留原基线和 current；缓存替换失败仅告警，不回滚已健康的新版本。旧 Docker 镜像与发布配置继续保留，回滚不依赖传输缓存。
+- 代价是 Jenkins 打包时需要保存完整未压缩归档，部署主机稳态额外保留一份未压缩归档，更新期间还需容纳新归档。缓存为私有目录、归档权限 600，不属于业务数据卷，不自动调整磁盘限额或回收策略；更新失败遗留文件由管理员确认后处理。删除传输缓存不会删除聊天/画布，但会使下一次传输变为全量。
+
+基础服务镜像仍仅在远端缺失时按原方式导出、压缩和传输。本地 `docker save` 与远端 `docker load` 仍处理完整归档，主要优化重复压缩和网络传输；真实耗时与传输量应在连续 Jenkins 发布中确认。
+
+参考：[rsync 官方手册](https://github.com/rsyncproject/rsync/blob/master/rsync.1.md)。
 
 ### 凭据（ID 与 Jenkinsfile 保持一致）
 
@@ -38,7 +81,7 @@ Jenkins 显式启用 BuildKit，复用同一 Docker 构建节点上的层缓存�
 | `infinite-canvas-deploy-ssh` | SSH Username with private key | 专用部署用户名和私钥；此实现使用 BatchMode，需要无交互、无私钥口令的专用 key，私钥由 Jenkins 加密保管 |
 | `infinite-canvas-known-hosts` | Secret file | 经独立渠道核验的 SSH known_hosts 文件 |
 
-不要使用其他项目的凭据或复制其主机公钥。先在目标主机控制台读取公钥指纹，再核验扫描结果并存入 known_hosts；`ssh-keyscan` 的输出本身不能证明主机身份。非 22 端口的记录应为 `[host]:port`。每次 SSH 和 SCP 都启用 `StrictHostKeyChecking=yes`、`IdentitiesOnly=yes`；公钥变化即失败，不能改成跳过校验。不要将私钥提交到仓库。
+不要使用其他项目的凭据或复制其主机公钥。先在目标主机控制台读取公钥指纹，再核验扫描结果并存入 known_hosts；`ssh-keyscan` 的输出本身不能证明主机身份。非 22 端口的记录应为 `[host]:port`。每次 SSH、SCP 和 rsync 的 SSH 连接都启用 `StrictHostKeyChecking=yes`、`IdentitiesOnly=yes`；公钥变化即失败，不能改成跳过校验。不要将私钥提交到仓库。
 
 ### Job 与分支设置
 
@@ -70,7 +113,7 @@ GitHub 插件收到事件后让 Git 插件检查 SCM 是否变化，不是把每
 
 ## 目标主机初始化（管理员执行一次）
 
-安装 Docker Engine 与 Compose v2（需支持 `up --wait --wait-timeout`）、Bash、GNU coreutils/tar、gzip 和 util-linux（flock）。这里不自动安装或修改防火墙。
+安装 Docker Engine 与 Compose v2（需支持 `up --wait --wait-timeout`）、Bash、rsync、GNU coreutils/tar、gzip 和 util-linux（flock）。这里不自动安装或修改防火墙。
 
 数据服务镜像由发布流水线在部署主机缺失时从 Jenkins 构建节点导出并通过 SSH 传输加载（部署主机不访问镜像仓库）；也可提前预加载以缩短首次发布：
 
@@ -158,13 +201,13 @@ bash import-codex-config.sh --container 应用容器名 --magpie-gateway --resta
 
 ## 版本、验证和回滚
 
-目录：`incoming/<SHA>-<BUILD>/` 为传输包，`releases/<SHA>-<BUILD>/` 为 Compose/镜像元数据，`current` 为最后一个健康版本的原子软链接，`shared/production.env` 为下一次部署输入。
+目录：`incoming/<SHA>-<BUILD>/` 为本次镜像归档与元数据包，`releases/<SHA>-<BUILD>/` 为 Compose/镜像元数据，`current` 为最后一个健康版本的原子软链接，`shared/production.env` 为下一次部署输入，`shared/image-transfer/image.tar` 为可丢弃的传输比对基线。
 
 镜像标签为 `infinite-canvas:<完整Git SHA>-<BUILD_NUMBER>`，不使用 latest。传输在严格校验的 SSH 通道内完成，远端还核对 SHA256SUMS、加载后的 Docker image ID、OCI revision 标签与实际运行容器 image ID。每个版本复制自己的 runtime.env，回滚恢复原版本运行参数；当前 shared 文件留给后续更新。
 
 默认部署与回滚各使用 `--wait-timeout 120`（已确认）；构建后的隔离容器冒烟检查也最多等待 120 秒。不做无条件重试。容器健康探针不另设自定义阈值，沿用 Docker 默认的 30 秒检查间隔、30 秒检查超时和 3 次失败阈值；只影响容器健康状态，不改变 AI 业务超时。
 
-更新前不执行 down。成功后才更新 current，并移除已加载的传输镜像包；保留历史 Compose、运行配置和 Docker 镜像供回滚，脚本不自动清理旧镜像/卷。管理员应按备份和回滚策略维护磁盘，不要全局 prune。
+更新前不执行 down。成功后才更新 current，将已校验镜像归档提升为传输基线并移除本次元数据包；保留历史 Compose、运行配置和 Docker 镜像供回滚，脚本不自动清理旧镜像/卷。管理员应按备份和回滚策略维护磁盘，不要全局 prune。
 
 失败时自动用旧版本 `up`，即使恢复成功 Jenkins 仍判本次发布失败；回滚也失败时明确报告 `ROLLBACK FAILED`。首次部署失败没有旧版可恢复，保留容器与传输文件供调查。镜像/配置回滚只回滚 `app`，不回滚 PostgreSQL、对象存储、业务密钥、媒体或 Agent/Codex 数据；数据库结构与对象存储内容不会随版本回退，出现不兼容数据变更时必须先备份并准备人工恢复，不能只依赖镜像回滚。
 

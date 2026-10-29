@@ -36,6 +36,14 @@ pipeline {
             steps {
                 sh '''#!/usr/bin/env bash
                     set -Eeuo pipefail
+                    if ! docker buildx version; then
+                        printf '%s\n' \
+                            'Docker Buildx is missing or broken in this Jenkins agent.' \
+                            'Install docker-buildx-plugin in the environment running the Docker CLI, including the Jenkins agent container if used.' \
+                            'Verify docker buildx version as the same Jenkins user. See deploy/README.md for package and plugin-path troubleshooting.' >&2
+                        exit 1
+                    fi
+                    command -v rsync >/dev/null || { echo 'Install rsync on the Jenkins build node first' >&2; exit 1; }
                     DOCKER_BUILDKIT=1 docker build --progress=plain --target runtime --label "org.opencontainers.image.revision=$RELEASE_SHA" --tag "$APP_IMAGE" .
                 '''
             }
@@ -44,15 +52,16 @@ pipeline {
             steps {
                 sh '''#!/usr/bin/env bash
                     set -Eeuo pipefail
+                    umask 077
                     mkdir -p .ci
                     docker image inspect --format '{{.Id}}' "$APP_IMAGE" > .ci/image-id
-                    docker save "$APP_IMAGE" | gzip > .ci/image.tar.gz
+                    docker save "$APP_IMAGE" > .ci/image.tar
                     cp docker-compose.yml .ci/compose.yml
                     cp deploy/remote-deploy.sh .ci/remote-deploy.sh
                     printf '%s\n' "$APP_IMAGE" > .ci/image-ref
                     printf '%s\n' "$RELEASE_SHA" > .ci/revision
-                    (cd .ci && sha256sum image.tar.gz compose.yml remote-deploy.sh image-ref image-id revision > SHA256SUMS)
-                    tar -C .ci -czf .ci/release.tar.gz image.tar.gz compose.yml remote-deploy.sh image-ref image-id revision SHA256SUMS
+                    (cd .ci && sha256sum image.tar compose.yml remote-deploy.sh image-ref image-id revision > SHA256SUMS)
+                    tar -C .ci -czf .ci/release.tar.gz compose.yml remote-deploy.sh image-ref image-id revision SHA256SUMS
                 '''
                 script { env.PACKAGE_READY = 'true' }
             }
@@ -75,7 +84,7 @@ pipeline {
                     archiveArtifacts artifacts: '.ci/revision,.ci/image-ref,.ci/image-id,.ci/SHA256SUMS', allowEmptyArchive: true
                 }
             }
-            sh 'rm -f .ci/image.tar.gz .ci/release.tar.gz .ci/infra-images.tar.gz'
+            sh 'rm -f .ci/image.tar .ci/release.tar.gz .ci/infra-images.tar.gz'
         }
     }
 }

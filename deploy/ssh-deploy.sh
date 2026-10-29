@@ -13,6 +13,12 @@ DEPLOY_PORT="${DEPLOY_PORT:-22}"
 release="$RELEASE_SHA-$BUILD_NUMBER"
 target="$DEPLOY_USER@$DEPLOY_HOST"
 ssh_opts=(-i "$DEPLOY_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$KNOWN_HOSTS" -o GlobalKnownHostsFile=/dev/null)
+# rsync invokes this fixed adapter so SSH credential paths never need shell-string quoting.
+if [[ "${1:-}" == --rsync-ssh ]]; then
+    shift
+    exec ssh "${ssh_opts[@]}" -p "$DEPLOY_PORT" "$@"
+fi
+command -v rsync >/dev/null || { echo 'Install rsync on the Jenkins build node first' >&2; exit 1; }
 stage='remote preflight'
 trap 'status=$?; printf "SSH deployment failed during %s (exit %s)\n" "$stage" "$status" >&2' ERR
 preflight_output="$(ssh "${ssh_opts[@]}" -p "$DEPLOY_PORT" "$target" "set -eu
@@ -20,6 +26,11 @@ umask 077
 test -d '$DEPLOY_DIR/shared' || { echo 'Missing deployment directory: $DEPLOY_DIR/shared' >&2; exit 1; }
 test -f '$DEPLOY_DIR/shared/production.env' && test -r '$DEPLOY_DIR/shared/production.env' || { echo 'Initialize readable $DEPLOY_DIR/shared/production.env first (see deploy/README.md)' >&2; exit 1; }
 test -w '$DEPLOY_DIR' && test -w '$DEPLOY_DIR/shared' || { echo 'Deployment directories must be writable by the SSH user' >&2; exit 1; }
+test \"\$(realpath '$DEPLOY_DIR/shared')\" = '$DEPLOY_DIR/shared' || { echo 'Shared directory cannot be a symlink' >&2; exit 1; }
+command -v rsync >/dev/null || { echo 'Install rsync on the deployment host first' >&2; exit 1; }
+test ! -L '$DEPLOY_DIR/shared/image-transfer' && test ! -L '$DEPLOY_DIR/shared/image-transfer/image.tar' || { echo 'Image transfer cache cannot be a symlink' >&2; exit 1; }
+test ! -e '$DEPLOY_DIR/shared/image-transfer/image.tar' || test -f '$DEPLOY_DIR/shared/image-transfer/image.tar' || { echo 'Image transfer cache must be a regular file' >&2; exit 1; }
+mkdir -p '$DEPLOY_DIR/shared/image-transfer'
 mkdir -p '$DEPLOY_DIR/incoming'
 mkdir '$DEPLOY_DIR/incoming/$release'
 for image in postgres:17-alpine rustfs/rustfs:latest amazon/aws-cli:latest; do
@@ -36,6 +47,11 @@ if [[ -n "$missing_images" ]]; then
     scp "${ssh_opts[@]}" -P "$DEPLOY_PORT" .ci/infra-images.tar.gz "$target:$DEPLOY_DIR/incoming/$release/infra-images.tar.gz"
     ssh "${ssh_opts[@]}" -p "$DEPLOY_PORT" "$target" "gzip -dc '$DEPLOY_DIR/incoming/$release/infra-images.tar.gz' | docker load && rm -f '$DEPLOY_DIR/incoming/$release/infra-images.tar.gz'"
 fi
+stage='image delta upload'
+rsync --times --perms --chmod=F600 --checksum --compress --no-whole-file --stats \
+    --copy-dest="$DEPLOY_DIR/shared/image-transfer" \
+    --rsh='bash deploy/ssh-deploy.sh --rsync-ssh' \
+    .ci/image.tar "$target:$DEPLOY_DIR/incoming/$release/"
 stage='release upload'
 scp "${ssh_opts[@]}" -P "$DEPLOY_PORT" .ci/release.tar.gz "$target:$DEPLOY_DIR/incoming/$release/release.tar.gz"
 # The script itself is sent over the authenticated channel, not executed from an unchecked archive.
