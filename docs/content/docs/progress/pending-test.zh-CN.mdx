@@ -9,7 +9,8 @@ description: 当前版本已实现但仍需人工验证的变更项
 
 - Jenkins #27 从 #26 的 Build image 阶段重启，沿用镜像标签 `2083d353fcf06801e9554e455ecbc925621a064c-26`，但上传目标为 `...-27`，远端在 SHA256 校验后以 2 退出；尚未加载镜像或切换生产 current，线上 #21 保持健康。
 - 流水线禁用 Restart from Stage；失败后从最新 deploy 发起完整新构建。SSH 上传前核对本次镜像标签和提交，发现沿用旧编号时给出明确操作提示；远端保留独立校验，输出预期与实际镜像标签。
-- 两项回归先复现旧包仍上传与远端静默退出，覆盖修复后在任何 SSH/传输前拒绝旧包、远端不加载镜像且保留原 current。中英文 TODO 无对应事项需迁移；真实新构建与 Magpie 同步验收结果另补充。
+- 两项回归先复现旧包仍上传与远端静默退出，修复后 48 项 Linux 部署回归通过，覆盖任何 SSH/传输前拒绝旧包、远端不加载镜像且保留原 current。中英文 TODO 无对应事项需迁移。
+- 最新 deploy 提交 `80ea2bd` 自动触发完整构建 #28，最终 SUCCESS；镜像、发布目录与 current 编号均为 `...-28`，应用健康、Magpie 同步通过。当前与上一健康镜像保留为 #28/#21；认证数据库和 Agent 代理健康检查通过。实际故障恢复与真实模型对话仍需分别验收。
 
 ## CI/CD 镜像与构建缓存自动清理
 
@@ -17,11 +18,11 @@ description: 当前版本已实现但仍需人工验证的变更项
 - 部署机在健康检查、Magpie 同步和 current 切换后，原子发布 `shared/retained-images`，保留当前与切换前的健康镜像，随后清理旧应用镜像；Jenkins 成功激活后下载相同清单。SSH 激活结果不确定或清单下载失败时使本地旧记录失效，避免按过期记录删除已部署镜像；失败发布不覆盖原健康版本记录。
 - 按保留清单删除时仅匹配 `infinite-canvas:<40位SHA>-<构建号>`，额外保护所有容器引用的镜像及相同内容的别名，不强制删除；不清理容器、网络、数据卷、基础服务镜像、手工标签、发布配置或传输基线。构建节点用 `docker builder prune --force` 清理悬空构建缓存，再用不带 `--all` 的 `docker image prune --force` 回收无标签且未被容器引用的镜像；下载缓存仍可能被回收，不新增过期天数、磁盘水位或大小限额。
 - Jenkins #26 在基础依赖安装期间复现整机失去响应，PVE 的 LVM-thin 池为 100% 且标记 `out_of_data`，内核记录空间耗尽与 I/O 错误，QEMU 状态为 `io-error`。扩容池后恢复虚拟机，并正常关闭、启动以生效磁盘 Discard；Ubuntu `fstrim` 已实测降低底层池占用，不能仅依据客机 `df` 判断容量。
-- 已取消 #26 并确认 `ABORTED`、队列为空、Jenkins 两个执行器空闲；实际日志确认取消后未运行 Docker 清理。任务暂时禁用，生产仍保留健康的 #21，Magpie 新版发布同步仍待验证。
+- 已取消 #26 并确认 `ABORTED`、队列为空、Jenkins 两个执行器空闲；实际日志确认取消后未运行 Docker 清理。当时临时禁用任务并保留健康 #21，后续已恢复任务并完成 #28 的完整发布与 Magpie 同步。
 - 核对 Jenkins #21/#18 成功记录、生产 current、容器健康及镜像 ID 后补齐原先缺失的镜像保留清单，真实执行旧应用/测试镜像、悬空镜像与构建缓存清理，并清理 Jenkins Yarn/Go 可重建缓存；任务配置、凭据、工作区、历史构建记录和数据卷均保留。
 - 清理后 Jenkins 主机已用空间约 49 GiB 降至 23 GiB，可用约 51 GiB；Jenkins 目录 4.6 GiB 降至 2.6 GiB，containerd 36 GiB 降至 13 GiB。PVE 池扩容 12 GiB 后经 Discard/fstrim 回收到约 62%；Jenkins/Docker/fstrim.timer 均正常，登录页 HTTP 200。新增无标签镜像清理后，WSL Ubuntu 的 10 项定向保留测试通过，覆盖无 `--all`、容器与版本保护、清理失败可见。
 - 66 项 Linux 部署、镜像清理与 Magpie 事务用例通过，覆盖健康记录、失败构建号较新、容器/别名保护、未知或损坏历史、SSH 中断、清单发布失败、清理错误和路径重定向拒绝。Docker/SSH/systemd/Magpie 使用替身；Dockerfile 手动 test 目标已纳入清理测试。记录：`.local/ci-cleanup-2026-10-29T07-23-43-336Z/`。未构建镜像、做语法检查、执行真实 Docker 清理或触发生产部署。
-- 待在真实 Jenkins 连续发布验证第三版发布后第一版镜像回收、当前/上一版回滚、失败发布后的重新查询、磁盘回收量与缓存失效后的耗时。当前磁盘已完全耗尽时，仍须先释放空间才能启动新流水线；峰值空间和业务数据增长仍需运维保障。已检查中英文 TODO，无对应条目需迁移。
+- #28 实际构建前成功读取健康清单并删除失败 #26 镜像；部署后更新为 #28/#21、清理旧镜像，Jenkins 结束清理回收约 6.4 GB 构建缓存，数据卷未参与删除。部署主机可用约 33 GiB。连续发布、实际回滚与峰值空间仍需持续验证；已检查中英文 TODO，无对应条目需迁移。
 
 ## CI/CD 自动同步 Magpie 白名单
 
@@ -29,8 +30,8 @@ description: 当前版本已实现但仍需人工验证的变更项
 - 同步仅处理已初始化的 `infinite_canvas_magpie` 供应商，复用已有 Key 并核对容器当前地址和 Key；不读取宿主机 Codex 配置、不覆盖容器配置、不创建替代 Key、不额外重启应用。其他供应商明确跳过；受管配置缺少主机状态、服务未运行、Key 已失效或不匹配时，中止发布并尝试回滚。
 - Jenkins SSH 凭据用户须为原 Magpie 服务所属的非 root 用户，沿用相同 HOME/XDG 配置与状态目录；非交互 SSH 需有 `python3`、`flock`、`systemctl`、`readlink` 并能访问该用户正在运行的 `magpie.service`。若 PATH 缺少 `magpie`，从该服务进程定位可执行文件，仍核验进程归属和文件一致性；需在真实 Jenkins 确认 SSH 用户和服务运行环境。首次初始化仍显式执行 `--magpie-gateway`。同步沿用现有三次 Magpie 重启及只读模型列表探测，本机 CLI 在此期间短暂不可用。
 - 47 项 Linux 部署/网关事务测试与 14 项 Bun 1.3.13 导入/探测测试通过，覆盖发布包、健康检查后同步、IP 更换、Key 复用、配置保留、失败回滚和回滚同步失败；Docker、SSH、systemd 与 Magpie 服务使用替身，嵌入 HTTP 探针访问真实回环测试服务。记录：`.local/magpie-cicd-2026-10-29T06-27-20-027Z/deployment-green.log`、`.local/magpie-cicd-2026-10-29T06-27-20-027Z/import-green.log`。未构建镜像、执行语法检查、连接生产服务或触发真实 Jenkins 发布。
-- 非交互 PATH 缺少 Magpie 的回归用例先复现 `magpie must be available on the host PATH`，修复后 Linux 部署、清理与网关事务合计 67 项通过；仍需用真实 SSH 用户和 Magpie 服务验证路径发现及发布。
-- 待真实 Jenkins 连续发布验证 IP 改变后的同步日志、非交互 SSH 服务权限、真实回滚及新建 Codex 对话。已检查中英文 TODO，无对应条目需迁移。
+- 非交互 PATH 缺少 Magpie 的回归用例先复现 `magpie must be available on the host PATH`，修复后 Linux 部署、清理与网关事务合计 67 项通过。真实 Jenkins #28 的 SSH 发布环境已成功执行网关同步。
+- #28 日志确认未放行 IP 返回 403、无 Key 返回 401、应用 Key 返回 200；服务白名单为当前容器 `172.18.0.5/32`，生产 current 已切换。独立容器模型列表探测再次得到无 Key 401、应用 Key 200，Magpie 服务 active；未发送模型生成请求。后续仍需连续发布时 IP 变化、真实回滚及新建 Codex 对话验收。已检查中英文 TODO，无对应条目需迁移。
 
 ## Pi Skill 创建与管理对齐
 
