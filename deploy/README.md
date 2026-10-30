@@ -8,6 +8,8 @@
 
 流水线只接受 `deploy` / `origin/deploy`，拒绝 PR，并要求检出 HEAD 等于当前 `origin/deploy`。`dev`、`main` 或旧提交不会进入构建和部署。禁止把不可信 PR 放到持有部署凭据的节点运行。请保护 deploy 分支并限制 Jenkins Job Configure 和凭据权限。
 
+失败后使用「Build with Parameters」发起完整新构建，从 `Checkout deploy` 重新生成本次发布标识；不要对历史构建使用「Restart from Stage」或回放旧 Jenkinsfile。阶段重启会创建新构建号并跳过前置初始化，可能沿用旧 `APP_IMAGE`，使镜像标签与发布目录编号不一致。流水线已通过 `disableRestartFromStage()` 关闭该入口，并在 SSH 上传前校验 `.ci/image-ref`、`.ci/revision` 与当前构建；远端仍独立校验并明确输出编号不一致，拒绝加载和切换应用。
+
 ## Jenkins 前置条件
 
 - Linux Agent 标签为 `docker-linux`，装有 Git、Bash、Docker Engine、Docker Buildx CLI 插件、OpenSSH client、rsync、tar、gzip、sha256sum。Docker 支持 BuildKit，执行流水线的同一用户运行 `docker buildx version` 和 `docker info` 均应成功；构建节点可访问 npm、PyPI、Docker Hub 和系统包源。

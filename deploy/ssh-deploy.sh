@@ -42,6 +42,10 @@ fi")"
     exit 0
 fi
 (( $# == 0 )) || { echo 'Unknown deployment operation' >&2; exit 2; }
+[[ "$(cat .ci/image-ref)" == "infinite-canvas:$release" && "$(cat .ci/revision)" == "$RELEASE_SHA" ]] || {
+    echo "Release metadata does not match build $BUILD_NUMBER. Start a new build from Checkout deploy; restarting from a later stage is unsupported." >&2
+    exit 2
+}
 preflight_output="$(ssh "${ssh_opts[@]}" -p "$DEPLOY_PORT" "$target" "set -eu
 umask 077
 test -d '$DEPLOY_DIR/shared' || { echo 'Missing deployment directory: $DEPLOY_DIR/shared' >&2; exit 1; }

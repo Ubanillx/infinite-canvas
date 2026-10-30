@@ -278,6 +278,25 @@ class DeploymentTests(unittest.TestCase):
         self.assertFalse(any("load" in c["args"] for c in self.calls()))
         self.assertEqual(cache.read_bytes(), b"previous verified basis")
 
+    def test_restarted_build_image_is_rejected_with_release_mismatch_before_load(self):
+        previous = self.previous()
+        archive = self.root / "incoming" / RELEASE / "release.tar.gz"
+        source = self.root / "payload"
+        (source / "image-ref").write_text(f"infinite-canvas:{SHA}-6\n")
+        (source / "SHA256SUMS").write_text("".join(
+            f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n"
+            for path in source.iterdir() if path.name != "SHA256SUMS"))
+        with tarfile.open(archive, "w:gz") as output:
+            for path in source.iterdir():
+                if path.name != "image.tar":
+                    output.add(path, arcname=path.name)
+        result = self.run_deploy()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Release image mismatch", result.stderr)
+        self.assertIn(f"infinite-canvas:{RELEASE}", result.stderr)
+        self.assertEqual((self.root / "current").resolve(), previous)
+        self.assertFalse(any(c["args"] == ["load"] for c in self.calls()))
+
     def test_missing_or_symlink_image_is_rejected_before_load(self):
         image = self.root / "incoming" / RELEASE / "image.tar"
         image.unlink()
@@ -345,7 +364,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("Invalid SSH host", result.stderr)
 
-    def ssh_transport(self, fail=False, preflight=False, scenario="success", rsync_fail=False, mode=None):
+    def ssh_transport(self, fail=False, preflight=False, scenario="success", rsync_fail=False, mode=None, image_ref=None):
         fake = '''#!/usr/bin/env python3
 import json, os, shlex, subprocess, sys
 with open(os.environ["CALL_LOG"], "a") as f: f.write(json.dumps(sys.argv) + "\\n")
@@ -366,6 +385,11 @@ if os.path.basename(sys.argv[0]) == "scp" and sys.argv[-2].endswith("/shared/ret
             path = self.bin / name
             path.write_text(fake)
             path.chmod(0o755)
+        if mode is None:
+            metadata = self.transport / ".ci"
+            metadata.mkdir(exist_ok=True)
+            (metadata / "image-ref").write_text((image_ref or f"infinite-canvas:{RELEASE}") + "\n")
+            (metadata / "revision").write_text(SHA + "\n")
         env = dict(self.env, DEPLOY_HOST="deploy.example.com", DEPLOY_USER="deploy",
                    DEPLOY_KEY="/secret/key", KNOWN_HOSTS="/secret/hosts", DEPLOY_DIR=str(self.root),
                    COMPOSE_PROJECT="test", RELEASE_SHA=SHA, BUILD_NUMBER="7", SSH_FAIL="1" if fail else "0",
@@ -373,6 +397,12 @@ if os.path.basename(sys.argv[0]) == "scp" and sys.argv[-2].endswith("/shared/ret
                    RSYNC_FAIL="1" if rsync_fail else "0")
         return subprocess.run(["bash", str(REPO / "deploy/ssh-deploy.sh"), *([mode] if mode else [])], cwd=self.transport,
                               env=env, stdin=subprocess.DEVNULL, text=True, capture_output=True)
+
+    def test_restarted_build_package_is_rejected_before_any_ssh_or_upload(self):
+        result = self.ssh_transport(image_ref=f"infinite-canvas:{SHA}-6")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Start a new build", result.stderr)
+        self.assertFalse(self.calls())
 
     def test_ssh_transport_requires_pinned_host_and_checks_each_hop(self):
         result = self.ssh_transport()

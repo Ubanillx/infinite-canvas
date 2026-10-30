@@ -3,6 +3,7 @@ pipeline {
     options {
         skipDefaultCheckout(true)
         disableConcurrentBuilds()
+        disableRestartFromStage()
     }
     triggers { githubPush() }
     parameters {

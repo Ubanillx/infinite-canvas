@@ -33,7 +33,11 @@ sha256sum -c SHA256SUMS
 image="$(cat image-ref)"
 image_id="$(cat image-id)"
 revision="$(cat revision)"
-[[ "$image" == "infinite-canvas:$release" && "$image_id" =~ ^sha256:[a-f0-9]{64}$ && "$revision" == "${release%-*}" ]] || exit 2
+[[ "$image" == "infinite-canvas:$release" ]] || {
+    echo "Release image mismatch: expected infinite-canvas:$release, got $image. Start a new build from Checkout deploy." >&2
+    exit 2
+}
+[[ "$image_id" =~ ^sha256:[a-f0-9]{64}$ && "$revision" == "${release%-*}" ]] || { echo 'Invalid release image ID or revision' >&2; exit 2; }
 docker load < image.tar
 [[ "$(docker image inspect --format '{{.Id}}' "$image")" == "$image_id" ]] || { echo 'Loaded image does not match build' >&2; exit 1; }
 [[ "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" == "$revision" ]] || exit 1
