@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { App, Image, Input, Popconfirm, Select, Spin, Tag } from "antd";
 import { useQuery } from "@tanstack/react-query";
 import { BookOpen, Check, ChevronRight, Download, Eye, FileText, Image as ImageIcon, LayoutGrid, ListChecks, Music2, Plus, Rows3, Search, Settings2, Square, Trash2, Type, Video } from "lucide-react";
@@ -158,7 +158,7 @@ function nodePreviewText(node: CanvasNodeData) {
 }
 
 const CanvasNodesTab = memo(function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, onPreviewNode, onHoverNode, theme }: { nodes: CanvasNodeData[]; selectedNodeIds: Set<string>; onFocusNode: (nodeId: string) => void; onPreviewNode: (nodeId: string) => void; onHoverNode: (nodeId: string | null) => void; theme: CanvasTheme }) {
-    useNodeRegistryVersion((state) => state.version);
+    const registryVersion = useNodeRegistryVersion((state) => state.version);
     const { message } = App.useApp();
     const { t } = useTranslation();
     const [keyword, setKeyword] = useState("");
@@ -170,13 +170,22 @@ const CanvasNodesTab = memo(function CanvasNodesTab({ nodes, selectedNodeIds, on
     const nodeViewMode = useCanvasSidePanelStore((state) => state.nodeViewMode);
     const setNodeViewMode = useCanvasSidePanelStore((state) => state.setNodeViewMode);
 
+    // The list does not display geometry. Export still reads the current nodes below.
+    const nodesRef = useRef(nodes);
+    const listNodesRef = useRef(nodes);
+    const listNodes = useMemo(() => {
+        const previous = listNodesRef.current;
+        return nodes.length === previous.length && nodes.every((node, index) => node.id === previous[index].id && node.type === previous[index].type && node.title === previous[index].title && node.metadata === previous[index].metadata) ? previous : nodes;
+    }, [nodes]);
+    useLayoutEffect(() => { nodesRef.current = nodes; listNodesRef.current = listNodes; }, [nodes, listNodes]);
+
     const filtered = useMemo(() => {
         const query = keyword.trim().toLowerCase();
-        return nodes.filter((node) => (typeFilter === "all" || node.type === typeFilter) && (!query || [node.title, node.metadata?.content, node.metadata?.prompt].filter(Boolean).join(" ").toLowerCase().includes(query)));
-    }, [nodes, keyword, typeFilter]);
+        return listNodes.filter((node) => (typeFilter === "all" || node.type === typeFilter) && (!query || [node.title, node.metadata?.content, node.metadata?.prompt].filter(Boolean).join(" ").toLowerCase().includes(query)));
+    }, [listNodes, keyword, typeFilter]);
     const treeRows = useMemo(() => {
         const filteredIds = new Set(filtered.map((node) => node.id));
-        const groups = new Set(nodes.filter((node) => node.type === CanvasNodeType.Group).map((node) => node.id));
+        const groups = new Set(listNodes.filter((node) => node.type === CanvasNodeType.Group).map((node) => node.id));
         const children = new Map<string, CanvasNodeData[]>();
         filtered.forEach((node) => {
             const groupId = node.metadata?.groupId;
@@ -186,33 +195,33 @@ const CanvasNodesTab = memo(function CanvasNodesTab({ nodes, selectedNodeIds, on
                 else children.set(groupId, [node]);
             }
         });
-        return nodes.flatMap((node) => {
+        return listNodes.flatMap((node) => {
             if (node.metadata?.groupId && groups.has(node.metadata.groupId)) return [];
             if (node.type !== CanvasNodeType.Group) return filteredIds.has(node.id) ? [{ node, depth: 0, hasChildren: false }] : [];
             const groupChildren = children.get(node.id) || [];
             if (!filteredIds.has(node.id) && !groupChildren.length) return [];
             return [{ node, depth: 0, hasChildren: groupChildren.length > 0 }, ...(collapsedGroups.has(node.id) ? [] : groupChildren.map((child) => ({ node: child, depth: 1, hasChildren: false })))];
         });
-    }, [collapsedGroups, filtered, nodes]);
+    }, [collapsedGroups, filtered, listNodes]);
 
-    const exitSelect = () => {
+    const exitSelect = useCallback(() => {
         setSelectMode(false);
         setChecked(new Set());
-    };
-    const toggleChecked = (id: string) =>
+    }, []);
+    const toggleChecked = useCallback((id: string) =>
         setChecked((prev) => {
             const next = new Set(prev);
             next.has(id) ? next.delete(id) : next.add(id);
             return next;
-        });
+        }), []);
     const allChecked = filtered.length > 0 && filtered.every((node) => checked.has(node.id));
-    const toggleAll = () => setChecked(allChecked ? new Set() : new Set(filtered.map((node) => node.id)));
+    const toggleAll = useCallback(() => setChecked(allChecked ? new Set() : new Set(filtered.map((node) => node.id))), [allChecked, filtered]);
 
     // Let the hover preview fade out before the canvas starts moving to the node.
     const PRESS_FOCUS_DELAY = 180;
     const focusTimerRef = useRef<number | null>(null);
     useEffect(() => () => { if (focusTimerRef.current !== null) window.clearTimeout(focusTimerRef.current); }, []);
-    const activateNode = (node: CanvasNodeData) => {
+    const activateNode = useCallback((node: CanvasNodeData) => {
         if (focusTimerRef.current !== null) window.clearTimeout(focusTimerRef.current);
         focusTimerRef.current = null;
         const hasPreview = (node.type === CanvasNodeType.Image || node.type === CanvasNodeType.Video) && Boolean(node.metadata?.content);
@@ -225,72 +234,9 @@ const CanvasNodesTab = memo(function CanvasNodesTab({ nodes, selectedNodeIds, on
             focusTimerRef.current = null;
             onFocusNode(node.id);
         }, PRESS_FOCUS_DELAY);
-    };
+    }, [onFocusNode, onHoverNode]);
 
-    const handleExport = async () => {
-        const targets = nodes.filter((node) => checked.has(node.id));
-        if (!targets.length) return;
-        setExporting(true);
-        const hide = message.loading(t("canvas.sidePanel.exporting"), 0);
-        try {
-            await exportCanvasNodes(targets, t("canvas.sidePanel.exportName", { count: targets.length }));
-            message.success(t("canvas.sidePanel.exported", { count: targets.length }));
-            exitSelect();
-        } catch (error) {
-            console.error(error);
-            message.error(t("canvas.sidePanel.exportFailed"));
-        } finally {
-            hide();
-            setExporting(false);
-        }
-    };
-
-    return (
-        <div className="flex h-full flex-col" onMouseLeave={() => onHoverNode(null)}>
-            <div className="flex min-h-12 items-center gap-2 px-3 pt-1">
-                <span className="min-w-0 truncate text-xs font-semibold">{t("canvas.sidePanel.elements")}</span>
-                <span className="min-w-0 flex-1 text-xs opacity-45">{nodes.length}</span>
-                {nodes.length ? <button
-                    type="button"
-                    onClick={() => (selectMode ? exitSelect() : setSelectMode(true))}
-                    aria-pressed={selectMode}
-                    className="ml-auto flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 text-xs font-medium transition hover:bg-black/5 dark:hover:bg-white/10"
-                    style={selectMode ? { background: theme.toolbar.activeBg, color: theme.toolbar.activeText } : { color: theme.node.muted }}
-                >
-                    <ListChecks className="size-4" />
-                    {selectMode ? t("common.cancel") : t("canvas.sidePanel.select")}
-                </button> : null}
-            </div>
-            {nodes.length ? <div className="space-y-2 px-3 pb-3">
-                <Input className="app-search-input" allowClear prefix={<Search className="size-4" style={{ color: theme.node.muted }} />} placeholder={t("canvas.sidePanel.searchNodes")} value={keyword} onChange={(e) => setKeyword(e.target.value)} />
-                <div className="flex items-center gap-2">
-                    <Select className="min-w-0 flex-1" value={typeFilter} onChange={setTypeFilter} aria-label={t("canvas.sidePanel.filterNodes")} options={NODE_FILTER_VALUES.map((value) => ({ value, label: value === "all" ? t("common.all") : t(`canvas.sidePanel.filter.${value}`) }))} />
-                    <button
-                        type="button"
-                        onClick={() => setNodeViewMode(nodeViewMode === "grid" ? "list" : "grid")}
-                        className="grid size-8 shrink-0 place-items-center rounded-md transition hover:bg-black/5 dark:hover:bg-white/10"
-                        style={{ color: theme.node.muted }}
-                        title={nodeViewMode === "grid" ? t("canvas.sidePanel.viewList") : t("canvas.sidePanel.viewGrid")}
-                        aria-label={nodeViewMode === "grid" ? t("canvas.sidePanel.viewList") : t("canvas.sidePanel.viewGrid")}
-                    >
-                        {nodeViewMode === "grid" ? <Rows3 className="size-4" /> : <LayoutGrid className="size-4" />}
-                    </button>
-                </div>
-            </div> : null}
-            <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
-                {!nodes.length ? (
-                    <div className="flex h-full flex-col items-center justify-center px-4 pb-20 text-center">
-                        <LayoutGrid className="mb-4 size-7" strokeWidth={1.4} style={{ color: theme.node.faint }} />
-                        <p className="text-sm font-medium">{t("canvas.sidePanel.noNodes")}</p>
-                        <p className="mt-1.5 text-xs leading-relaxed" style={{ color: theme.node.muted }}>{t("canvas.sidePanel.emptyNodeHint")}</p>
-                    </div>
-                ) : !filtered.length ? (
-                    <div className="flex min-h-44 flex-col items-center justify-center px-4 text-center">
-                        <Search className="mb-3 size-6" strokeWidth={1.5} style={{ color: theme.node.faint }} />
-                        <p className="text-xs" style={{ color: theme.node.muted }}>{t("canvas.sidePanel.noMatchingNodes")}</p>
-                        <button type="button" onClick={() => { setKeyword(""); setTypeFilter("all"); }} className="mt-2 rounded-md px-2 py-1 text-xs font-medium transition hover:bg-black/5 dark:hover:bg-white/10">{t("canvas.sidePanel.clearFilters")}</button>
-                    </div>
-                ) : nodeViewMode === "grid" ? (
+    const nodeItems = useMemo(() => nodeViewMode === "grid" ? (
                         <div className="grid gap-2 px-1 [grid-template-columns:repeat(auto-fill,minmax(88px,1fr))]">
                             {filtered.map((node) => {
                                 const Icon = NODE_TYPE_ICON[node.type] || FileText;
@@ -373,7 +319,72 @@ const CanvasNodesTab = memo(function CanvasNodesTab({ nodes, selectedNodeIds, on
                             );
                         })}
                     </div>
-                ) : null}
+                ) : null, [nodeViewMode, filtered, treeRows, checked, selectMode, selectedNodeIds, theme, t, registryVersion, toggleChecked, activateNode, onHoverNode, onPreviewNode, collapsedGroups]);
+
+    const handleExport = useCallback(async () => {
+        const targets = nodesRef.current.filter((node) => checked.has(node.id));
+        if (!targets.length) return;
+        setExporting(true);
+        const hide = message.loading(t("canvas.sidePanel.exporting"), 0);
+        try {
+            await exportCanvasNodes(targets, t("canvas.sidePanel.exportName", { count: targets.length }));
+            message.success(t("canvas.sidePanel.exported", { count: targets.length }));
+            exitSelect();
+        } catch (error) {
+            console.error(error);
+            message.error(t("canvas.sidePanel.exportFailed"));
+        } finally {
+            hide();
+            setExporting(false);
+        }
+    }, [checked, exitSelect, message, t]);
+
+    return useMemo(() => (
+        <div className="flex h-full flex-col" onMouseLeave={() => onHoverNode(null)}>
+            <div className="flex min-h-12 items-center gap-2 px-3 pt-1">
+                <span className="min-w-0 truncate text-xs font-semibold">{t("canvas.sidePanel.elements")}</span>
+                <span className="min-w-0 flex-1 text-xs opacity-45">{nodes.length}</span>
+                {nodes.length ? <button
+                    type="button"
+                    onClick={() => (selectMode ? exitSelect() : setSelectMode(true))}
+                    aria-pressed={selectMode}
+                    className="ml-auto flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 text-xs font-medium transition hover:bg-black/5 dark:hover:bg-white/10"
+                    style={selectMode ? { background: theme.toolbar.activeBg, color: theme.toolbar.activeText } : { color: theme.node.muted }}
+                >
+                    <ListChecks className="size-4" />
+                    {selectMode ? t("common.cancel") : t("canvas.sidePanel.select")}
+                </button> : null}
+            </div>
+            {nodes.length ? <div className="space-y-2 px-3 pb-3">
+                <Input className="app-search-input" allowClear prefix={<Search className="size-4" style={{ color: theme.node.muted }} />} placeholder={t("canvas.sidePanel.searchNodes")} value={keyword} onChange={(e) => setKeyword(e.target.value)} />
+                <div className="flex items-center gap-2">
+                    <Select className="min-w-0 flex-1" value={typeFilter} onChange={setTypeFilter} aria-label={t("canvas.sidePanel.filterNodes")} options={NODE_FILTER_VALUES.map((value) => ({ value, label: value === "all" ? t("common.all") : t(`canvas.sidePanel.filter.${value}`) }))} />
+                    <button
+                        type="button"
+                        onClick={() => setNodeViewMode(nodeViewMode === "grid" ? "list" : "grid")}
+                        className="grid size-8 shrink-0 place-items-center rounded-md transition hover:bg-black/5 dark:hover:bg-white/10"
+                        style={{ color: theme.node.muted }}
+                        title={nodeViewMode === "grid" ? t("canvas.sidePanel.viewList") : t("canvas.sidePanel.viewGrid")}
+                        aria-label={nodeViewMode === "grid" ? t("canvas.sidePanel.viewList") : t("canvas.sidePanel.viewGrid")}
+                    >
+                        {nodeViewMode === "grid" ? <Rows3 className="size-4" /> : <LayoutGrid className="size-4" />}
+                    </button>
+                </div>
+            </div> : null}
+            <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+                {!nodes.length ? (
+                    <div className="flex h-full flex-col items-center justify-center px-4 pb-20 text-center">
+                        <LayoutGrid className="mb-4 size-7" strokeWidth={1.4} style={{ color: theme.node.faint }} />
+                        <p className="text-sm font-medium">{t("canvas.sidePanel.noNodes")}</p>
+                        <p className="mt-1.5 text-xs leading-relaxed" style={{ color: theme.node.muted }}>{t("canvas.sidePanel.emptyNodeHint")}</p>
+                    </div>
+                ) : !filtered.length ? (
+                    <div className="flex min-h-44 flex-col items-center justify-center px-4 text-center">
+                        <Search className="mb-3 size-6" strokeWidth={1.5} style={{ color: theme.node.faint }} />
+                        <p className="text-xs" style={{ color: theme.node.muted }}>{t("canvas.sidePanel.noMatchingNodes")}</p>
+                        <button type="button" onClick={() => { setKeyword(""); setTypeFilter("all"); }} className="mt-2 rounded-md px-2 py-1 text-xs font-medium transition hover:bg-black/5 dark:hover:bg-white/10">{t("canvas.sidePanel.clearFilters")}</button>
+                    </div>
+                ) : nodeItems}
             </div>
             {selectMode && nodes.length ? (
                 <div className="flex items-center gap-2 border-t px-3 py-2.5" style={{ borderColor: theme.toolbar.border }}>
@@ -394,7 +405,7 @@ const CanvasNodesTab = memo(function CanvasNodesTab({ nodes, selectedNodeIds, on
                 </div>
             ) : null}
         </div>
-    );
+    ), [nodes.length, onHoverNode, theme, t, selectMode, exitSelect, keyword, typeFilter, nodeViewMode, setNodeViewMode, filtered.length, nodeItems, toggleAll, allChecked, checked.size, exporting, handleExport]);
 });
 
 const NodeThumbnail = memo(function NodeThumbnail({ storageKey, content, title }: { storageKey?: string; content?: string; title: string }) {

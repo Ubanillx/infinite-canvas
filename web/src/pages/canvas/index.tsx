@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { App, Button, Input, Modal } from "antd";
-import { ChevronRight, Download, FileUp, FolderPlus, Home, Images, LayoutTemplate, Plus, Search } from "lucide-react";
+import { App, Button, Dropdown, Input, Modal } from "antd";
+import { ChevronRight, Download, Ellipsis, FileUp, FolderPlus, Home, Images, LayoutTemplate, Plus, Search, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { readZip } from "@/lib/zip";
@@ -180,21 +180,19 @@ export default function CanvasPage() {
                         <h1 className="mt-1 text-2xl font-semibold">{currentFolder?.title || t("canvas.projects")}</h1>
                         {!currentFolder ? <p className="mt-1 text-sm text-muted-foreground">{t("canvas.libraryDescription")}</p> : null}
                     </div>
-                    <div className="flex flex-wrap items-center justify-end gap-2">
+                    <div className="flex max-w-full w-full flex-wrap items-center justify-start gap-2 sm:w-auto sm:justify-end">
                         {visibleSelectedIds.length ? (
-                            <>
-                                <Button disabled={!hydrated} icon={<Download className="size-4" />} onClick={() => void exportCanvasProjects(visibleProjects.filter((project) => visibleSelectedIds.includes(project.id)), `${t("canvas.title")}-${visibleSelectedIds.length}`)}>
-                                    {t("canvas.exportSelected")}
-                                </Button>
-                                <Button disabled={!hydrated} onClick={() => setDeleteIds(visibleSelectedIds)}>
-                                    {t("canvas.deleteSelected")}
-                                </Button>
-                            </>
-                        ) : null}
-                        {visibleProjects.length && !keyword.trim() ? (
-                            <Button disabled={!hydrated} onClick={() => setDeleteIds(visibleProjects.map((project) => project.id))}>
-                                {t("canvas.deleteAll")}
+                            <Button disabled={!hydrated} icon={<Download className="size-4" />} onClick={() => void exportCanvasProjects(visibleProjects.filter((project) => visibleSelectedIds.includes(project.id)), `${t("canvas.title")}-${visibleSelectedIds.length}`)}>
+                                {t("canvas.exportSelected")}
                             </Button>
+                        ) : null}
+                        {visibleSelectedIds.length || (visibleProjects.length && !keyword.trim()) ? (
+                            <Dropdown trigger={["click"]} placement="bottomRight" menu={{ items: [
+                                ...(visibleSelectedIds.length ? [{ key: "delete-selected", danger: true, icon: <Trash2 className="size-4" />, label: t("canvas.deleteSelected"), onClick: () => setDeleteIds(visibleSelectedIds) }] : []),
+                                ...(visibleProjects.length && !keyword.trim() ? [...(visibleSelectedIds.length ? [{ type: "divider" as const }] : []), { key: "delete-all", danger: true, icon: <Trash2 className="size-4" />, label: t("canvas.deleteAll"), onClick: () => setDeleteIds(visibleProjects.map((project) => project.id)) }] : []),
+                            ] }}>
+                                <Button disabled={!hydrated} icon={<Ellipsis className="size-4" />}>{t("canvas.moreActions")}</Button>
+                            </Dropdown>
                         ) : null}
                         <Button disabled={!hydrated} icon={<FolderPlus className="size-4" />} onClick={createFolderAndEdit}>
                             {t("canvas.folder.create")}
@@ -203,7 +201,7 @@ export default function CanvasPage() {
                             {t("canvas.import")}
                         </Button>
                         <Button disabled={!hydrated} icon={<LayoutTemplate className="size-4" />} onClick={() => navigate({ pathname: "/templates", search: searchParams.toString(), hash: window.location.hash })}>{t("canvas.templates.library")}</Button>
-                        <Button disabled={!hydrated} type="primary" className="!shadow-none" icon={<Plus className="size-4" />} onClick={createAndEnter}>
+                        <Button disabled={!hydrated} type="primary" className="order-first !shadow-none w-full sm:order-none sm:w-auto" icon={<Plus className="size-4" />} onClick={createAndEnter}>
                             {t("canvas.create")}
                         </Button>
                     </div>
@@ -221,7 +219,7 @@ export default function CanvasPage() {
                         </span>
                     ))}
                 </nav>
-                <Input className="app-search-input w-full sm:!w-72" prefix={<Search className="size-4 text-muted-foreground" />} value={keyword} allowClear placeholder={t("canvas.search")} onChange={(event) => setKeyword(event.target.value)} />
+                <Input className="app-search-input w-full sm:!w-[min(26rem,100%)]" prefix={<Search className="size-4 text-muted-foreground" />} value={keyword} allowClear placeholder={t("canvas.search")} onChange={(event) => setKeyword(event.target.value)} />
                 </div>
 
                 {!hydrated ? (

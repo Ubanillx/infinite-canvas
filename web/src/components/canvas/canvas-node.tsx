@@ -24,6 +24,7 @@ type CanvasNodeProps = {
     data: CanvasNodeData;
     scale: number;
     isSelected: boolean;
+    isDragging?: boolean;
     isRelated: boolean;
     isFocusRelated: boolean;
     isConnectionTarget: boolean;
@@ -90,6 +91,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     data,
     scale,
     isSelected,
+    isDragging = false,
     isRelated,
     isFocusRelated,
     isConnectionTarget,
@@ -325,7 +327,8 @@ export const CanvasNode = React.memo(function CanvasNode({
             data-node-id={data.id}
             className={`node-element group/node absolute flex select-none flex-col transition-shadow duration-200 ${isGroup ? "z-[5]" : isSelected ? "z-50" : "z-10"} ${referenceSelectionState === "available" ? "cursor-pointer" : referenceSelectionState ? "cursor-not-allowed" : ""}`}
             style={{
-                transform: `translate(${data.position.x}px, ${data.position.y}px)`,
+                transform: isDragging ? `translate3d(${data.position.x}px, ${data.position.y}px, 0)` : `translate(${data.position.x}px, ${data.position.y}px)`,
+                willChange: isDragging ? "transform" : undefined,
                 width: data.width,
                 height: data.height,
                 transition: "box-shadow 200ms ease",

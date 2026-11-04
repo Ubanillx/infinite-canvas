@@ -238,6 +238,7 @@ function CompactAgentStatus({ status, onClick }: { status: { connected: boolean;
 }
 
 function Shortcut({ keys, value }: { keys: string[]; value: string }) {
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
     return (
         <div className="grid grid-cols-[minmax(0,1fr)_120px] items-center gap-6 rounded-lg px-1 py-1.5">
             <span className="flex min-w-0 flex-wrap items-center gap-1.5">
@@ -245,8 +246,8 @@ function Shortcut({ keys, value }: { keys: string[]; value: string }) {
                     <span key={`${key}-${index}`} className="flex items-center gap-1.5">
                         {index ? <span className="text-xs opacity-35">+</span> : null}
                         <kbd
-                            className="min-w-9 rounded-md border px-2.5 py-1.5 text-center text-xs font-medium leading-none shadow-[inset_0_-1px_0_rgba(0,0,0,.08),0_1px_2px_rgba(0,0,0,.06)]"
-                            style={{ borderColor: "rgba(120,113,108,.28)", background: "linear-gradient(#fff, rgba(245,245,244,.92))", color: "rgb(68,64,60)" }}
+                            className="min-w-9 rounded-md border px-2.5 py-1.5 text-center text-xs font-medium leading-none"
+                            style={{ borderColor: theme.node.stroke, background: theme.toolbar.itemHover, color: theme.node.text, boxShadow: "0 1px 2px rgba(0,0,0,.06)" }}
                         >
                             {key}
                         </kbd>

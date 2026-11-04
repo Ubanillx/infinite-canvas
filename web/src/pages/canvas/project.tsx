@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent as ReactChangeEvent, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
+import type { ReactNode, ChangeEvent as ReactChangeEvent, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Group, Video } from "lucide-react";
 import { saveAs } from "file-saver";
@@ -17,6 +17,7 @@ import { getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
 import { imageReferenceLabel } from "@/lib/image-reference-prompt";
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
 import { getCanvasConnectionIndex, getCanvasNodeIndex } from "@/lib/canvas/canvas-graph-index";
+import { getCanvasConnectionGeometry } from "@/lib/canvas/canvas-connection-geometry";
 import { createFrameTask } from "@/lib/canvas/frame-task";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -733,32 +734,41 @@ function InfiniteCanvasPage() {
         return { left, top, right: left + width / viewport.k + padding * 2, bottom: top + height / viewport.k + padding * 2 };
     }, [size.height, size.width, viewport.k, viewport.x, viewport.y]);
 
+    // Reuse the scene while panning leaves its visible items unchanged.
+    const visibleNodesRef = useRef<CanvasNodeData[]>([]);
     const visibleNodes = useMemo(
-        () => nodes.filter((node) => node.id === dialogNodeId || ((isNodeDragging || isNodeResizing) && selectedNodeIds.has(node.id)) || (node.position.x + node.width > viewBounds.left && node.position.x < viewBounds.right && node.position.y + node.height > viewBounds.top && node.position.y < viewBounds.bottom)),
+        () => {
+            const visible = nodes.filter((node) => node.id === dialogNodeId || ((isNodeDragging || isNodeResizing) && selectedNodeIds.has(node.id)) || (node.position.x + node.width > viewBounds.left && node.position.x < viewBounds.right && node.position.y + node.height > viewBounds.top && node.position.y < viewBounds.bottom));
+            const previous = visibleNodesRef.current;
+            return visible.length === previous.length && visible.every((node, index) => node === previous[index]) ? previous : visible;
+        },
         [dialogNodeId, isNodeDragging, isNodeResizing, nodes, selectedNodeIds, viewBounds],
     );
 
-    const { byId: nodeById, byGroup: nodesByGroup } = useMemo(() => getCanvasNodeIndex(nodes), [nodes]);
+    const nodeById = useMemo(() => getCanvasNodeIndex(nodes).byId, [nodes]);
     const connectionIndex = useMemo(() => getCanvasConnectionIndex(connections), [connections]);
 
     // Connections are culled like nodes; a cubic curve stays inside its control-point hull, so endpoint bounds widened by the curvature is a safe test.
+    const visibleConnectionsRef = useRef<Array<{ connection: CanvasConnection; from: CanvasNodeData; to: CanvasNodeData }>>([]);
     const visibleConnections = useMemo(
-        () =>
-            connections.flatMap((connection) => {
+        () => {
+            const visible = connections.flatMap((connection) => {
                 const from = nodeById.get(connection.fromNodeId);
                 const to = nodeById.get(connection.toNodeId);
                 if (!from || !to) return [];
-                const startX = from.position.x + from.width;
-                const startY = from.position.y + from.height / 2;
-                const endX = to.position.x;
-                const endY = to.position.y + to.height / 2;
-                const curvature = Math.max(Math.abs(endX - startX) * 0.5, 50);
-                const inView =
-                    Math.max(startX + curvature, endX) > viewBounds.left && Math.min(startX, endX - curvature) < viewBounds.right && Math.max(startY, endY) > viewBounds.top && Math.min(startY, endY) < viewBounds.bottom;
+                const bounds = getCanvasConnectionGeometry(from, to);
+                const inView = bounds.right > viewBounds.left && bounds.left < viewBounds.right && bounds.bottom > viewBounds.top && bounds.top < viewBounds.bottom;
                 return inView ? [{ connection, from, to }] : [];
-            }),
+            });
+            const previous = visibleConnectionsRef.current;
+            return visible.length === previous.length && visible.every((item, index) => item.connection === previous[index].connection && item.from === previous[index].from && item.to === previous[index].to) ? previous : visible;
+        },
         [connections, nodeById, viewBounds],
     );
+    useLayoutEffect(() => {
+        visibleNodesRef.current = visibleNodes;
+        visibleConnectionsRef.current = visibleConnections;
+    }, [visibleNodes, visibleConnections]);
     // The toolbar follows a single selected node selected by click, creation, marquee, or keyboard.
     // It stays hidden for multi-selection and while isNodeDragging is true.
     const singleSelectedNodeId = selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null;
@@ -778,6 +788,10 @@ function InfiniteCanvasPage() {
     const canGroupSelection = useMemo(() => canGroupSelectedNodes(selectedNodeIds, nodes), [selectedNodeIds, nodes]);
     const canUngroupSelection = useMemo(() => canUngroupSelectedNodes(selectedNodeIds, nodes), [selectedNodeIds, nodes]);
     const activeNodeId = hasMultipleSelectedNodes ? null : hoveredNodeId || (selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null);
+    const resourceNodesRef = useRef(nodes);
+    const resourceNodes = useMemo(() => reuseCanvasResourceNodes(resourceNodesRef.current, nodes), [nodes, nodeRegistryVersion]);
+    useLayoutEffect(() => { resourceNodesRef.current = resourceNodes; }, [resourceNodes]);
+    const { byId: resourceNodeById, byGroup: resourceNodesByGroup } = useMemo(() => getCanvasNodeIndex(resourceNodes), [resourceNodes]);
     const relatedHighlight = useMemo(() => {
         const nodeIds = new Set<string>();
         const connectionIds = new Set<string>();
@@ -786,7 +800,7 @@ function InfiniteCanvasPage() {
 
         const addNode = (nodeId: string) => {
             nodeIds.add(nodeId);
-            if (nodeById.get(nodeId)?.type === CanvasNodeType.Group) nodesByGroup.get(nodeId)?.forEach((node) => nodeIds.add(node.id));
+            if (resourceNodeById.get(nodeId)?.type === CanvasNodeType.Group) resourceNodesByGroup.get(nodeId)?.forEach((node) => nodeIds.add(node.id));
         };
         addNode(activeNodeId);
         const addConnection = (connection: CanvasConnection) => {
@@ -798,12 +812,8 @@ function InfiniteCanvasPage() {
         connectionIndex.outgoing.get(activeNodeId)?.forEach(addConnection);
 
         return { nodeIds, connectionIds };
-    }, [activeNodeId, connectionIndex, nodeById, nodesByGroup]);
+    }, [activeNodeId, connectionIndex, resourceNodeById, resourceNodesByGroup]);
 
-    const resourceNodesRef = useRef(nodes);
-    const resourceNodes = useMemo(() => reuseCanvasResourceNodes(resourceNodesRef.current, nodes), [nodes, nodeRegistryVersion]);
-    useLayoutEffect(() => { resourceNodesRef.current = resourceNodes; }, [resourceNodes]);
-    const resourceNodeById = useMemo(() => getCanvasNodeIndex(resourceNodes).byId, [resourceNodes]);
     const configInputsById = useMemo(() => {
         const map = new Map<string, NodeGenerationInput[]>();
         resourceNodes.forEach((node) => {
@@ -840,13 +850,13 @@ function InfiniteCanvasPage() {
         if (!referencePickerNodeId) return ids;
         ids.add(referencePickerNodeId);
         connectionIndex.incoming.get(referencePickerNodeId)?.forEach((connection) => {
-            const node = nodeById.get(connection.fromNodeId);
+            const node = resourceNodeById.get(connection.fromNodeId);
             if (!node) return;
             ids.add(node.id);
-            if (node.type === CanvasNodeType.Group) getGroupResourceNodes(node.id, nodes).forEach((child) => ids.add(child.id));
+            if (node.type === CanvasNodeType.Group) getGroupResourceNodes(node.id, resourceNodes).forEach((child) => ids.add(child.id));
         });
         return ids;
-    }, [connectionIndex, nodeById, nodes, referencePickerNodeId]);
+    }, [connectionIndex, resourceNodeById, resourceNodes, referencePickerNodeId]);
     const { applyAgentOps } = useAgentBridge({
         projectId,
         title: currentProject?.title,
@@ -1246,7 +1256,7 @@ function InfiniteCanvasPage() {
         selection, replacing,
     })), [currentProject?.title, currentProject?.description, t, backgroundMode, showImageInfo]);
 
-    const insertTemplate = async (source: CanvasTemplateContent) => {
+    const insertTemplate = useCallback(async (source: CanvasTemplateContent) => {
         if (!templateActiveRef.current) return;
         const workspaceId = getActiveWorkspace()?.id;
         requireTemplateWorkspace(workspaceId);
@@ -1274,7 +1284,7 @@ function InfiniteCanvasPage() {
         setSelectedNodeIds(new Set(inserted.nodes.map((node) => node.id)));
         setSelectedConnectionId(null);
         setHistoryState({ canUndo: true, canRedo: false });
-    };
+    }, [size.height, size.width]);
 
     const deleteCurrentProject = useCallback(() => {
         deleteProjects([projectId]);
@@ -1646,7 +1656,7 @@ function InfiniteCanvasPage() {
     }, []);
 
     const reportMediaUploadError = useCallback((error: unknown) => {
-        message.error(error instanceof Error ? error.message : "媒体保存失败");
+        message.error(error instanceof Error ? error.message : t("common.mediaSaveFailed"));
     }, [message]);
 
     const createTextNodeFromClipboard = useCallback(
@@ -3370,6 +3380,146 @@ function InfiniteCanvasPage() {
         />
     ), [visibleToolbarNode, toolbarScale, nodeRegistryVersion, buildNodeToolbarItems, keepNodeToolbar, hideNodeToolbar, handleFontSizeChange, generateImageFromTextNode, handleUploadRequest, downloadNodeImage, saveNodeAsset, handleNodeViewImage, openImageReversePrompt, handleRetryNode, toggleNodeFreeResize, deleteNodes, ungroupSelection]);
 
+    const activeRenderNodePanel = dialogNodeId ? renderNodePanel : undefined;
+    const activeSelectNodeReference = referencePickerNodeId ? selectNodeReference : undefined;
+    const draggedNodeIds = dragRef.current.movedIds;
+    // Preserve unchanged JSX as well as component renders during single-node movement.
+    const renderCanvasNode = useMemo(() => {
+        const elements = new WeakMap<CanvasNodeData, ReactNode>();
+        return (node: CanvasNodeData) => {
+            let element = elements.get(node);
+            if (!element) {
+                element = (
+                    <CanvasNode
+                        key={node.id}
+                        data={node}
+                        scale={viewport.k}
+                        isSelected={selectedNodeIds.has(node.id)}
+                        isDragging={isNodeDragging && draggedNodeIds.has(node.id)}
+                        isRelated={relatedHighlight.nodeIds.has(node.id)}
+                        isFocusRelated={activeNodeId === node.id}
+                        isConnectionTarget={connectionTargetNodeId === node.id}
+                        isConnecting={Boolean(connectingParams)}
+                        referenceSelectionState={!referencePickerNodeId ? undefined : node.id === referencePickerNodeId ? "target" : referenceConnectedNodeIds.has(node.id) || !isCanvasReferenceNode(node, resourceNodes) ? "disabled" : "available"}
+                        showPanel={!isNodeResizing && dialogNodeId === node.id && !selectionBox && !getNodeDefinition(node.type)?.hidePanel}
+                        groupChildCount={resourceNodesByGroup.get(node.id)?.length || 0}
+                        isGroupDropTarget={dropTargetGroupId === node.id}
+                        batchExpanded={expandedBatchNodeIds.has(node.id)}
+                        showImageInfo={showImageInfo}
+                        mentionReferences={mentionReferencesByNodeId.get(node.id) || EMPTY_REFERENCES}
+                        pluginHost={pluginHost}
+                        registryVersion={nodeRegistryVersion}
+                        renderPanel={dialogNodeId === node.id ? activeRenderNodePanel : undefined}
+                        renderNodeContent={node.type === CanvasNodeType.Config ? renderNodeContentPanel : undefined}
+                        onMouseDown={handleNodeMouseDown}
+                        onSelectCapture={handleNodeSelectCapture}
+                        onHoverStart={handleNodeHoverStart}
+                        onHoverEnd={handleNodeHoverEnd}
+                        onConnectStart={handleConnectStart}
+                        onResizeStart={handleNodeResizeStart}
+                        onResize={handleNodeResize}
+                        onResizeEnd={handleNodeResizeEnd}
+                        onContentChange={handleNodeContentChange}
+                        onTitleChange={handleNodeTitleChange}
+                        onToggleBatch={toggleBatchExpanded}
+                        onSetBatchPrimary={setBatchPrimary}
+                        onDuplicateBatchImage={duplicateBatchImage}
+                        onDownloadBatchImage={downloadBatchImage}
+                        onRetryBatchImage={retryBatchImage}
+                        onDeleteBatchImage={deleteBatchImage}
+                        onRetry={handleNodeRetry}
+                        onViewImage={handleNodeViewImage}
+                        onSelectReference={activeSelectNodeReference}
+                        onContextMenu={handleNodeContextMenu}
+                    />
+                );
+                elements.set(node, element);
+            }
+            return element;
+        };
+    }, [viewport.k, selectedNodeIds, isNodeDragging, draggedNodeIds, relatedHighlight, activeNodeId, connectionTargetNodeId, connectingParams, referencePickerNodeId, referenceConnectedNodeIds, resourceNodes, isNodeResizing, dialogNodeId, selectionBox, resourceNodesByGroup, dropTargetGroupId, expandedBatchNodeIds, showImageInfo, mentionReferencesByNodeId, pluginHost, nodeRegistryVersion, activeRenderNodePanel, renderNodeContentPanel, handleNodeMouseDown, handleNodeSelectCapture, handleNodeHoverStart, handleNodeHoverEnd, handleConnectStart, handleNodeResizeStart, handleNodeResize, handleNodeResizeEnd, handleNodeContentChange, handleNodeTitleChange, toggleBatchExpanded, setBatchPrimary, duplicateBatchImage, downloadBatchImage, retryBatchImage, deleteBatchImage, handleNodeRetry, handleNodeViewImage, activeSelectNodeReference, handleNodeContextMenu]);
+
+    const connectionPaths = useMemo(() => visibleConnections.map(({ connection, from, to }) => (
+        <ConnectionPath
+            key={connection.id}
+            connection={connection}
+            from={from}
+            to={to}
+            active={selectedConnectionId === connection.id || relatedHighlight.connectionIds.has(connection.id)}
+            onSelect={handleConnectionSelect}
+            onContextMenu={handleConnectionContextMenu}
+        />
+    )), [visibleConnections, selectedConnectionId, relatedHighlight, handleConnectionSelect, handleConnectionContextMenu]);
+
+    const scene = useMemo(() => (<>
+        <svg className="absolute left-0 top-0 overflow-visible" width={1} height={1} style={{ pointerEvents: "none", zIndex: 0 }}>
+            {connectionPaths}
+            {connectingParams ? <ActiveConnectionPath node={nodeById.get(connectingParams.nodeId)} handle={connectingParams} mouseWorld={mouseWorld} target={connectionTargetNodeId ? nodeById.get(connectionTargetNodeId) : undefined} /> : null}
+        </svg>
+
+        {visibleNodes.map(renderCanvasNode)}
+    </>), [connectionPaths, connectingParams, nodeById, mouseWorld, connectionTargetNodeId, visibleNodes, renderCanvasNode]);
+
+    // Viewport frames must not rerender closed dialogs or their form/portal trees.
+    const dialogs = useMemo(() => (<>
+        <CanvasNodeInfoModal node={infoNode} open={Boolean(infoNode)} onClose={() => setInfoNodeId(null)} />
+        <CanvasSavePromptDialog draft={savePromptDraft} onClose={() => setSavePromptDraft(null)} />
+        <CanvasPluginManagerModal open={pluginManagerOpen} onClose={() => setPluginManagerOpen(false)} />
+        <CanvasCreateProjectDialog open={createProjectOpen} initialTemplateId={createTemplateId} onCancel={() => setCreateProjectOpen(false)} onCreated={(id) => { setCreateProjectOpen(false); navigate(`/canvas/${id}`); }} />
+        {insertTemplateOpen ? <CanvasTemplateInsertDialog onClose={() => setInsertTemplateOpen(false)} onInsert={insertTemplate} onCreate={(id) => { setInsertTemplateOpen(false); setCreateTemplateId(id); setCreateProjectOpen(true); }} /> : null}
+        <CanvasTemplateEditorDialog source={templateSource} onClose={() => setTemplateSource(null)} />
+        {reversePromptNodeIds ? <CanvasReversePromptDialog nodes={resourceNodes} initialNodeIds={reversePromptNodeIds} onClose={() => setReversePromptNodeIds(null)} onConfirm={createImageReversePromptNodes} /> : null}
+
+        {cropNode?.metadata?.content ? <CanvasNodeCropDialog dataUrl={cropNode.metadata.content} open={Boolean(cropNode)} onClose={() => setCropNodeId(null)} onConfirm={(crop) => void cropImageNode(cropNode!, crop)} /> : null}
+
+        {maskEditNode?.metadata?.content ? (
+            <CanvasNodeMaskEditDialog dataUrl={maskEditNode.metadata.content} open={Boolean(maskEditNode)} onClose={() => setMaskEditNodeId(null)} onConfirm={(payload) => void maskEditImageNode(maskEditNode!, payload)} />
+        ) : null}
+
+        {splitNode?.metadata?.content ? <CanvasNodeSplitDialog dataUrl={splitNode.metadata.content} open={Boolean(splitNode)} onClose={() => setSplitNodeId(null)} onConfirm={(params) => void splitImageNode(splitNode!, params)} /> : null}
+
+        {upscaleNode?.metadata?.content ? (
+            <CanvasNodeUpscaleDialog dataUrl={upscaleNode.metadata.content} open={Boolean(upscaleNode)} onClose={() => setUpscaleNodeId(null)} onConfirm={(params) => void upscaleImageNode(upscaleNode!, params)} />
+        ) : null}
+
+        <Modal title={t("canvas.projectPage.superResolve")} open={Boolean(superResolveNode?.metadata?.content)} centered footer={null} onCancel={() => setSuperResolveNodeId(null)}>
+            <div className="py-8 text-center text-base font-medium">{t("canvas.projectPage.notImplemented")}</div>
+        </Modal>
+
+        {angleNode?.metadata?.content ? <CanvasNodeAngleDialog dataUrl={angleNode.metadata.content} open={Boolean(angleNode)} onClose={() => setAngleNodeId(null)} onConfirm={(params) => void generateAngleNode(angleNode!, params)} /> : null}
+
+        <Modal
+            title={t("canvas.projectPage.imageDetails")}
+            open={Boolean(previewContent)}
+            centered
+            onCancel={() => setPreviewNodeId(null)}
+            footer={null}
+            width="auto"
+            styles={{ body: { padding: 0, display: "flex", justifyContent: "center", alignItems: "center", maxHeight: "80vh" } }}
+        >
+            {previewContent ? <img src={previewContent} alt={previewNode?.title || t("assets.kinds.image")} style={{ maxWidth: "100%", maxHeight: "80vh", objectFit: "contain" }} /> : null}
+        </Modal>
+
+        <Modal
+            title={t("canvas.projectPage.clearTitle")}
+            open={clearConfirmOpen}
+            centered
+            onCancel={() => setClearConfirmOpen(false)}
+            footer={
+                <>
+                    <Button onClick={() => setClearConfirmOpen(false)}>{t("common.cancel")}</Button>
+                    <Button danger type="primary" onClick={clearCanvas}>
+                        {t("canvas.projectPage.clear")}
+                    </Button>
+                </>
+            }
+        >
+            <p className="text-sm opacity-60">{t("canvas.projectPage.clearDescription")}</p>
+        </Modal>
+
+        <AssetPickerModal open={assetPickerOpen} onInsert={handleAssetInsert} onClose={() => setAssetPickerOpen(false)} />
+    </>), [infoNode, savePromptDraft, pluginManagerOpen, createProjectOpen, createTemplateId, navigate, insertTemplateOpen, insertTemplate, templateSource, reversePromptNodeIds, resourceNodes, createImageReversePromptNodes, cropNode, cropImageNode, maskEditNode, maskEditImageNode, splitNode, splitImageNode, upscaleNode, upscaleImageNode, superResolveNode, angleNode, generateAngleNode, previewContent, previewNode?.title, clearConfirmOpen, clearCanvas, assetPickerOpen, handleAssetInsert, t]);
+
     if (projectLoadError) return <div className="flex h-full flex-col items-center justify-center gap-4 bg-background p-6 text-foreground">
         <div role="alert" className="max-w-lg text-center"><p>{t("canvas.projectPage.loadFailed")}</p><p className="mt-2 text-sm text-muted-foreground">{projectLoadError.message}</p></div>
         <div className="flex gap-2"><Button onClick={() => setRestoreAttempt((attempt) => attempt + 1)}>{t("common.retry")}</Button><Button type="text" onClick={() => navigate("/canvas")}>{t("canvas.backToLibrary")}</Button></div>
@@ -3400,64 +3550,7 @@ function InfiniteCanvasPage() {
                     onContextMenu={preventCanvasContextMenu}
                     onDrop={handleDrop}
                 >
-                    <svg className="absolute left-0 top-0 h-[10000px] w-[10000px] overflow-visible" style={{ pointerEvents: "none", transform: "translateZ(0)", zIndex: 0 }}>
-                        {visibleConnections.map(({ connection, from, to }) => (
-                            <ConnectionPath
-                                key={connection.id}
-                                connection={connection}
-                                from={from}
-                                to={to}
-                                active={selectedConnectionId === connection.id || relatedHighlight.connectionIds.has(connection.id)}
-                                onSelect={handleConnectionSelect}
-                                onContextMenu={handleConnectionContextMenu}
-                            />
-                        ))}
-                        {connectingParams ? <ActiveConnectionPath node={nodeById.get(connectingParams.nodeId)} handle={connectingParams} mouseWorld={mouseWorld} target={connectionTargetNodeId ? nodeById.get(connectionTargetNodeId) : undefined} /> : null}
-                    </svg>
-
-                    {visibleNodes.map((node) => (
-                        <CanvasNode
-                            key={node.id}
-                            data={node}
-                            scale={viewport.k}
-                            isSelected={selectedNodeIds.has(node.id)}
-                            isRelated={relatedHighlight.nodeIds.has(node.id)}
-                            isFocusRelated={activeNodeId === node.id}
-                            isConnectionTarget={connectionTargetNodeId === node.id}
-                            isConnecting={Boolean(connectingParams)}
-                            referenceSelectionState={!referencePickerNodeId ? undefined : node.id === referencePickerNodeId ? "target" : referenceConnectedNodeIds.has(node.id) || !isCanvasReferenceNode(node, nodes) ? "disabled" : "available"}
-                            showPanel={!isNodeResizing && dialogNodeId === node.id && !selectionBox && !getNodeDefinition(node.type)?.hidePanel}
-                            groupChildCount={nodesByGroup.get(node.id)?.length || 0}
-                            isGroupDropTarget={dropTargetGroupId === node.id}
-                            batchExpanded={expandedBatchNodeIds.has(node.id)}
-                            showImageInfo={showImageInfo}
-                            mentionReferences={mentionReferencesByNodeId.get(node.id) || EMPTY_REFERENCES}
-                            pluginHost={pluginHost}
-                            registryVersion={nodeRegistryVersion}
-                            renderPanel={dialogNodeId === node.id ? renderNodePanel : undefined}
-                            renderNodeContent={node.type === CanvasNodeType.Config ? renderNodeContentPanel : undefined}
-                            onMouseDown={handleNodeMouseDown}
-                            onSelectCapture={handleNodeSelectCapture}
-                            onHoverStart={handleNodeHoverStart}
-                            onHoverEnd={handleNodeHoverEnd}
-                            onConnectStart={handleConnectStart}
-                            onResizeStart={handleNodeResizeStart}
-                            onResize={handleNodeResize}
-                            onResizeEnd={handleNodeResizeEnd}
-                            onContentChange={handleNodeContentChange}
-                            onTitleChange={handleNodeTitleChange}
-                            onToggleBatch={toggleBatchExpanded}
-                            onSetBatchPrimary={setBatchPrimary}
-                            onDuplicateBatchImage={duplicateBatchImage}
-                            onDownloadBatchImage={downloadBatchImage}
-                            onRetryBatchImage={retryBatchImage}
-                            onDeleteBatchImage={deleteBatchImage}
-                            onRetry={handleNodeRetry}
-                            onViewImage={handleNodeViewImage}
-                            onSelectReference={selectNodeReference}
-                            onContextMenu={handleNodeContextMenu}
-                        />
-                    ))}
+                    {scene}
 
                     {referencePickerNodeId ? <button type="button" className="absolute left-1/2 top-4 z-[90] -translate-x-1/2 rounded-full border px-4 py-2 text-sm font-medium shadow-lg backdrop-blur" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border }} onClick={exitNodeReferenceSelection}>{t("canvas.references.selectingHint")}</button> : null}
 
@@ -3565,62 +3658,7 @@ function InfiniteCanvasPage() {
 
                 <input ref={imageInputRef} type="file" multiple accept="image/*,video/*,audio/mpeg,audio/wav,audio/x-wav,.mp3,.wav" className="hidden" onChange={handleImageInputChange} />
 
-                <CanvasNodeInfoModal node={infoNode} open={Boolean(infoNode)} onClose={() => setInfoNodeId(null)} />
-                <CanvasSavePromptDialog draft={savePromptDraft} onClose={() => setSavePromptDraft(null)} />
-                <CanvasPluginManagerModal open={pluginManagerOpen} onClose={() => setPluginManagerOpen(false)} />
-                <CanvasCreateProjectDialog open={createProjectOpen} initialTemplateId={createTemplateId} onCancel={() => setCreateProjectOpen(false)} onCreated={(id) => { setCreateProjectOpen(false); navigate(`/canvas/${id}`); }} />
-                {insertTemplateOpen ? <CanvasTemplateInsertDialog onClose={() => setInsertTemplateOpen(false)} onInsert={insertTemplate} onCreate={(id) => { setInsertTemplateOpen(false); setCreateTemplateId(id); setCreateProjectOpen(true); }} /> : null}
-                <CanvasTemplateEditorDialog source={templateSource} onClose={() => setTemplateSource(null)} />
-                {reversePromptNodeIds ? <CanvasReversePromptDialog nodes={resourceNodes} initialNodeIds={reversePromptNodeIds} onClose={() => setReversePromptNodeIds(null)} onConfirm={createImageReversePromptNodes} /> : null}
-
-                {cropNode?.metadata?.content ? <CanvasNodeCropDialog dataUrl={cropNode.metadata.content} open={Boolean(cropNode)} onClose={() => setCropNodeId(null)} onConfirm={(crop) => void cropImageNode(cropNode!, crop)} /> : null}
-
-                {maskEditNode?.metadata?.content ? (
-                    <CanvasNodeMaskEditDialog dataUrl={maskEditNode.metadata.content} open={Boolean(maskEditNode)} onClose={() => setMaskEditNodeId(null)} onConfirm={(payload) => void maskEditImageNode(maskEditNode!, payload)} />
-                ) : null}
-
-                {splitNode?.metadata?.content ? <CanvasNodeSplitDialog dataUrl={splitNode.metadata.content} open={Boolean(splitNode)} onClose={() => setSplitNodeId(null)} onConfirm={(params) => void splitImageNode(splitNode!, params)} /> : null}
-
-                {upscaleNode?.metadata?.content ? (
-                    <CanvasNodeUpscaleDialog dataUrl={upscaleNode.metadata.content} open={Boolean(upscaleNode)} onClose={() => setUpscaleNodeId(null)} onConfirm={(params) => void upscaleImageNode(upscaleNode!, params)} />
-                ) : null}
-
-                <Modal title={t("canvas.projectPage.superResolve")} open={Boolean(superResolveNode?.metadata?.content)} centered footer={null} onCancel={() => setSuperResolveNodeId(null)}>
-                    <div className="py-8 text-center text-base font-medium">{t("canvas.projectPage.notImplemented")}</div>
-                </Modal>
-
-                {angleNode?.metadata?.content ? <CanvasNodeAngleDialog dataUrl={angleNode.metadata.content} open={Boolean(angleNode)} onClose={() => setAngleNodeId(null)} onConfirm={(params) => void generateAngleNode(angleNode!, params)} /> : null}
-
-                <Modal
-                    title={t("canvas.projectPage.imageDetails")}
-                    open={Boolean(previewContent)}
-                    centered
-                    onCancel={() => setPreviewNodeId(null)}
-                    footer={null}
-                    width="auto"
-                    styles={{ body: { padding: 0, display: "flex", justifyContent: "center", alignItems: "center", maxHeight: "80vh" } }}
-                >
-                    {previewContent ? <img src={previewContent} alt={previewNode?.title || t("assets.kinds.image")} style={{ maxWidth: "100%", maxHeight: "80vh", objectFit: "contain" }} /> : null}
-                </Modal>
-
-                <Modal
-                    title={t("canvas.projectPage.clearTitle")}
-                    open={clearConfirmOpen}
-                    centered
-                    onCancel={() => setClearConfirmOpen(false)}
-                    footer={
-                        <>
-                            <Button onClick={() => setClearConfirmOpen(false)}>{t("common.cancel")}</Button>
-                            <Button danger type="primary" onClick={clearCanvas}>
-                                {t("canvas.projectPage.clear")}
-                            </Button>
-                        </>
-                    }
-                >
-                    <p className="text-sm opacity-60">{t("canvas.projectPage.clearDescription")}</p>
-                </Modal>
-
-                <AssetPickerModal open={assetPickerOpen} onInsert={handleAssetInsert} onClose={() => setAssetPickerOpen(false)} />
+                {dialogs}
             </section>
         </main>
     );

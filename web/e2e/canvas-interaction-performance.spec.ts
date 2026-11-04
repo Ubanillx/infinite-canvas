@@ -1,4 +1,6 @@
 import type { APIRequestContext, Page } from "@playwright/test";
+import { readFile } from "node:fs/promises";
+import { strFromU8, unzipSync } from "fflate";
 import { test, expect } from "./auth";
 import type { CanvasAgentSnapshot } from "../src/lib/canvas/canvas-agent-ops";
 
@@ -126,6 +128,25 @@ test("thumbnail notifications only reach subscribers for the changed storage key
     expect(result).toEqual({ afterFirst: { first: 1, other: 0, all: 1 }, afterCached: { first: 1, other: 0, all: 1 }, afterOther: { first: 2, other: 1, all: 3 } });
 });
 
+test("concurrent image readers share downloads and failed reads can be retried", async ({ page, request }) => {
+    await seed(page, request);
+    let reads = 0;
+    await page.route("**/api/media/blob/**", async (route) => {
+        reads++;
+        await route.fulfill({ status: reads === 2 ? 503 : 200, contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>' });
+    });
+    const result = await page.evaluate(async () => {
+        const path = "/src/services/image-storage.ts";
+        const { resolveImageUrl } = await import(path);
+        const urls = await Promise.all(Array.from({ length: 20 }, () => resolveImageUrl("image:performance-shared")));
+        const failures = await Promise.allSettled(Array.from({ length: 20 }, () => resolveImageUrl("image:performance-retry")));
+        const retried = await resolveImageUrl("image:performance-retry");
+        return { unique: new Set(urls).size, rejected: failures.filter((item) => item.status === "rejected").length, retried: retried.startsWith("blob:") };
+    });
+    expect(result).toEqual({ unique: 1, rejected: 20, retried: true });
+    expect(reads).toBe(3);
+});
+
 test("mention suggestion navigation reuses caret layout and keeps keyboard selection", async ({ page, request }) => {
     await seed(page, request);
     const node = page.locator('[data-node-id="node-0"]');
@@ -164,8 +185,11 @@ test("drag and resize preserve the last position, save and undo as complete gest
     const rect = (await node.boundingBox())!;
     await page.mouse.move(rect.x + 80, rect.y + 50);
     await page.mouse.down();
+    await expect(node).toHaveCSS("will-change", "transform");
+    await expect(page.locator('[data-node-id="node-1"]')).toHaveCSS("will-change", "auto");
     await page.mouse.move(rect.x + 170, rect.y + 100, { steps: 20 });
     await page.mouse.up();
+    await expect(node).toHaveCSS("will-change", "auto");
     await expect.poll(async () => (await snapshot(page)).nodes[0].position).toEqual({ x: 190, y: 210 });
     await expect.poll(async () => (await read()).nodes[0].position).toEqual({ x: 190, y: 210 });
     await page.keyboard.press("Control+z");
@@ -207,6 +231,24 @@ test("marquee flushes the final event, and connections survive indexed hit testi
     await page.mouse.up();
     await expect.poll(async () => (await snapshot(page)).connections.map(({ fromNodeId, toNodeId }) => [fromNodeId, toNodeId])).toEqual([["node-0", "node-1"]]);
     await page.screenshot({ path: test.info().outputPath("connections.png") });
+});
+
+test("memoized sidebar exports current geometry after a node drag", async ({ page, request }) => {
+    await seed(page, request, "config");
+    await page.getByRole("button", { name: "展开面板", exact: true }).click();
+    const node = page.locator('[data-node-id="node-0"]');
+    const rect = (await node.boundingBox())!;
+    await page.mouse.move(rect.x + 30, rect.y + 15);
+    await page.mouse.down();
+    await page.mouse.move(rect.x + 100, rect.y + 55, { steps: 12 });
+    await page.mouse.up();
+    await expect.poll(async () => (await snapshot(page)).nodes[0].position).toEqual({ x: 170, y: 200 });
+    await page.getByRole("button", { name: "选择", exact: true }).click();
+    await page.locator("[data-node-item]").filter({ has: page.getByText("Node 0", { exact: true }) }).getByRole("button").first().click();
+    const downloading = page.waitForEvent("download");
+    await page.getByRole("button", { name: "导出所选", exact: true }).click();
+    const files = unzipSync(await readFile((await (await downloading).path())!));
+    expect(JSON.parse(strFromU8(files["Node 0.json"])).position).toEqual({ x: 170, y: 200 });
 });
 
 test("zoom slider, minimap and side-panel resize commit their final input", async ({ page, request }) => {

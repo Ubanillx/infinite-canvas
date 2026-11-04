@@ -228,7 +228,8 @@ export function InfiniteCanvas({ containerRef, viewport, tool, backgroundMode = 
             <div
                 className="absolute origin-top-left"
                 style={{
-                    transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.k})`,
+                    transform: `translate3d(${viewport.x}px, ${viewport.y}px, 0) scale(${viewport.k})`,
+                    willChange: "transform",
                 }}
             >
                 {children}
@@ -250,11 +251,13 @@ const CanvasGrid = React.memo(function CanvasGrid({ viewport, mode }: { viewport
 
     return (
         <div
-            className="pointer-events-none absolute inset-0 opacity-40"
+            className="pointer-events-none absolute opacity-40"
             style={{
+                inset: -gridSize,
                 backgroundImage,
                 backgroundSize: `${gridSize}px ${gridSize}px`,
-                backgroundPosition: `${x}px ${y}px`,
+                transform: `translate3d(${x}px, ${y}px, 0)`,
+                willChange: "transform",
             }}
         />
     );

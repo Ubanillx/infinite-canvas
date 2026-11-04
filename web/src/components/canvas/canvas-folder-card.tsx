@@ -86,7 +86,7 @@ export function CanvasFolderCard({
                 ) : (
                     <>
                         <Button type="text" size="small" shape="circle" icon={<Pencil className="size-4" />} onClick={onStartEditing} aria-label={t("canvas.folder.rename")} />
-                        <Button type="text" size="small" shape="circle" icon={<Trash2 className="size-4" />} onClick={onDelete} aria-label={t("canvas.folder.delete")} />
+                        <Button type="text" size="small" shape="circle" danger icon={<Trash2 className="size-4" />} onClick={onDelete} aria-label={t("canvas.folder.delete")} />
                     </>
                 )}
             </div>

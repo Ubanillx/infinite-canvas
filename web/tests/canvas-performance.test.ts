@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 
 import { createFrameTask } from "../src/lib/canvas/frame-task";
 import { getCanvasConnectionIndex, getCanvasNodeIndex } from "../src/lib/canvas/canvas-graph-index";
+import { getCanvasConnectionGeometry } from "../src/lib/canvas/canvas-connection-geometry";
 import { findContainingGroupId, findGroupDropTarget, nodeBounds } from "../src/lib/canvas/canvas-node-geometry";
 import { CanvasNodeType, type CanvasNodeData } from "../src/types/canvas";
 
@@ -112,6 +113,25 @@ test("connection indexes retain source order and never mutate previous snapshots
     expect(index.outgoing.get("a")).toEqual([connections[1]]);
     expect(getCanvasConnectionIndex(connections.slice(1)).outgoing.has("b")).toBe(false);
     expect(index.outgoing.has("b")).toBe(true);
+});
+
+test("connection geometry only recomputes changed endpoints and preserves undo snapshots", () => {
+    const a = node("a");
+    const b = { ...node("b"), position: { x: 600, y: 240 } };
+    const c = node("c");
+    const d = node("d");
+    const curve = getCanvasConnectionGeometry(a, b);
+    const unrelated = getCanvasConnectionGeometry(c, d);
+    expect(getCanvasConnectionGeometry(a, b)).toBe(curve);
+    const moved = { ...a, position: { x: -100, y: -50 } };
+    expect(getCanvasConnectionGeometry(moved, b)).not.toBe(curve);
+    expect(getCanvasConnectionGeometry(a, { ...b, width: 320, height: 280 }).path).not.toBe(curve.path);
+    expect(getCanvasConnectionGeometry(c, d)).toBe(unrelated);
+    expect(getCanvasConnectionGeometry(a, b)).toBe(curve);
+    expect(curve).toEqual({ path: "M 240 90 C 420 90, 420 330, 600 330", left: 240, right: 600, top: 90, bottom: 330 });
+    const backwards = getCanvasConnectionGeometry(b, a);
+    expect(backwards.left).toBeLessThan(a.position.x);
+    expect(backwards.right).toBeGreaterThan(b.position.x + b.width);
 });
 
 test("resource snapshots reuse builtin movement and resize but invalidate content, membership and ordering", () => {
