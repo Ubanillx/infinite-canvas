@@ -1,10 +1,13 @@
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 
+import { localLoginAllowed } from "./keycloak";
+
 export type SqlExecutor = { query: (sql: string, params?: unknown[]) => Promise<Record<string, unknown>[]> };
 
-export type DbUser = { id: string; username: string; displayName: string; createdAt: string };
+export type DbUser = { id: string; username: string; displayName: string; isAdmin: boolean; createdAt: string };
 export type SessionUser = DbUser & { sessionTokenHash: string };
+export type SsoIdentity = { provider: string; subject: string; username: string; displayName: string };
 
 let executorPromise: Promise<SqlExecutor> | undefined;
 let poolInstance: Pool | undefined;
@@ -44,12 +47,21 @@ async function ensureSchema(pool: Pool) {
             password_hash TEXT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL
         );
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE;
         CREATE TABLE IF NOT EXISTS sessions (
             token_hash TEXT PRIMARY KEY,
             user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             expires_at TIMESTAMPTZ NOT NULL,
             created_at TIMESTAMPTZ NOT NULL,
             last_seen_at TIMESTAMPTZ NOT NULL
+        );
+        ALTER TABLE sessions ADD COLUMN IF NOT EXISTS id_token TEXT;
+        CREATE TABLE IF NOT EXISTS user_identities (
+            provider TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            created_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (provider, subject)
         );
         CREATE TABLE IF NOT EXISTS workspaces (
             id TEXT PRIMARY KEY,
@@ -150,10 +162,34 @@ async function ensureSchema(pool: Pool) {
             finished_at TIMESTAMPTZ NOT NULL
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower ON users(lower(username));
+        CREATE INDEX IF NOT EXISTS idx_user_identities_user ON user_identities(user_id);
         CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
         CREATE INDEX IF NOT EXISTS idx_workspace_members_user ON workspace_members(user_id);
         CREATE INDEX IF NOT EXISTS idx_workspace_invites_workspace ON workspace_invites(workspace_id);
     `);
+    await ensureAdminBootstrap(pool);
+}
+
+/** 环境变量列出的用户名始终保留管理员身份，便于统一登录或应急恢复。 */
+export function configuredAdminUsernames() {
+    return (process.env.INFINITE_CANVAS_ADMIN_USERNAMES || "")
+        .split(",")
+        .map((username) => username.trim().toLowerCase())
+        .filter(Boolean);
+}
+
+export function isConfiguredAdmin(username: string) {
+    return configuredAdminUsernames().includes(username.trim().toLowerCase());
+}
+
+async function ensureAdminBootstrap(pool: Pool) {
+    const usernames = configuredAdminUsernames();
+    if (usernames.length) await pool.query("UPDATE users SET is_admin = TRUE WHERE lower(username) = ANY($1::text[])", [usernames]);
+    // 没有管理员时提升最早可登录的用户；仅统一登录时跳过无法再登录的旧本地账号。
+    const firstEligibleUser = localLoginAllowed()
+        ? "SELECT id FROM users ORDER BY created_at, id LIMIT 1"
+        : "SELECT u.id FROM users u JOIN user_identities i ON i.user_id = u.id ORDER BY u.created_at, u.id LIMIT 1";
+    await pool.query(`UPDATE users SET is_admin = TRUE WHERE id = (${firstEligibleUser}) AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin)`);
 }
 
 /** 事务回调只在同一连接内执行，避免用连接池时语句散落到不同连接。 */
@@ -199,18 +235,19 @@ export async function hashToken(value: string) {
     return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
-export async function findSessionUser(db: SqlExecutor, token: string) {
+export async function findSessionUser(db: SqlExecutor, token: string, ssoOnly = false) {
     const tokenHash = await hashToken(token);
-    const row = await queryOne<{ id: string; username: string; display_name: string; created_at: Date; token_hash: string }>(
+    const row = await queryOne<{ id: string; username: string; display_name: string; is_admin: boolean; created_at: Date; token_hash: string }>(
         db,
-        `SELECT u.id, u.username, u.display_name, u.created_at, s.token_hash
+        `SELECT u.id, u.username, u.display_name, u.is_admin, u.created_at, s.token_hash
          FROM sessions s JOIN users u ON u.id = s.user_id
-         WHERE s.token_hash = $1 AND s.expires_at > now() LIMIT 1`,
+         WHERE s.token_hash = $1 AND s.expires_at > now() AND ($2 = FALSE OR s.id_token IS NOT NULL) LIMIT 1`,
         tokenHash,
+        ssoOnly,
     );
     if (!row) return null;
     await execute(db, "UPDATE sessions SET last_seen_at = now() WHERE token_hash = $1", tokenHash);
-    return { id: row.id, username: row.username, displayName: row.display_name, createdAt: toIso(row.created_at), sessionTokenHash: row.token_hash } satisfies SessionUser;
+    return { id: row.id, username: row.username, displayName: row.display_name, isAdmin: row.is_admin, createdAt: toIso(row.created_at), sessionTokenHash: row.token_hash } satisfies SessionUser;
 }
 
 export function hashPassword(password: string) {
@@ -225,6 +262,57 @@ export function verifyPassword(password: string, encoded: string) {
     const actual = scryptSync(password, salt, 64);
     const target = Buffer.from(expected, "base64url");
     return actual.length === target.length && timingSafeEqual(actual, target);
+}
+
+function ssoUsername(value: string) {
+    const cleaned = value
+        .normalize("NFKC")
+        .replace(/[^\p{L}\p{N}._-]+/gu, "_")
+        .replace(/^[._-]+|[._-]+$/g, "")
+        .slice(0, 64)
+        .replace(/[._-]+$/g, "");
+    return cleaned.length >= 3 ? cleaned : `sso_${randomUUID().slice(0, 8)}`;
+}
+
+async function availableUsername(tx: SqlExecutor, base: string) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+        const suffix = attempt ? `-${attempt + 1}` : "";
+        const candidate = `${base.slice(0, 64 - suffix.length)}${suffix}`;
+        if (!(await queryOne(tx, "SELECT 1 FROM users WHERE lower(username) = lower($1)", candidate))) return candidate;
+    }
+    return `sso_${randomUUID().slice(0, 8)}`;
+}
+
+export async function findOrCreateSsoUser(identity: SsoIdentity) {
+    return withTransaction(async (tx) => {
+        await execute(tx, "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)", `${identity.provider}:${identity.subject}`);
+        await execute(tx, "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)", "infinite-canvas:first-user");
+        const existing = await queryOne<{ id: string; username: string; display_name: string; is_admin: boolean; created_at: Date }>(
+            tx,
+            `SELECT u.id, u.username, u.display_name, u.is_admin, u.created_at
+             FROM user_identities i JOIN users u ON u.id = i.user_id
+             WHERE i.provider = $1 AND i.subject = $2`,
+            identity.provider,
+            identity.subject,
+        );
+        if (existing) return { id: existing.id, username: existing.username, displayName: existing.display_name, isAdmin: existing.is_admin, createdAt: toIso(existing.created_at) } satisfies DbUser;
+
+        const displayName = (identity.displayName.trim() || identity.username).slice(0, 80);
+        const username = await availableUsername(tx, ssoUsername(identity.username));
+        const workspaceName = `${displayName.slice(0, 76)}的工作区`;
+        const now = isoNow();
+        const userId = newId();
+        const workspaceId = newId();
+        const firstUser = !(await queryOne(tx, "SELECT 1 FROM users LIMIT 1"));
+        const firstSsoUser = !(await queryOne(tx, "SELECT 1 FROM user_identities LIMIT 1"));
+        const isAdmin = isConfiguredAdmin(username) || (localLoginAllowed() ? firstUser : firstSsoUser);
+        // 统一登录用户没有本地密码，空哈希会让 verifyPassword 始终失败。
+        await execute(tx, "INSERT INTO users (id, username, display_name, password_hash, is_admin, created_at) VALUES ($1, $2, $3, $4, $5, $6)", userId, username, displayName, "", isAdmin, now);
+        await execute(tx, "INSERT INTO workspaces (id, name, owner_user_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)", workspaceId, workspaceName, userId, now, now);
+        await execute(tx, "INSERT INTO workspace_members (workspace_id, user_id, role, created_at) VALUES ($1, $2, 'owner', $3)", workspaceId, userId, now);
+        await execute(tx, "INSERT INTO user_identities (provider, subject, user_id, created_at) VALUES ($1, $2, $3, $4)", identity.provider, identity.subject, userId, now);
+        return { id: userId, username, displayName, isAdmin, createdAt: now } satisfies DbUser;
+    });
 }
 
 export function isoNow() {

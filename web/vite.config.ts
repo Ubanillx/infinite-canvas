@@ -3,7 +3,7 @@ import { lookup } from "node:dns/promises";
 import { readdirSync, readFileSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
-import { request as httpsRequest } from "node:https";
+import { request as httpsRequest, type RequestOptions as HttpsRequestOptions } from "node:https";
 import { isIP } from "node:net";
 import { dirname, resolve } from "node:path";
 import { Transform } from "node:stream";
@@ -15,7 +15,8 @@ import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 
 import { parseChangelog } from "./src/lib/release";
-import { execute, findSessionUser, getPool, hashPassword, hashToken, isoNow, newId, newSessionToken, queryMany, queryOne, toIso, verifyPassword, withTransaction, type DbUser, type SessionUser, type SqlExecutor } from "./src/server/db";
+import { execute, findOrCreateSsoUser, findSessionUser, getPool, hashPassword, hashToken, isConfiguredAdmin, isoNow, newId, newSessionToken, queryMany, queryOne, toIso, verifyPassword, withTransaction, type DbUser, type SessionUser, type SqlExecutor } from "./src/server/db";
+import { completeKeycloakAuthorization, createKeycloakAuthorization, isKeycloakEnabled, keycloakLogoutUrl, keycloakProfile, localLoginAllowed, type KeycloakTransaction } from "./src/server/keycloak";
 import { copyMediaObject, getMediaObject, headMediaObject, isMissingObject, mediaObjectKey, putMediaStream } from "./src/server/object-storage";
 import { extractMediaReferences, MEDIA_REFERENCE_DOMAINS, MediaReferenceError, replaceDomainMediaReferences, runMediaGcDryRun } from "./src/server/media-references";
 import { completeMediaIntent, createMediaIntent, failMediaIntent, type MediaIntentInput } from "./src/server/media-intents";
@@ -38,7 +39,7 @@ const maxServerConfigBytes = 1024 * 1024;
 const aiProxyPath = "/api/ai";
 const maxAiRequestBytes = 64 * 1024 * 1024;
 const maxMediaBytes = 100 * 1024 * 1024;
-const protectedApiPaths = ["/api/auth", "/api/config", "/api/workspaces", "/api/data", "/api/prompts", "/api/media", "/api/prompt-source", "/api/remote-media", aiProxyPath, "/api/webdav", "/api/image-proxy", canvasAgentProxyPath];
+const protectedApiPaths = ["/api/auth", "/api/config", "/api/workspaces", "/api/admin", "/api/data", "/api/prompts", "/api/media", "/api/prompt-source", "/api/remote-media", aiProxyPath, "/api/webdav", "/api/image-proxy", canvasAgentProxyPath];
 const allowedNetworks = (process.env.INFINITE_CANVAS_ALLOWED_NETWORKS || "127.0.0.1,::1,192.168.0.0/22,172.16.0.0/12")
     .split(",")
     .map((value) => value.trim())
@@ -46,6 +47,8 @@ const allowedNetworks = (process.env.INFINITE_CANVAS_ALLOWED_NETWORKS || "127.0.
 
 const authCookieName = "infinite_canvas_session";
 const authCookieMaxAgeSeconds = 60 * 60 * 24 * 30;
+const oidcCookieName = "infinite_canvas_oidc";
+const oidcCookieMaxAgeSeconds = 10 * 60;
 type AuthenticatedRequest = IncomingMessage & { infiniteCanvasUser?: SessionUser };
 
 function sessionContext(): Plugin {
@@ -54,7 +57,7 @@ function sessionContext(): Plugin {
         if (token) {
             try {
                 const db = await getPool();
-                (req as AuthenticatedRequest).infiniteCanvasUser = (await findSessionUser(db, token)) || undefined;
+                (req as AuthenticatedRequest).infiniteCanvasUser = (await findSessionUser(db, token, isKeycloakEnabled() && !localLoginAllowed())) || undefined;
             } catch (error) {
                 console.error("Session lookup failed", error);
             }
@@ -65,15 +68,96 @@ function sessionContext(): Plugin {
 }
 
 function parseCookie(value: string) {
-    return Object.fromEntries(value.split(";").map((item) => item.trim().split("=")).filter(([key, val]) => key && val).map(([key, ...rest]) => [key, decodeURIComponent(rest.join("="))]));
+    return Object.fromEntries(value.split(";").map((item) => item.trim().split("=")).filter(([key, val]) => key && val).map(([key, ...rest]) => {
+        const raw = rest.join("=");
+        try {
+            return [key, decodeURIComponent(raw)];
+        } catch {
+            return [key, raw];
+        }
+    }));
 }
 
-function setSessionCookie(res: ServerResponse, token: string, maxAge = authCookieMaxAgeSeconds) {
-    res.setHeader("Set-Cookie", `${authCookieName}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`);
+function appendSetCookie(res: ServerResponse, cookie: string) {
+    const existing = res.getHeader("Set-Cookie");
+    res.setHeader("Set-Cookie", existing ? [...(Array.isArray(existing) ? existing : [String(existing)]), cookie] : cookie);
+}
+
+function setSessionCookie(res: ServerResponse, token: string, maxAge = authCookieMaxAgeSeconds, secure = false) {
+    appendSetCookie(res, `${authCookieName}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? "; Secure" : ""}`);
+}
+
+function oidcCookie(transaction: KeycloakTransaction | undefined, maxAge = oidcCookieMaxAgeSeconds, secure = false) {
+    const value = transaction ? Buffer.from(JSON.stringify(transaction), "utf8").toString("base64url") : "";
+    return `${oidcCookieName}=${value}; Path=/api/auth/keycloak; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? "; Secure" : ""}`;
+}
+
+function parseOidcCookie(req: IncomingMessage) {
+    const raw = parseCookie(req.headers.cookie || "")[oidcCookieName];
+    if (!raw) return null;
+    try {
+        const value = JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as Partial<KeycloakTransaction>;
+        if (typeof value.state !== "string" || typeof value.nonce !== "string" || typeof value.codeVerifier !== "string" || typeof value.redirect !== "string" || typeof value.redirectUri !== "string") return null;
+        const redirectUri = new URL(value.redirectUri);
+        if (redirectUri.protocol !== "https:" && redirectUri.protocol !== "http:") return null;
+        return value as KeycloakTransaction;
+    } catch {
+        return null;
+    }
+}
+
+function headerValue(value: string | string[] | undefined) {
+    return Array.isArray(value) ? value[0] || "" : value || "";
+}
+
+function publicOrigin(req: IncomingMessage) {
+    const configured = process.env.KEYCLOAK_REDIRECT_URI?.trim();
+    if (configured) {
+        try {
+            const url = new URL(configured);
+            if (url.protocol === "https:" || url.protocol === "http:") return url.origin;
+        } catch {
+            // 配置无效时回退到请求地址，由 Keycloak 的回调白名单兜底。
+        }
+    }
+    const forwardedProto = headerValue(req.headers["x-forwarded-proto"]).split(",")[0].trim().toLowerCase();
+    const forwardedHost = headerValue(req.headers["x-forwarded-host"]).split(",")[0].trim();
+    const host = forwardedHost || headerValue(req.headers.host) || "localhost";
+    const secure = forwardedProto ? forwardedProto === "https" : Boolean((req.socket as { encrypted?: boolean }).encrypted);
+    return `${secure ? "https" : "http"}://${host}`;
+}
+
+function safeRedirectPath(value: string | null) {
+    if (!value || value.length > 2048) return "/";
+    try {
+        const url = new URL(value, "http://localhost");
+        return url.origin === "http://localhost" ? `${url.pathname}${url.search}${url.hash}` : "/";
+    } catch {
+        return "/";
+    }
+}
+
+function redirectTo(res: ServerResponse, location: string) {
+    res.statusCode = 302;
+    res.setHeader("Location", location);
+    res.setHeader("Cache-Control", "no-store");
+    res.end();
+}
+
+function redirectAuthError(res: ServerResponse, code: string) {
+    redirectTo(res, `/?auth_error=${encodeURIComponent(code)}`);
+}
+
+async function createSession(req: IncomingMessage, res: ServerResponse, db: SqlExecutor, userId: string, idToken?: string) {
+    const now = isoNow();
+    const token = newSessionToken();
+    await execute(db, "INSERT INTO sessions (token_hash, user_id, expires_at, created_at, last_seen_at, id_token) VALUES ($1, $2, $3, $4, $5, $6)", await hashToken(token), userId, new Date(Date.now() + authCookieMaxAgeSeconds * 1000).toISOString(), now, now, idToken || null);
+    setSessionCookie(res, token, authCookieMaxAgeSeconds, publicOrigin(req).startsWith("https://"));
+    return token;
 }
 
 function publicUser(user: DbUser) {
-    return { id: user.id, username: user.username, displayName: user.displayName, createdAt: user.createdAt };
+    return { id: user.id, username: user.username, displayName: user.displayName, isAdmin: user.isAdmin, createdAt: user.createdAt };
 }
 
 function authAccess(): Plugin {
@@ -84,6 +168,8 @@ function authAccess(): Plugin {
         try {
             const db = await getPool();
             const current = (req as AuthenticatedRequest).infiniteCanvasUser;
+            const localAuthBlocked = !localLoginAllowed();
+            if (localAuthBlocked && req.method === "POST" && (requestUrl.pathname === "/api/auth/register" || requestUrl.pathname === "/api/auth/login")) return sendJson(res, 403, { error: "已启用统一登录，请使用 Keycloak 登录" });
             if (requestUrl.pathname === "/api/auth/register" && req.method === "POST") {
                 const body = await readJsonBody(req);
                 const username = typeof body.username === "string" ? body.username.trim() : "";
@@ -95,38 +181,79 @@ function authAccess(): Plugin {
                 const now = isoNow();
                 const userId = newId();
                 const workspaceId = newId();
+                let userIsAdmin = isConfiguredAdmin(username);
                 await withTransaction(async (tx) => {
-                    await execute(tx, "INSERT INTO users (id, username, display_name, password_hash, created_at) VALUES ($1, $2, $3, $4, $5)", userId, username, displayName, hashPassword(password), now);
+                    await execute(tx, "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)", "infinite-canvas:first-user");
+                    userIsAdmin ||= !(await queryOne(tx, "SELECT 1 FROM users LIMIT 1"));
+                    await execute(tx, "INSERT INTO users (id, username, display_name, password_hash, is_admin, created_at) VALUES ($1, $2, $3, $4, $5, $6)", userId, username, displayName, hashPassword(password), userIsAdmin, now);
                     await execute(tx, "INSERT INTO workspaces (id, name, owner_user_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)", workspaceId, workspaceName, userId, now, now);
                     await execute(tx, "INSERT INTO workspace_members (workspace_id, user_id, role, created_at) VALUES ($1, $2, 'owner', $3)", workspaceId, userId, now);
                 });
-                const user = { id: userId, username, displayName, createdAt: now } satisfies DbUser;
-                const token = newSessionToken();
-                await execute(db, "INSERT INTO sessions (token_hash, user_id, expires_at, created_at, last_seen_at) VALUES ($1, $2, $3, $4, $5)", await hashToken(token), userId, new Date(Date.now() + authCookieMaxAgeSeconds * 1000).toISOString(), now, now);
-                setSessionCookie(res, token);
+                const user = { id: userId, username, displayName, isAdmin: userIsAdmin, createdAt: now } satisfies DbUser;
+                await createSession(req, res, db, userId);
                 return sendJson(res, 201, { user: publicUser(user), workspaces: [{ id: workspaceId, name: workspaceName, role: "owner", createdAt: now }] });
             }
             if (requestUrl.pathname === "/api/auth/login" && req.method === "POST") {
                 const body = await readJsonBody(req);
                 const username = typeof body.username === "string" ? body.username.trim() : "";
                 const password = typeof body.password === "string" ? body.password : "";
-                const row = await queryOne<{ id: string; username: string; display_name: string; password_hash: string; created_at: Date }>(db, "SELECT id, username, display_name, password_hash, created_at FROM users WHERE lower(username) = lower($1)", username);
+                const row = await queryOne<{ id: string; username: string; display_name: string; is_admin: boolean; password_hash: string; created_at: Date }>(db, "SELECT id, username, display_name, is_admin, password_hash, created_at FROM users WHERE lower(username) = lower($1)", username);
                 if (!row || !verifyPassword(password, row.password_hash)) return sendJson(res, 401, { error: "用户名或密码不正确" });
-                const now = isoNow();
-                const token = newSessionToken();
-                await execute(db, "INSERT INTO sessions (token_hash, user_id, expires_at, created_at, last_seen_at) VALUES ($1, $2, $3, $4, $5)", await hashToken(token), row.id, new Date(Date.now() + authCookieMaxAgeSeconds * 1000).toISOString(), now, now);
-                setSessionCookie(res, token);
-                return sendJson(res, 200, { user: { id: row.id, username: row.username, displayName: row.display_name, createdAt: toIso(row.created_at) }, workspaces: await listUserWorkspaces(db, row.id) });
+                await createSession(req, res, db, row.id);
+                return sendJson(res, 200, { user: { id: row.id, username: row.username, displayName: row.display_name, isAdmin: row.is_admin, createdAt: toIso(row.created_at) }, workspaces: await listUserWorkspaces(db, row.id) });
+            }
+            if (requestUrl.pathname === "/api/auth/keycloak/login" && req.method === "GET") {
+                if (!isKeycloakEnabled()) return redirectAuthError(res, "keycloak_disabled");
+                const origin = publicOrigin(req);
+                try {
+                    const { url, transaction } = await createKeycloakAuthorization(origin, safeRedirectPath(requestUrl.searchParams.get("redirect")));
+                    appendSetCookie(res, oidcCookie(transaction, oidcCookieMaxAgeSeconds, origin.startsWith("https://")));
+                    return redirectTo(res, url.href);
+                } catch (error) {
+                    console.error("Keycloak login failed", error instanceof Error ? error.message : error);
+                    return redirectAuthError(res, "keycloak_unavailable");
+                }
+            }
+            if (requestUrl.pathname === "/api/auth/keycloak/callback" && req.method === "GET") {
+                const origin = publicOrigin(req);
+                const secure = origin.startsWith("https://");
+                const transaction = parseOidcCookie(req);
+                appendSetCookie(res, oidcCookie(undefined, 0, secure));
+                if (!transaction) return redirectAuthError(res, "keycloak_state");
+                try {
+                    const callbackUrl = new URL(transaction.redirectUri);
+                    callbackUrl.search = new URL(req.url || "/", "http://localhost").search;
+                    const { claims, idToken } = await completeKeycloakAuthorization(callbackUrl, transaction);
+                    const profile = keycloakProfile(claims);
+                    if (!profile) return redirectAuthError(res, "keycloak_profile");
+                    const user = await findOrCreateSsoUser({ provider: "keycloak", ...profile });
+                    await createSession(req, res, db, user.id, idToken);
+                    return redirectTo(res, safeRedirectPath(transaction.redirect));
+                } catch (error) {
+                    console.error("Keycloak callback failed", error instanceof Error ? error.message : error);
+                    return redirectAuthError(res, "keycloak_failed");
+                }
             }
             if (requestUrl.pathname === "/api/auth/logout" && req.method === "POST") {
                 const token = parseCookie(req.headers.cookie || "")[authCookieName];
-                if (token) await execute(db, "DELETE FROM sessions WHERE token_hash = $1", await hashToken(token));
-                setSessionCookie(res, "", 0);
-                return sendJson(res, 200, { ok: true });
+                const tokenHash = token ? await hashToken(token) : "";
+                const session = tokenHash ? await queryOne<{ id_token: string | null }>(db, "SELECT id_token FROM sessions WHERE token_hash = $1", tokenHash) : null;
+                if (tokenHash) await execute(db, "DELETE FROM sessions WHERE token_hash = $1", tokenHash);
+                setSessionCookie(res, "", 0, publicOrigin(req).startsWith("https://"));
+                let logoutUrl: string | null = null;
+                if (session?.id_token && isKeycloakEnabled()) {
+                    try {
+                        logoutUrl = await keycloakLogoutUrl(publicOrigin(req), session.id_token);
+                    } catch (error) {
+                        console.error("Keycloak logout failed", error instanceof Error ? error.message : error);
+                    }
+                }
+                return sendJson(res, 200, { ok: true, logoutUrl });
             }
             if (requestUrl.pathname === "/api/auth/me" && req.method === "GET") {
-                if (!current) return sendJson(res, 200, { user: null, workspaces: [] });
-                return sendJson(res, 200, { user: publicUser(current), workspaces: await listUserWorkspaces(db, current.id) });
+                const keycloak = { enabled: isKeycloakEnabled(), localLogin: localLoginAllowed() };
+                if (!current) return sendJson(res, 200, { user: null, workspaces: [], keycloak });
+                return sendJson(res, 200, { user: publicUser(current), workspaces: await listUserWorkspaces(db, current.id), keycloak });
             }
             return sendJson(res, 405, { error: "Method not allowed" });
         } catch (error) {
@@ -186,7 +313,11 @@ async function workspaceContext(req: IncomingMessage, requestUrl = new URL(req.u
     if (!id || !user) return null;
     const db = await getPool();
     const row = await queryOne<{ id: string; name: string; role: WorkspaceContext["role"]; created_at: Date }>(db, "SELECT w.id, w.name, m.role, w.created_at FROM workspaces w JOIN workspace_members m ON m.workspace_id = w.id WHERE w.id = $1 AND m.user_id = $2", id, user.id);
-    return row ? { id: row.id, name: row.name, role: row.role, userId: user.id, createdAt: toIso(row.created_at) } : null;
+    if (row) return { id: row.id, name: row.name, role: row.role, userId: user.id, createdAt: toIso(row.created_at) };
+    if (!user.isAdmin) return null;
+    // 管理员可以只读进入任意工作区；写入仍由成员关系校验。
+    const workspace = await queryOne<{ id: string; name: string; created_at: Date }>(db, "SELECT id, name, created_at FROM workspaces WHERE id = $1", id);
+    return workspace ? { id: workspace.id, name: workspace.name, role: "viewer", userId: user.id, createdAt: toIso(workspace.created_at) } : null;
 }
 
 function canWriteWorkspace(context: WorkspaceContext) {
@@ -399,7 +530,7 @@ function workspacePromptsAccess(): Plugin {
                 if (!row) return sendJson(res, 404, { error: "示例图不存在" });
                 if (!row.shared) {
                     if (workspaceIdFromRequest(req) !== row.workspace_id) return sendJson(res, 403, { error: "无权查看示例图" });
-                    if (!(await queryOne(db, "SELECT 1 FROM workspace_members WHERE workspace_id = $1 AND user_id = $2", row.workspace_id, user.id))) return sendJson(res, 403, { error: "无权查看示例图" });
+                    if (!user.isAdmin && !(await queryOne(db, "SELECT 1 FROM workspace_members WHERE workspace_id = $1 AND user_id = $2", row.workspace_id, user.id))) return sendJson(res, 403, { error: "无权查看示例图" });
                 }
                 res.setHeader("Content-Type", row.mime_type);
                 res.setHeader("X-Content-Type-Options", "nosniff");
@@ -651,6 +782,115 @@ function summarizeWorkspaceCanvas(payload: string | null) {
     }
 }
 
+function adminAccess(): Plugin {
+    const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+        const requestUrl = new URL(req.url || "/", "http://localhost");
+        if (!requestUrl.pathname.startsWith("/api/admin")) return next();
+        res.setHeader("Cache-Control", "no-store");
+        const user = (req as AuthenticatedRequest).infiniteCanvasUser;
+        if (!user) return sendJson(res, 401, { error: "请先登录" });
+        if (!user.isAdmin) return sendJson(res, 403, { error: "仅管理员可以访问" });
+        try {
+            const db = await getPool();
+            if (requestUrl.pathname === "/api/admin/overview" && req.method === "GET") {
+                const users = await queryMany<{ id: string; username: string; display_name: string; is_admin: boolean; created_at: Date; workspace_count: number }>(
+                    db,
+                    `SELECT u.id, u.username, u.display_name, u.is_admin, u.created_at,
+                        (SELECT COUNT(*) FROM workspace_members m WHERE m.user_id = u.id)::int AS workspace_count
+                     FROM users u ORDER BY u.created_at, u.id`,
+                );
+                const workspaces = await queryMany<{
+                    id: string; name: string; owner_username: string | null; owner_display_name: string | null;
+                    created_at: Date; activity_at: Date; member_count: number; canvas_payload: string | null;
+                    data_bytes: string; media_bytes: string; prompt_image_bytes: string; admin_role: WorkspaceContext["role"] | null;
+                }>(
+                    db,
+                    `SELECT w.id, w.name, owner.username AS owner_username, owner.display_name AS owner_display_name,
+                        w.created_at,
+                        GREATEST(w.updated_at,
+                            COALESCE((SELECT MAX(d.updated_at) FROM workspace_data d WHERE d.workspace_id = w.id), w.updated_at),
+                            COALESCE((SELECT MAX(f.updated_at) FROM media_files f WHERE f.workspace_id = w.id), w.updated_at),
+                            COALESCE((SELECT MAX(p.updated_at) FROM workspace_prompts p WHERE p.workspace_id = w.id), w.updated_at)
+                        ) AS activity_at,
+                        (SELECT COUNT(*) FROM workspace_members m WHERE m.workspace_id = w.id)::int AS member_count,
+                        (SELECT d.payload FROM workspace_data d WHERE d.workspace_id = w.id AND d.domain = 'canvas') AS canvas_payload,
+                        (SELECT COALESCE(SUM(octet_length(d.payload)), 0) FROM workspace_data d WHERE d.workspace_id = w.id)::bigint AS data_bytes,
+                        (SELECT COALESCE(SUM(f.bytes), 0) FROM media_files f WHERE f.workspace_id = w.id)::bigint AS media_bytes,
+                        (SELECT COALESCE(SUM(octet_length(i.image)), 0) FROM workspace_prompts p JOIN workspace_prompt_images i ON i.prompt_id = p.id WHERE p.workspace_id = w.id)::bigint AS prompt_image_bytes,
+                        current_member.role AS admin_role
+                     FROM workspaces w
+                     LEFT JOIN users owner ON owner.id = w.owner_user_id
+                     LEFT JOIN workspace_members current_member ON current_member.workspace_id = w.id AND current_member.user_id = $1
+                     ORDER BY activity_at DESC, w.id`,
+                    user.id,
+                );
+                const workspaceItems = workspaces.map((row) => {
+                    const summary = summarizeWorkspaceCanvas(row.canvas_payload) || { canvasCount: 0, folderCount: 0, recentCanvasTitle: null };
+                    return {
+                        id: row.id, name: row.name, createdAt: toIso(row.created_at), updatedAt: toIso(row.activity_at),
+                        owner: row.owner_username ? { username: row.owner_username, displayName: row.owner_display_name || row.owner_username } : null,
+                        role: row.admin_role || "viewer", memberCount: Number(row.member_count),
+                        canvasCount: summary.canvasCount, folderCount: summary.folderCount, recentCanvasTitle: summary.recentCanvasTitle,
+                        dataBytes: Number(row.data_bytes) + Number(row.prompt_image_bytes), mediaBytes: Number(row.media_bytes),
+                    };
+                });
+                return sendJson(res, 200, {
+                    users: users.map((row) => ({ id: row.id, username: row.username, displayName: row.display_name, isAdmin: row.is_admin, envAdmin: isConfiguredAdmin(row.username), workspaceCount: Number(row.workspace_count), createdAt: toIso(row.created_at) })),
+                    workspaces: workspaceItems,
+                    totals: {
+                        users: users.length,
+                        admins: users.filter((row) => row.is_admin).length,
+                        workspaces: workspaceItems.length,
+                        canvases: workspaceItems.reduce((total, item) => total + item.canvasCount, 0),
+                        dataBytes: workspaceItems.reduce((total, item) => total + item.dataBytes, 0),
+                        mediaBytes: workspaceItems.reduce((total, item) => total + item.mediaBytes, 0),
+                    },
+                });
+            }
+            const workspaceMatch = /^\/api\/admin\/workspaces\/([^/]+)$/.exec(requestUrl.pathname);
+            if (workspaceMatch && req.method === "GET") {
+                const row = await queryOne<{ id: string; name: string; role: WorkspaceContext["role"] | null; created_at: Date }>(
+                    db,
+                    `SELECT w.id, w.name, m.role, w.created_at FROM workspaces w
+                     LEFT JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = $2
+                     WHERE w.id = $1`,
+                    workspaceMatch[1],
+                    user.id,
+                );
+                if (!row) return sendJson(res, 404, { error: "工作区不存在" });
+                return sendJson(res, 200, { workspace: { id: row.id, name: row.name, role: row.role || "viewer", createdAt: toIso(row.created_at) } });
+            }
+            const userMatch = /^\/api\/admin\/users\/([^/]+)$/.exec(requestUrl.pathname);
+            if (userMatch && req.method === "PATCH") {
+                const body = await readJsonBody(req);
+                if (typeof body.isAdmin !== "boolean") return sendJson(res, 400, { error: "管理员状态无效" });
+                const targetUserId = userMatch[1];
+                const nextIsAdmin = body.isAdmin;
+                const outcome = await withTransaction<{ status: number; error: string; user: { id: string; username: string; displayName: string; isAdmin: boolean; createdAt: string } | null }>(async (tx) => {
+                    await execute(tx, "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)", "infinite-canvas:admin-change");
+                    const target = await queryOne<{ id: string; username: string; display_name: string; is_admin: boolean; created_at: Date }>(tx, "SELECT id, username, display_name, is_admin, created_at FROM users WHERE id = $1", targetUserId);
+                    if (!target) return { status: 404, error: "用户不存在", user: null };
+                    if (!nextIsAdmin && target.is_admin) {
+                        if (isConfiguredAdmin(target.username)) return { status: 409, error: "该管理员由环境变量指定，不能在此撤销", user: null };
+                        const admins = await queryOne<{ count: number }>(tx, "SELECT COUNT(*)::int AS count FROM users WHERE is_admin");
+                        if (!admins || admins.count <= 1) return { status: 409, error: "至少需要保留一名管理员", user: null };
+                    }
+                    await execute(tx, "UPDATE users SET is_admin = $1 WHERE id = $2", nextIsAdmin, target.id);
+                    return { status: 200, error: "", user: { id: target.id, username: target.username, displayName: target.display_name, isAdmin: nextIsAdmin, createdAt: toIso(target.created_at) } };
+                });
+                if (!outcome.user) return sendJson(res, outcome.status, { error: outcome.error });
+                return sendJson(res, 200, { user: outcome.user });
+            }
+            return sendJson(res, 405, { error: "Method not allowed" });
+        } catch (error) {
+            if (error instanceof RequestBodyError) return sendJson(res, error.status, { error: error.message });
+            console.error("Admin request failed", error);
+            return sendJson(res, 500, { error: "管理服务暂时不可用" });
+        }
+    };
+    return { name: "admin-access", configureServer: (server) => { server.middlewares.use(middleware); }, configurePreviewServer: (server) => { server.middlewares.use(middleware); } };
+}
+
 function serverWebdavProxy(): Plugin {
     const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
         const requestUrl = new URL(req.url || "/", "http://localhost");
@@ -745,9 +985,29 @@ function ipv4Number(value: string) {
 function serverConfigStorage(): Plugin {
     const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
         const requestUrl = new URL(req.url || "/", "http://localhost");
-        if (requestUrl.pathname !== "/api/config") return next();
+        const runtime = requestUrl.pathname === "/api/config/runtime";
+        if (requestUrl.pathname !== "/api/config" && !runtime) return next();
 
         res.setHeader("Cache-Control", "no-store");
+        const user = (req as AuthenticatedRequest).infiniteCanvasUser;
+        if (!user) return sendJson(res, 401, { error: "请先登录" });
+        if (!runtime && !user.isAdmin) return sendJson(res, 403, { error: "仅管理员可以查看或修改配置" });
+        if (runtime) {
+            if (req.method !== "GET") return sendJson(res, 405, { error: "Method not allowed" });
+            try {
+                const config = JSON.parse(await readFile(serverConfigPath, "utf8"));
+                if (!isServerConfig(config)) return sendJson(res, 500, { error: "Stored configuration is invalid" });
+                return sendJson(res, 200, runtimeServerConfig(config));
+            } catch (error) {
+                if (isFileSystemError(error, "ENOENT")) {
+                    res.statusCode = 204;
+                    return res.end();
+                }
+                console.error("Runtime configuration read failed", error);
+                return sendJson(res, 500, { error: "Configuration read failed" });
+            }
+        }
+
         if (req.method === "GET") {
             try {
                 const config = JSON.parse(await readFile(serverConfigPath, "utf8"));
@@ -878,7 +1138,7 @@ function promptSourceProxy(): Plugin {
                 headers: { Accept: "application/json" },
                 autoSelectFamily: false,
                 lookup: (_hostname, _options, callback) => callback(null, address.address, address.family),
-            }, (response) => {
+            } as HttpsRequestOptions & { autoSelectFamily?: boolean }, (response) => {
                 if ((response.statusCode || 0) >= 300 && (response.statusCode || 0) < 400) {
                     response.resume();
                     return sendJson(res, 502, { error: "提示词来源不允许重定向" });
@@ -923,7 +1183,7 @@ function remoteMediaProxy(): Plugin {
             const upstream = httpsRequest(target, {
                 autoSelectFamily: false,
                 lookup: (_hostname, _options, callback) => callback(null, address.address, address.family),
-            }, (response) => {
+            } as HttpsRequestOptions & { autoSelectFamily?: boolean }, (response) => {
                 if ((response.statusCode || 0) >= 300 && (response.statusCode || 0) < 400) {
                     response.resume();
                     return sendJson(res, 502, { error: "远程媒体不允许重定向" });
@@ -1066,6 +1326,13 @@ function redactServerSecrets(value: unknown) {
         }
     }
     if (webdav) Object.assign(webdav, { url: webdav.url === "/api/webdav" ? "" : webdav.url, hasPassword: Boolean(webdav.password), password: "", autoSyncEnabled: false });
+    return result;
+}
+
+function runtimeServerConfig(value: unknown) {
+    const result = redactServerSecrets(value);
+    const webdav = asRecord(result.webdav);
+    if (webdav) Object.assign(webdav, { url: "", username: "", password: "", hasPassword: false, directory: "", lastSyncedAt: "", lastConfigSyncedAt: "", autoSyncEnabled: false });
     return result;
 }
 
@@ -1304,7 +1571,7 @@ function localPluginsManifest(): Plugin {
 
 export default defineConfig({
     base: process.env.VITE_BASE || "/",
-    plugins: [react(), localPluginsManifest(), sessionContext(), authAccess(), serverApiAccessControl(), canvasAgentGateway(), workspaceAccess(), workspaceMediaStorage(), workspaceDataAccess(), workspacePromptsAccess(), serverWebdavProxy(), serverConfigStorage(), aiProviderProxy(), promptSourceProxy(), remoteMediaProxy(), imageProxy()],
+    plugins: [react(), localPluginsManifest(), sessionContext(), authAccess(), serverApiAccessControl(), canvasAgentGateway(), workspaceAccess(), adminAccess(), workspaceMediaStorage(), workspaceDataAccess(), workspacePromptsAccess(), serverWebdavProxy(), serverConfigStorage(), aiProviderProxy(), promptSourceProxy(), remoteMediaProxy(), imageProxy()],
     preview: { allowedHosts: (process.env.INFINITE_CANVAS_ALLOWED_HOSTS || "ubuntu-server").split(",").map((host) => host.trim()).filter(Boolean) },
     resolve: {
         alias: {
