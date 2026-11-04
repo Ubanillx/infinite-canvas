@@ -1,17 +1,49 @@
 import i18n from "@/i18n";
 import { createAppConfigSnapshot, isAppConfigFile, markServerConfigSaved, type AppConfigFile } from "@/services/config-file";
-import { useConfigStore } from "@/stores/use-config-store";
+import { useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import { usePromptSourceStore } from "@/stores/use-prompt-source-store";
 
 const serverConfigUrl = "/api/config";
-let cachedServerConfigRequest: Promise<AppConfigFile | null> | null = null;
+const runtimeConfigUrl = "/api/config/runtime";
+const localPreferencesPrefix = "infinite-canvas:user-config-preferences:";
+const localPreferenceKeys = [
+    "model",
+    "imageModel",
+    "videoModel",
+    "textModel",
+    "audioModel",
+    "audioVoice",
+    "audioFormat",
+    "audioSpeed",
+    "audioInstructions",
+    "videoSeconds",
+    "vquality",
+    "videoGenerateAudio",
+    "videoWatermark",
+    "videoMode",
+    "systemPrompt",
+    "reasoningEffort",
+    "quality",
+    "size",
+    "background",
+    "count",
+    "canvasImageCount",
+    "proxyEnabled",
+    "proxyUrl",
+    "nodeRegenerateBehavior",
+    "autoFocusOnSelect",
+] as const satisfies ReadonlyArray<keyof AiConfig>;
 
-export function loadServerConfig(options: { force?: boolean } = {}) {
-    if (options.force) cachedServerConfigRequest = null;
-    if (cachedServerConfigRequest) return cachedServerConfigRequest;
+type LocalPreferences = Partial<Pick<AiConfig, (typeof localPreferenceKeys)[number]>>;
+let cachedServerConfig: { runtime: boolean; request: Promise<AppConfigFile | null> } | null = null;
 
-    cachedServerConfigRequest = (async () => {
-        const response = await fetch(serverConfigUrl, { headers: { Accept: "application/json" }, cache: "no-store" });
+export function loadServerConfig(options: { force?: boolean; runtime?: boolean } = {}) {
+    const runtime = Boolean(options.runtime);
+    if (options.force) cachedServerConfig = null;
+    if (cachedServerConfig?.runtime === runtime) return cachedServerConfig.request;
+
+    const request = (async () => {
+        const response = await fetch(runtime ? runtimeConfigUrl : serverConfigUrl, { headers: { Accept: "application/json" }, cache: "no-store" });
         if (response.status === 204) return null;
         if (!response.ok) throw requestError(response.status);
 
@@ -25,10 +57,42 @@ export function loadServerConfig(options: { force?: boolean } = {}) {
         return data;
     })().catch((error) => {
         // Failed requests must remain retryable from the loading error view.
-        cachedServerConfigRequest = null;
+        cachedServerConfig = null;
         throw error;
     });
-    return cachedServerConfigRequest;
+    cachedServerConfig = { runtime, request };
+    return request;
+}
+
+export function applyLocalConfigPreferences(userId: string) {
+    const stored = readLocalPreferences(userId);
+    const overrides: Partial<AiConfig> = {};
+    for (const key of localPreferenceKeys) {
+        if (key in stored) Object.assign(overrides, { [key]: stored[key] });
+    }
+    if (Object.keys(overrides).length) useConfigStore.setState((state) => ({ config: { ...state.config, ...overrides } }));
+}
+
+export function startLocalConfigPersistence(userId: string) {
+    return useConfigStore.subscribe((current, previous) => {
+        if (current.config === previous.config) return;
+        const preferences: Record<string, AiConfig[keyof AiConfig]> = {};
+        for (const key of localPreferenceKeys) preferences[key] = current.config[key];
+        try {
+            window.localStorage.setItem(`${localPreferencesPrefix}${userId}`, JSON.stringify(preferences));
+        } catch {
+            // Storage may be unavailable in private or restricted browser contexts.
+        }
+    });
+}
+
+function readLocalPreferences(userId: string): LocalPreferences {
+    try {
+        const value = JSON.parse(window.localStorage.getItem(`${localPreferencesPrefix}${userId}`) || "null");
+        return value && typeof value === "object" ? (value as LocalPreferences) : {};
+    } catch {
+        return {};
+    }
 }
 
 export async function saveServerConfig(config: AppConfigFile) {
@@ -40,7 +104,7 @@ export async function saveServerConfig(config: AppConfigFile) {
     if (!response.ok) throw requestError(response.status);
     muted = true;
     try { markServerConfigSaved(config); } finally { muted = false; }
-    cachedServerConfigRequest = null;
+    cachedServerConfig = null;
 }
 
 type SaveStatus = { saving: boolean; error: string };

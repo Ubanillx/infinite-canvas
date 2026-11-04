@@ -1,12 +1,13 @@
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
-import { Button, Form, Input, Popover } from "antd";
-import { ArrowLeft, ArrowUpRight, Check, FolderClosed, LayoutGrid, Plus } from "lucide-react";
+import { App, Button, Form, Input, Popover } from "antd";
+import { ArrowLeft, ArrowUpRight, Check, FolderClosed, LayoutGrid, LogOut, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { WorkspaceAmbientBackground } from "@/components/layout/workspace-ambient-background";
 import { WorkspaceAccountForm } from "@/components/layout/workspace-account-form";
-import { getWorkspaceSession } from "@/services/api/workspace-auth";
+import { getAdminWorkspaceAccess } from "@/services/api/admin";
+import { getWorkspaceSession, logoutWorkspace } from "@/services/api/workspace-auth";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { clearActiveWorkspace, getActiveWorkspace, getKnownWorkspaces, migrateLegacyDataToWorkspace, setActiveWorkspace, setKnownWorkspaces, type WorkspaceAccess } from "@/lib/workspace";
 import { migrateWorkspaceMedia } from "@/services/workspace-media";
@@ -14,6 +15,7 @@ import { listWorkspaceCanvasSummaries, type WorkspaceCanvasSummary } from "@/ser
 import { createWorkspace, listWorkspaces } from "@/services/workspace";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useAppLoadingStore } from "@/stores/use-app-loading-store";
+import { useSessionStore } from "@/stores/use-session-store";
 
 type GateMode = "select" | "create" | "account";
 const CREATE_WORKSPACE_KEY = "infinite-canvas:create-workspace";
@@ -26,10 +28,14 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
     const [workspaces, setWorkspaces] = useState<WorkspaceAccess[]>(getKnownWorkspaces);
     const [summaries, setSummaries] = useState<Record<string, WorkspaceCanvasSummary | null>>({});
     const [error, setError] = useState("");
+    const [keycloakEnabled, setKeycloakEnabled] = useState(false);
+    const [localLoginEnabled, setLocalLoginEnabled] = useState(true);
     const [form] = Form.useForm<Record<string, string>>();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const { t } = useTranslation();
     const startAppLoading = useAppLoadingStore((state) => state.start);
     const finishAppLoading = useAppLoadingStore((state) => state.finish);
+    const setSessionUser = useSessionStore((state) => state.setUser);
     const createRequestedRef = useRef<boolean | null>(null);
 
     useEffect(() => {
@@ -46,7 +52,11 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
             try {
                 const session = await getWorkspaceSession();
                 if (!current) return;
-                if (!session.user) { setMode("account"); return; }
+                setSessionUser(session.user);
+                setKeycloakEnabled(Boolean(session.keycloak?.enabled));
+                setLocalLoginEnabled(session.keycloak?.localLogin ?? true);
+                const sessionUser = session.user;
+                if (!sessionUser) { setMode("account"); return; }
                 const available = await listWorkspaces();
                 if (!current) return;
                 setKnownWorkspaces(available);
@@ -60,6 +70,18 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
                     if (current) setReady(true);
                     return;
                 }
+                if (active && sessionUser.isAdmin) {
+                    try {
+                        const adminWorkspace = (await getAdminWorkspaceAccess(active.id)).workspace;
+                        if (!current) return;
+                        // 只读进入他人工作区时不迁移本机旧数据，避免把当前浏览器的本地内容带入目标工作区。
+                        setActiveWorkspace(adminWorkspace);
+                        if (current) setReady(true);
+                        return;
+                    } catch {
+                        // 工作区已被删除或权限已失效时回退到正常的工作区选择。
+                    }
+                }
                 if (active) clearActiveWorkspace();
                 setMode(createRequestedRef.current || !available.length ? "create" : "select");
                 if (available.length) {
@@ -68,14 +90,15 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
                 }
             } catch (reason) {
                 if (!current) return;
-                setError(reason instanceof Error ? reason.message : "无法读取工作区列表");
+                setSessionUser(null);
+                setError(reason instanceof Error ? reason.message : t("workspaceGate.loadFailed"));
                 setMode(cachedWorkspace ? "select" : "create");
             } finally {
                 if (current) setLoading(false);
             }
         })();
         return () => { current = false; };
-    }, [cachedWorkspace]);
+    }, [cachedWorkspace, setSessionUser, t]);
 
     const enterWorkspace = async (workspace: WorkspaceAccess) => {
         startAppLoading();
@@ -87,7 +110,7 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
             await migrateWorkspaceMedia();
             window.location.reload();
         } catch (reason) {
-            setError(reason instanceof Error ? reason.message : "工作区操作失败");
+            setError(reason instanceof Error ? reason.message : t("workspaceGate.operationFailed"));
             setLoading(false);
         }
     };
@@ -99,7 +122,7 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
         try {
             await enterWorkspace(await createWorkspace(values.name.trim()));
         } catch (reason) {
-            setError(reason instanceof Error ? reason.message : "工作区操作失败");
+            setError(reason instanceof Error ? reason.message : t("workspaceGate.operationFailed"));
             setLoading(false);
         }
     };
@@ -112,15 +135,15 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
             <main className="relative z-10 mx-auto w-full max-w-[1680px] px-6 py-12 sm:px-10 sm:py-16 lg:px-16 lg:py-20">
                 <div className="mb-12 flex items-center gap-3">
                     <span className="block size-9 shrink-0 bg-current" style={{ mask: "url(/logo.svg) center / contain no-repeat", WebkitMask: "url(/logo.svg) center / contain no-repeat" }} />
-                    <span className="text-sm font-semibold tracking-[0.18em]">无限画布</span>
+                    <span className="text-sm font-semibold tracking-[0.18em]">{t("meta.title")}</span>
                 </div>
-                {mode === "create" && workspaces.length ? <button type="button" className="mb-8 inline-flex items-center gap-2 text-sm transition-opacity hover:opacity-60" style={{ color: theme.node.muted }} onClick={() => { form.resetFields(); setError(""); setMode("select"); }}><ArrowLeft className="size-4" />返回工作区列表</button> : null}
+                {mode === "create" && workspaces.length ? <button type="button" className="mb-8 inline-flex items-center gap-2 text-sm transition-opacity hover:opacity-60" style={{ color: theme.node.muted }} onClick={() => { form.resetFields(); setError(""); setMode("select"); }}><ArrowLeft className="size-4" />{t("workspaceGate.backToList")}</button> : null}
                 <header className="mb-10 sm:mb-14">
-                    <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">{mode === "account" ? "登录工作区" : mode === "create" ? "新建工作区" : "选择工作区"}</h1>
-                    <p className="mt-3 text-sm" style={{ color: theme.node.muted }}>数据按工作区独立保存，选择后即可进入。</p>
+                    <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">{mode === "account" ? t("workspaceGate.loginTitle") : mode === "create" ? t("workspaceGate.createTitle") : t("workspaceGate.selectTitle")}</h1>
+                    <p className="mt-3 text-sm" style={{ color: theme.node.muted }}>{t("workspaceGate.subtitle")}</p>
                 </header>
                 {error ? <div role="alert" className="mb-6 max-w-xl rounded-md border border-red-400/40 px-4 py-3 text-sm text-red-500">{error}</div> : null}
-                {loading ? null : mode === "account" ? <WorkspaceAccountForm /> : mode === "select" ? (
+                {loading ? null : mode === "account" ? <WorkspaceAccountForm keycloakEnabled={keycloakEnabled} localLoginEnabled={localLoginEnabled} /> : mode === "select" ? (
                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-5">
                         {workspaces.map((workspace) => {
                             const summary = summaries[workspace.id];
@@ -129,20 +152,20 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
                             <div className="min-w-0 w-full">
                                 <div className="break-words text-xl font-medium leading-snug" style={{ color: theme.node.text }}>{workspace.name}</div>
                                 <div className="mt-5 border-t pt-4" style={{ borderColor: theme.node.stroke }}>
-                                    <div className="text-xs" style={{ color: theme.node.muted }}>最近活动的画布</div>
-                                    <div className="mt-1 truncate text-sm" style={{ color: theme.node.text }}>{summary?.recentCanvasTitle || (summary ? summary.canvasCount ? "暂无活动记录" : "暂无画布" : "信息暂不可用")}</div>
+                                    <div className="text-xs" style={{ color: theme.node.muted }}>{t("workspaceGate.recentCanvas")}</div>
+                                    <div className="mt-1 truncate text-sm" style={{ color: theme.node.text }}>{summary?.recentCanvasTitle || (summary ? summary.canvasCount ? t("workspaceGate.noActivity") : t("workspaceGate.noCanvas") : t("workspaceGate.infoUnavailable"))}</div>
                                     <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-xs" style={{ color: theme.node.muted }}>
-                                        <span className="inline-flex items-center gap-1.5"><LayoutGrid className="size-3.5" />{summary?.canvasCount ?? "—"} 个画布</span>
-                                        <span className="inline-flex items-center gap-1.5"><FolderClosed className="size-3.5" />{summary?.folderCount ?? "—"} 个文件夹</span>
+                                        <span className="inline-flex items-center gap-1.5"><LayoutGrid className="size-3.5" />{t("workspaceGate.canvasCount", { value: summary?.canvasCount ?? "—" })}</span>
+                                        <span className="inline-flex items-center gap-1.5"><FolderClosed className="size-3.5" />{t("workspaceGate.folderCount", { value: summary?.folderCount ?? "—" })}</span>
                                     </div>
                                 </div>
                             </div>
                         </button>})}
-                        <button type="button" className="flex min-h-64 flex-col items-center justify-center gap-4 rounded-lg border border-dashed p-6 text-center transition duration-200 hover:-translate-y-1 hover:shadow-[var(--shadow-surface)] focus-visible:outline-2 focus-visible:outline-offset-2" style={{ borderColor: theme.node.stroke, color: theme.node.muted, outlineColor: theme.node.activeStroke }} onClick={() => { form.resetFields(); setError(""); setMode("create"); }}><Plus className="size-7" strokeWidth={1.5} /><span className="text-base font-medium">新建工作区</span></button>
+                        <button type="button" className="flex min-h-64 flex-col items-center justify-center gap-4 rounded-lg border border-dashed p-6 text-center transition duration-200 hover:-translate-y-1 hover:shadow-[var(--shadow-surface)] focus-visible:outline-2 focus-visible:outline-offset-2" style={{ borderColor: theme.node.stroke, color: theme.node.muted, outlineColor: theme.node.activeStroke }} onClick={() => { form.resetFields(); setError(""); setMode("create"); }}><Plus className="size-7" strokeWidth={1.5} /><span className="text-base font-medium">{t("workspaceGate.createAction")}</span></button>
                     </div>
                 ) : <Form form={form} layout="vertical" className="max-w-md" onFinish={(values) => void create(values)}>
-                    <Form.Item name="name" label="新工作区名称" rules={[{ required: true, whitespace: true, message: "请输入工作区名称" }]}><Input autoFocus maxLength={80} placeholder="例如：产品设计团队" size="large" /></Form.Item>
-                    <Button type="primary" htmlType="submit" icon={<Plus className="size-4" />}>创建工作区</Button>
+                    <Form.Item name="name" label={t("workspaceGate.nameLabel")} rules={[{ required: true, whitespace: true, message: t("workspaceGate.nameRequired") }]}><Input autoFocus maxLength={80} placeholder={t("workspaceGate.namePlaceholder")} size="large" /></Form.Item>
+                    <Button type="primary" htmlType="submit" icon={<Plus className="size-4" />}>{t("workspaceGate.submit")}</Button>
                 </Form>}
             </main>
         </div>
@@ -154,9 +177,11 @@ export function WorkspaceSwitcher() {
     const [workspaces, setWorkspaces] = useState<WorkspaceAccess[]>(getKnownWorkspaces);
     const [summaries, setSummaries] = useState<Record<string, WorkspaceCanvasSummary | null>>({});
     const [loadError, setLoadError] = useState(false);
+    const [signingOut, setSigningOut] = useState(false);
     const triggerRef = useRef<HTMLButtonElement>(null);
     const panelRef = useRef<HTMLDivElement>(null);
     const { t } = useTranslation();
+    const { message } = App.useApp();
     const startAppLoading = useAppLoadingStore((state) => state.start);
     const workspace = getActiveWorkspace();
 
@@ -180,6 +205,21 @@ export function WorkspaceSwitcher() {
         if (create) window.sessionStorage.setItem(CREATE_WORKSPACE_KEY, "1");
         clearActiveWorkspace();
         window.location.reload();
+    };
+    const signOut = async () => {
+        if (signingOut) return;
+        setSigningOut(true);
+        try {
+            const result = await logoutWorkspace();
+            clearActiveWorkspace();
+            setKnownWorkspaces([]);
+            useSessionStore.getState().setUser(null);
+            if (result.logoutUrl) window.location.assign(result.logoutUrl);
+            else window.location.reload();
+        } catch (reason) {
+            setSigningOut(false);
+            message.error(reason instanceof Error ? reason.message : t("topNav.signOutFailed"));
+        }
     };
 
     return <Popover
@@ -208,6 +248,12 @@ export function WorkspaceSwitcher() {
             <div className="flex items-center gap-1 px-2 pb-2 pt-2">
                 <button type="button" className="min-h-9 min-w-0 flex-1 rounded-md px-3 text-left text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-foreground" onClick={() => showWorkspaceGate(false)}>{t("topNav.allWorkspaces")}</button>
                 <button type="button" className="inline-flex min-h-9 shrink-0 items-center gap-1 rounded-md bg-foreground/5 px-3 text-xs font-medium text-foreground transition-colors hover:bg-foreground/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground" onClick={() => showWorkspaceGate(true)}><Plus className="size-3.5" />{t("topNav.newWorkspace")}</button>
+            </div>
+            <div className="border-t border-border px-2 pb-2 pt-2">
+                <button type="button" disabled={signingOut} className="flex min-h-9 w-full items-center gap-2 rounded-md px-3 text-left text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-foreground disabled:opacity-50" onClick={() => void signOut()}>
+                    <LogOut className="size-3.5" />
+                    {signingOut ? t("topNav.signingOut") : t("topNav.signOut")}
+                </button>
             </div>
         </div>}
     >

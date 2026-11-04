@@ -1,4 +1,4 @@
-import { Cloud, Database, FileText, ImagePlus, Images, KeyRound, LayoutTemplate, Settings2, Shapes, SlidersHorizontal, Video, Waypoints } from "lucide-react";
+import { Cloud, Database, FileText, ImagePlus, Images, KeyRound, LayoutTemplate, Settings2, Shapes, SlidersHorizontal, Users, Video, Waypoints } from "lucide-react";
 import type { ConfigTabKey } from "@/stores/use-config-store";
 
 export const configSections = [
@@ -8,6 +8,8 @@ export const configSections = [
     { slug: "webdav", label: "config.tabs.webdav", icon: Cloud },
     { slug: "local-storage", label: "config.tabs.localStorage", icon: Database },
 ] as const satisfies ReadonlyArray<{ slug: ConfigTabKey; label: string; icon: typeof Settings2 }>;
+
+export const adminConfigSection = { slug: "admin", label: "config.tabs.admin", icon: Users } as const;
 
 export const navigationTools = [
     {

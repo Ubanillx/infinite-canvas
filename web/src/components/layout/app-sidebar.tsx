@@ -4,9 +4,10 @@ import { ChevronsLeft } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 
-import { configSections, navigationGroups } from "@/constant/navigation-tools";
+import { adminConfigSection, configSections, navigationGroups } from "@/constant/navigation-tools";
 import { cn } from "@/lib/utils";
 import { useAgentStore } from "@/stores/use-agent-store";
+import { useIsAdmin } from "@/stores/use-session-store";
 
 const SIDEBAR_COLLAPSED_KEY = "infinite-canvas:sidebar-collapsed";
 
@@ -14,6 +15,8 @@ export function AppSidebar() {
     const { pathname } = useLocation();
     const { t } = useTranslation();
     const panelOpen = useAgentStore((state) => state.panelOpen);
+    const isAdmin = useIsAdmin();
+    const settingsSections = isAdmin ? [...configSections, adminConfigSection] : configSections;
     const [collapsed, setCollapsed] = useState(() => typeof window !== "undefined" && window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1");
 
     const toggleCollapsed = () => {
@@ -25,14 +28,17 @@ export function AppSidebar() {
     return (
         <aside className={cn("hidden h-full shrink-0 flex-col overflow-hidden border-r border-border bg-sidebar transition-[width] duration-300 ease-out motion-reduce:transition-none", panelOpen ? "2xl:flex" : "lg:flex", collapsed ? "w-[72px]" : "w-64")}>
             <nav id="app-sidebar-navigation" className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2 py-5" aria-label={t("topNav.navigation")}>
-                {navigationGroups.map((group) => (
+                {navigationGroups.map((group) => {
+                    const tools = group.tools.filter((tool) => tool.slug !== "config" || isAdmin);
+                    if (!tools.length) return null;
+                    return (
                     <section key={group.key} className="mb-5" aria-label={t(`navigationGroups.${group.key}`)}>
                         <div className="relative mb-2 h-7 text-xs font-medium text-muted-foreground">
                             <span aria-hidden={collapsed} className={cn("absolute inset-0 flex items-center whitespace-nowrap px-3 transition-opacity duration-200 motion-reduce:transition-none", collapsed ? "opacity-0" : "opacity-100")}>{t(`navigationGroups.${group.key}`)}</span>
                             <span aria-hidden="true" className={cn("absolute inset-0 flex items-center justify-center transition-opacity duration-200 motion-reduce:transition-none", collapsed ? "opacity-100" : "opacity-0")}><span className="w-7 border-t border-border" /></span>
                         </div>
                         <div className="space-y-1">
-                            {group.tools.map((tool) => {
+                            {tools.map((tool) => {
                                 const Icon = tool.icon;
                                 const label = t(`navigation.${tool.slug}`);
                                 const active = pathname.split("/").filter(Boolean)[0] === tool.slug;
@@ -50,7 +56,7 @@ export function AppSidebar() {
                                         </Link>
                                     </Tooltip>
                                     {tool.slug === "config" && active ? <div className={cn("mt-1 space-y-0.5", !collapsed && "ml-5 border-l border-border pl-2")}>
-                                        {configSections.map((section) => {
+                                        {settingsSections.map((section) => {
                                             const SectionIcon = section.icon;
                                             const sectionLabel = t(section.label);
                                             const selected = (pathname.split("/")[2] || "channels") === section.slug;
@@ -66,7 +72,8 @@ export function AppSidebar() {
                             })}
                         </div>
                     </section>
-                ))}
+                    );
+                })}
             </nav>
             <div className="shrink-0 border-t border-border p-2">
                 <Tooltip title={collapsed ? t("sidebar.expand") : null} placement="right">

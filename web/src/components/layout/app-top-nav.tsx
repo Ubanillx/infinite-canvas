@@ -64,7 +64,7 @@ export function AppTopNav() {
                             <Button type="text" className="!h-9 !rounded-xl !px-3 !font-medium" icon={<Bot className="size-4" />} onClick={togglePanel} aria-label={t(panelOpen ? "topNav.closeAgent" : "topNav.openAgent")}>
                                 {t("canvas.aiAssistant")}
                             </Button>
-                            <div className={panelOpen ? "hidden 2xl:block" : "hidden md:block"}><UserStatusActions showConfig={false} /></div>
+                            <div className={panelOpen ? "hidden xl:block" : "hidden md:block"}><UserStatusActions showConfig={false} /></div>
                             <WorkspaceSwitcher />
                         </div>
                     </div>

@@ -12,12 +12,13 @@ import { ConfigPromptSources } from "@/components/layout/config-prompt-sources";
 import { ConfigLocalStorage } from "@/components/layout/config-local-storage";
 import type { AppLocale } from "@/i18n";
 import { getServerConfigSaveStatus, saveServerConfigNow, subscribeServerConfigSaveStatus } from "@/services/server-config";
-import { importWorkspaceSnapshot, listWorkspaceSnapshots, type AppSyncDomainKey, type AppSyncProgressEvent, type WebdavSnapshot } from "@/services/app-sync";
+import { importWorkspaceSnapshot, listWorkspaceSnapshots, type AppSyncDomainKey, type AppSyncProgressEvent, type AppSyncStageKey, type WebdavSnapshot } from "@/services/app-sync";
 import { isWebdavConfigured, syncAllDataToWebdav } from "@/services/webdav-auto-sync";
 import { testWebdavConnection } from "@/services/webdav-sync";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
 import { computeMediaSize, inferMediaRatio, inferMediaScale, mediaScaleOptions, parseVideoResolution } from "@/lib/media-size";
 import { createModelChannel, modelOptionsFromChannels, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore, type AiConfig, type ApiCallFormat, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
+import { useIsAdmin } from "@/stores/use-session-store";
 
 type ModelGroup = {
     capability: ModelCapability;
@@ -26,7 +27,9 @@ type ModelGroup = {
 };
 
 type WebdavDomainProgress = {
-    stage: string;
+    stageKey?: AppSyncStageKey;
+    stageDetail?: string;
+    stageCount?: number;
     current?: number;
     total?: number;
     status?: "active" | "success" | "exception";
@@ -44,7 +47,7 @@ function createWebdavDomainProgress(): Record<AppSyncDomainKey, WebdavDomainProg
     return webdavDomainKeys.reduce(
         (progress, key) => ({
             ...progress,
-            [key]: { stage: "等待同步" },
+            [key]: {},
         }),
         {} as Record<AppSyncDomainKey, WebdavDomainProgress>,
     );
@@ -146,12 +149,14 @@ export function AppConfigPanel({ showDoneButton = false, showTabs = true, showSa
     };
 
     const updateWebdavProgress = (event: AppSyncProgressEvent) => {
-        setWebdavSyncStatus(event.stage);
+        setWebdavSyncStatus(syncStageLabel(event.stage, event.stageDetail, event.stageCount, t));
         if (!event.domain) return;
         setWebdavDomainProgress((current) => ({
             ...current,
             [event.domain as AppSyncDomainKey]: {
-                stage: event.stage,
+                stageKey: event.stage,
+                stageDetail: event.stageDetail,
+                stageCount: event.stageCount,
                 current: event.current,
                 total: event.total,
                 status: event.status,
@@ -189,7 +194,7 @@ export function AppConfigPanel({ showDoneButton = false, showTabs = true, showSa
             await saveServerConfigNow();
             setWebdavSnapshots(await listWorkspaceSnapshots(webdav));
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "读取工作区快照失败");
+            message.error(error instanceof Error ? error.message : t("config.webdav.snapshotLoadFailed"));
         } finally {
             setLoadingSnapshots(false);
         }
@@ -197,17 +202,17 @@ export function AppConfigPanel({ showDoneButton = false, showTabs = true, showSa
 
     const importSnapshot = async () => {
         if (!selectedSnapshot) {
-            message.warning("请先选择一个快照");
+            message.warning(t("config.webdav.snapshotRequired"));
             return;
         }
         setImportingSnapshot(true);
-        setWebdavSyncStatus("正在导入快照");
+        setWebdavSyncStatus(t("config.webdav.snapshotImporting"));
         try {
             await saveServerConfigNow();
             const result = await importWorkspaceSnapshot(webdav, selectedSnapshot, updateWebdavProgress);
-            message.success(`快照已导入：${result.projects} 个画布、${result.assets} 个素材`);
+            message.success(t("config.webdav.snapshotImported", { projects: result.projects, assets: result.assets }));
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "导入工作区快照失败");
+            message.error(error instanceof Error ? error.message : t("config.webdav.snapshotImportFailed"));
         } finally {
             setImportingSnapshot(false);
         }
@@ -232,24 +237,24 @@ export function AppConfigPanel({ showDoneButton = false, showTabs = true, showSa
                         key: "channels",
                         label: t("config.tabs.channels"),
                         children: (
-                            <section className="overflow-hidden rounded-xl border border-stone-200 dark:border-stone-800">
-                                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-200 px-5 py-4 dark:border-stone-800">
+                            <section className="overflow-hidden rounded-xl border border-border">
+                                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
                                     <div>
                                         <h2 className="text-sm font-semibold">{t("config.channels.listTitle")}</h2>
-                                        <p className="mt-1 text-xs text-stone-500">{t("config.channels.channelCount", { count: config.channels.length })}</p>
+                                        <p className="mt-1 text-xs text-muted-foreground">{t("config.channels.channelCount", { count: config.channels.length })}</p>
                                     </div>
                                     <Button type="primary" icon={<Plus className="size-4" />} onClick={addChannel}>{t("config.channels.add")}</Button>
                                 </div>
-                                <div className="divide-y divide-stone-200 dark:divide-stone-800">
+                                <div className="divide-y divide-border">
                                     {config.channels.map((channel) => (
                                         <div key={channel.id} className="flex flex-wrap items-center gap-4 px-5 py-4">
-                                            <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-stone-100 text-stone-600 dark:bg-stone-800 dark:text-stone-300"><KeyRound className="size-4" /></div>
+                                            <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground"><KeyRound className="size-4" /></div>
                                             <div className="min-w-0 flex-1">
                                                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                                                     <span className="truncate text-sm font-semibold">{channel.name || t("config.channels.unnamed")}</span>
-                                                    <span className="text-xs text-stone-500">{apiFormatLabel(channel.apiFormat)} · {t("config.channels.modelCount", { count: channel.models.length })}</span>
+                                                    <span className="text-xs text-muted-foreground">{apiFormatLabel(channel.apiFormat, t)} · {t("config.channels.modelCount", { count: channel.models.length })}</span>
                                                 </div>
-                                                <div className="mt-1 truncate text-xs text-stone-500">{channel.baseUrl || t("config.channels.missingUrl")}</div>
+                                                <div className="mt-1 truncate text-xs text-muted-foreground">{channel.baseUrl || t("config.channels.missingUrl")}</div>
                                             </div>
                                             <div className="flex shrink-0 gap-1">
                                                 <Button type="text" size="small" icon={<Pencil className="size-3.5" />} onClick={() => setEditingChannelId(channel.id)}>
@@ -268,7 +273,7 @@ export function AppConfigPanel({ showDoneButton = false, showTabs = true, showSa
                         label: t("config.tabs.preferences"),
                         children: (
                             <Form layout="vertical" requiredMark={false} className="space-y-5">
-                                <section className="rounded-xl border border-stone-200 p-5 dark:border-stone-800">
+                                <section className="rounded-xl border border-border p-5">
                                     <h2 className="mb-4 text-sm font-semibold">{t("config.preferences.defaultModels")}</h2>
                                     <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2">
                                     {modelGroups.map((group) => (
@@ -278,7 +283,7 @@ export function AppConfigPanel({ showDoneButton = false, showTabs = true, showSa
                                     ))}
                                     </div>
                                 </section>
-                                <section className="rounded-xl border border-stone-200 p-5 dark:border-stone-800">
+                                <section className="rounded-xl border border-border p-5">
                                     <h2 className="mb-4 text-sm font-semibold">{t("config.preferences.generation")}</h2>
                                     <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
                                     <Form.Item label={t("config.preferences.canvasImageCount")} extra={t("config.preferences.canvasImageCountDescription")} className="mb-0">
@@ -316,7 +321,7 @@ export function AppConfigPanel({ showDoneButton = false, showTabs = true, showSa
                                     </Form.Item>
                                     </div>
                                 </section>
-                                <section className="rounded-xl border border-stone-200 p-5 dark:border-stone-800">
+                                <section className="rounded-xl border border-border p-5">
                                     <h2 className="mb-4 text-sm font-semibold">{t("config.preferences.canvasBehavior")}</h2>
                                     <Form.Item label={t("config.preferences.regenerateBehavior")} className="mb-4">
                                     <Radio.Group value={config.nodeRegenerateBehavior} onChange={(event) => updateConfig("nodeRegenerateBehavior", event.target.value)} className="flex flex-col gap-2">
@@ -330,12 +335,12 @@ export function AppConfigPanel({ showDoneButton = false, showTabs = true, showSa
                                         </Radio>
                                     </Radio.Group>
                                     </Form.Item>
-                                    <div className="flex items-center justify-between gap-3 border-t border-stone-100 pt-4 dark:border-stone-800">
+                                    <div className="flex items-center justify-between gap-3 border-t border-border pt-4">
                                         <span className="text-sm">{t("config.preferences.autoFocusOnSelect")}</span>
                                         <Switch checked={config.autoFocusOnSelect} onChange={(checked) => updateConfig("autoFocusOnSelect", checked)} />
                                     </div>
                                 </section>
-                                <section className="rounded-xl border border-stone-200 p-5 dark:border-stone-800">
+                                <section className="rounded-xl border border-border p-5">
                                     <h2 className="mb-4 text-sm font-semibold">{t("config.preferences.instructions")}</h2>
                                     <Form.Item label={t("config.preferences.audioInstructions")} className="mb-4">
                                     <Input.TextArea rows={2} value={config.audioInstructions} placeholder={t("config.preferences.audioInstructionsPlaceholder")} onChange={(event) => updateConfig("audioInstructions", event.target.value)} />
@@ -357,9 +362,9 @@ export function AppConfigPanel({ showDoneButton = false, showTabs = true, showSa
                         label: t("config.tabs.webdav"),
                         children: (
                             <div className="space-y-5">
-                                <section className="rounded-xl border border-stone-200 p-5 dark:border-stone-800">
+                                <section className="rounded-xl border border-border p-5">
                                     <h2 className="text-sm font-semibold">{t("config.webdav.connectionTitle")}</h2>
-                                    <p className="mt-1 text-xs leading-5 text-stone-500">{t("config.webdav.connectionDescription")}</p>
+                                    <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("config.webdav.connectionDescription")}</p>
                                     <Form layout="vertical" requiredMark={false} className="mt-5 grid gap-x-5 gap-y-3 sm:grid-cols-2">
                                         <Form.Item label={t("config.webdav.url")} className="mb-0 sm:col-span-2">
                                             <Input value={webdav.url === "/api/webdav" ? "" : webdav.url} placeholder={t("config.webdav.urlPlaceholder")} onChange={(event) => updateWebdavConfig("url", event.target.value)} />
@@ -374,28 +379,28 @@ export function AppConfigPanel({ showDoneButton = false, showTabs = true, showSa
                                             <Input.Password value={webdavPasswordDraft} autoComplete="new-password" placeholder={webdav.hasPassword ? t("config.webdav.passwordConfigured") : t("config.webdav.passwordPlaceholder")} onChange={(event) => setWebdavPasswordDraft(event.target.value)} onBlur={() => { if (webdavPasswordDraft) updateWebdavConfig("password", webdavPasswordDraft); setWebdavPasswordDraft(""); }} />
                                         </Form.Item>
                                     </Form>
-                                    <p className="mt-4 flex items-start gap-2 text-xs leading-5 text-stone-500"><Info className="mt-0.5 size-3.5 shrink-0" />{t("config.webdav.passwordWriteOnly")}</p>
+                                    <p className="mt-4 flex items-start gap-2 text-xs leading-5 text-muted-foreground"><Info className="mt-0.5 size-3.5 shrink-0" />{t("config.webdav.passwordWriteOnly")}</p>
                                 </section>
                                 <div className="grid items-start gap-5 md:grid-cols-2">
-                                    <section className="rounded-xl border border-stone-200 p-5 dark:border-stone-800">
+                                    <section className="rounded-xl border border-border p-5">
                                         <div className="flex items-center gap-2 text-sm font-semibold"><Cloud className="size-4" />{t("config.webdav.syncSection")}</div>
-                                        <p className="mt-2 text-xs leading-5 text-stone-500">{t("config.webdav.description")}</p>
-                                        <p className="mt-5 text-xs text-stone-500">{webdav.lastSyncedAt ? t("config.webdav.lastSynced", { time: formatWebdavTime(webdav.lastSyncedAt, locale) }) : t("config.webdav.neverSynced")}</p>
-                                        {webdav.lastConfigSyncedAt ? <p className="mt-1 text-xs text-stone-500">{t("config.webdav.configLastSynced", { time: formatWebdavTime(webdav.lastConfigSyncedAt, locale) })}</p> : null}
+                                        <p className="mt-2 text-xs leading-5 text-muted-foreground">{t("config.webdav.description")}</p>
+                                        <p className="mt-5 text-xs text-muted-foreground">{webdav.lastSyncedAt ? t("config.webdav.lastSynced", { time: formatWebdavTime(webdav.lastSyncedAt, locale) }) : t("config.webdav.neverSynced")}</p>
+                                        {webdav.lastConfigSyncedAt ? <p className="mt-1 text-xs text-muted-foreground">{t("config.webdav.configLastSynced", { time: formatWebdavTime(webdav.lastConfigSyncedAt, locale) })}</p> : null}
                                         <div className="mt-4 flex flex-wrap gap-2">
                                             <Button type="primary" icon={<RefreshCw className="size-4" />} disabled={!webdavReady || testingWebdav} loading={syncingWebdav} onClick={() => void syncWebdav()}>{t(syncingWebdav ? "config.webdav.syncing" : "config.webdav.syncNow")}</Button>
                                             <Button icon={<Wifi className="size-4" />} disabled={!webdavReady || syncingWebdav} loading={testingWebdav} onClick={() => void testWebdav()}>{t("config.webdav.test")}</Button>
                                         </div>
-                                        {webdavSyncStatus ? <p className="mt-3 text-xs text-stone-500" role="status">{syncStageLabel(webdavSyncStatus, t)}</p> : null}
+                                        {webdavSyncStatus ? <p className="mt-3 text-xs text-muted-foreground" role="status">{webdavSyncStatus}</p> : null}
                                         {syncingWebdav || webdavSyncStatus ? <WebdavProgressGrid progress={webdavDomainProgress} t={t} /> : null}
                                     </section>
-                                    <section className="rounded-xl border border-stone-200 p-5 dark:border-stone-800">
+                                    <section className="rounded-xl border border-border p-5">
                                         <h2 className="text-sm font-semibold">{t("config.webdav.snapshotSection")}</h2>
-                                        <p className="mt-2 text-xs leading-5 text-stone-500">{t("config.webdav.snapshotDescription")}</p>
+                                        <p className="mt-2 text-xs leading-5 text-muted-foreground">{t("config.webdav.snapshotDescription")}</p>
                                         <div className="mt-5 flex flex-col items-start gap-4">
                                             <Button icon={<Download className="size-4" />} disabled={!webdavReady || loadingSnapshots || importingSnapshot} loading={loadingSnapshots} onClick={() => void loadSnapshots()}>{t("config.webdav.loadSnapshots")}</Button>
                                             <div className="w-full">
-                                                <label className="mb-2 block text-xs text-stone-500" htmlFor="webdav-snapshot-select">{t("config.webdav.selectSnapshot")}</label>
+                                                <label className="mb-2 block text-xs text-muted-foreground" htmlFor="webdav-snapshot-select">{t("config.webdav.selectSnapshot")}</label>
                                                 <Select id="webdav-snapshot-select" className="w-full" disabled={!webdavSnapshots.length || importingSnapshot} value={selectedSnapshot || undefined} placeholder={t("config.webdav.selectSnapshot")} options={webdavSnapshots.map((snapshot) => ({ value: snapshot.id, label: formatWebdavTime(snapshot.createdAt, locale) }))} onChange={setSelectedSnapshot} />
                                             </div>
                                             <Button icon={<Upload className="size-4" />} disabled={!selectedSnapshot || !webdavReady || loadingSnapshots} loading={importingSnapshot} onClick={() => void importSnapshot()}>{t("config.webdav.importSnapshot")}</Button>
@@ -413,7 +418,7 @@ export function AppConfigPanel({ showDoneButton = false, showTabs = true, showSa
                 ]}
             />
             {showDoneButton ? (
-                <div className="flex shrink-0 justify-end border-t border-stone-200 pt-3 dark:border-stone-800">
+                <div className="flex shrink-0 justify-end border-t border-border pt-3">
                     <Button type="primary" onClick={finishConfig}>
                         {t("common.done")}
                     </Button>
@@ -426,15 +431,25 @@ export function AppConfigPanel({ showDoneButton = false, showTabs = true, showSa
 
 export function AppConfigModal() {
     const { t } = useTranslation();
+    const { message } = App.useApp();
+    const isAdmin = useIsAdmin();
     const isConfigOpen = useConfigStore((state) => state.isConfigOpen);
     const configTab = useConfigStore((state) => state.configTab);
     const setConfigDialogOpen = useConfigStore((state) => state.setConfigDialogOpen);
+
+    useEffect(() => {
+        if (!isConfigOpen || isAdmin) return;
+        setConfigDialogOpen(false);
+        message.warning(t("config.adminOnly"));
+    }, [isAdmin, isConfigOpen, message, setConfigDialogOpen, t]);
+
+    if (!isAdmin) return null;
     return (
         <Modal
             title={
                 <div>
                     <div className="text-lg font-semibold">{t("config.title")}</div>
-                    <div className="mt-1 text-xs font-normal text-stone-500">{t("config.modalDescription")}</div>
+                    <div className="mt-1 text-xs font-normal text-muted-foreground">{t("config.modalDescription")}</div>
                 </div>
             }
             open={isConfigOpen}
@@ -477,7 +492,7 @@ function normalizeImageCount(value: string) {
     return String(Math.max(1, Math.min(15, Math.floor(Math.abs(Number(value)) || 3))));
 }
 
-function apiFormatLabel(apiFormat: ApiCallFormat) {
+function apiFormatLabel(apiFormat: ApiCallFormat, t: TFunction) {
     if (apiFormat === "gemini") return "Gemini";
     if (apiFormat === "ark") return t("config.protocols.ark");
     if (apiFormat === "custom") return t("config.protocols.customVideo");
@@ -495,11 +510,11 @@ function WebdavProgressGrid({ progress, t }: { progress: Record<AppSyncDomainKey
                 const item = progress[key];
                 const count = item.total ? `${item.current || 0}/${item.total}` : "";
                 return (
-                    <div key={key} className="rounded-md border border-stone-200 px-3 py-2 dark:border-stone-800">
+                    <div key={key} className="rounded-md border border-border px-3 py-2">
                         <div className="mb-1 flex min-w-0 items-center justify-between gap-3 text-xs">
-                            <span className="shrink-0 font-medium text-stone-700 dark:text-stone-200">{t(`config.webdav.domains.${domainTranslationKey(key)}`)}</span>
-                            <span className="min-w-0 truncate text-right text-stone-500">
-                                {syncStageLabel(item.stage, t)}
+                            <span className="shrink-0 font-medium text-foreground">{t(`config.webdav.domains.${domainTranslationKey(key)}`)}</span>
+                            <span className="min-w-0 truncate text-right text-muted-foreground">
+                                {syncStageLabel(item.stageKey, item.stageDetail, item.stageCount, t)}
                                 {count ? ` · ${count}` : ""}
                             </span>
                         </div>
@@ -517,38 +532,33 @@ function domainTranslationKey(domain: AppSyncDomainKey) {
     return domain;
 }
 
-function syncStageLabel(stage: string, t: TFunction) {
-    if (stage === "等待本地数据加载") return t("config.webdav.stages.localWaiting");
-    if (stage === "同步完成") return t("config.webdav.stages.syncComplete");
-    if (stage === "等待同步") return t("config.webdav.stages.waiting");
-    if (stage === "读取远端清单") return t("config.webdav.stages.remoteManifest");
-    if (stage === "读取本地数据") return t("config.webdav.stages.localData");
-    if (stage === "下载缺失媒体") return t("config.webdav.stages.downloadMedia");
-    if (stage === "写入本地合并结果") return t("config.webdav.stages.writeMerge");
-    if (stage === "上传新增媒体") return t("config.webdav.stages.uploadMedia");
-    if (stage === "媒体已齐全") return t("config.webdav.stages.mediaReady");
-    if (stage === "媒体无需上传") return t("config.webdav.stages.mediaSkipped");
-    if (stage === "检查缺失媒体") return t("config.webdav.stages.checkMissingMedia");
-    if (stage === "下载媒体") return t("config.webdav.stages.downloadMediaFile");
-    if (stage === "检查本地媒体") return t("config.webdav.stages.checkLocalMedia");
-    if (stage.startsWith("上传媒体 ")) return t("config.webdav.stages.uploadMediaFile", { size: stage.slice(5) });
-    if (stage === "完成") return t("config.webdav.stages.complete");
-    if (stage.startsWith("上传清单 ")) return t("config.webdav.stages.uploadManifest", { size: stage.slice(5) });
-    return stage;
+function syncStageLabel(stage: AppSyncStageKey | undefined, detail: string | undefined, count: number | undefined, t: TFunction) {
+    if (stage === "waitingLocalData") return t("config.webdav.stages.localWaiting");
+    if (stage === "snapshotComplete") return t("config.webdav.stages.snapshotComplete");
+    if (stage === "snapshotUploaded") return t("config.webdav.stages.snapshotUploaded");
+    if (stage === "importComplete") return t("config.webdav.stages.importComplete");
+    if (stage === "readRemoteSnapshot") return t("config.webdav.stages.readRemoteSnapshot");
+    if (stage === "readLocalData") return t("config.webdav.stages.localData");
+    if (stage === "writeImportData") return t("config.webdav.stages.writeImportData");
+    if (stage === "downloadMedia") return t("config.webdav.stages.downloadMedia");
+    if (stage === "uploadMedia") return t("config.webdav.stages.uploadMediaFile", { size: detail });
+    if (stage === "uploadSnapshotManifest") return t("config.webdav.stages.uploadManifest", { size: detail });
+    if (stage === "prunedSnapshots") return t("config.webdav.stages.prunedSnapshots", { count });
+    if (stage === "complete") return t("config.webdav.stages.complete");
+    if (stage === "error") return detail || t("config.webdav.failed");
+    return t("config.webdav.stages.waiting");
 }
 
 function getWebdavProgressPercent(item: WebdavDomainProgress) {
     if (item.status === "success") return 100;
     if (item.total) return Math.min(100, Math.round(((item.current || 0) / item.total) * 100));
     if (item.status === "exception") return 100;
-    if (item.stage === "等待同步") return 0;
-    if (item.stage === "读取远端清单") return 12;
-    if (item.stage === "读取本地数据") return 24;
-    if (item.stage === "下载缺失媒体") return 36;
-    if (item.stage === "写入本地合并结果") return 58;
-    if (item.stage === "上传新增媒体") return 66;
-    if (item.stage === "媒体已齐全" || item.stage === "媒体无需上传") return 74;
-    if (item.stage.startsWith("上传清单")) return 90;
+    if (item.stageKey === "readRemoteSnapshot") return 12;
+    if (item.stageKey === "readLocalData") return 24;
+    if (item.stageKey === "downloadMedia") return 36;
+    if (item.stageKey === "writeImportData") return 58;
+    if (item.stageKey === "uploadMedia") return 66;
+    if (item.stageKey === "uploadSnapshotManifest") return 90;
     return item.status === "active" ? 30 : 0;
 }
 
