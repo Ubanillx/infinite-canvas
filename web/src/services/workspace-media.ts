@@ -1,5 +1,6 @@
 import localforage from "localforage";
 
+import i18n from "@/i18n";
 import { getActiveWorkspace, workspaceHeaders, workspaceStoreName } from "@/lib/workspace";
 
 function url(key: string) { return `/api/media/blob/${encodeURIComponent(key)}`; }
@@ -12,8 +13,8 @@ export function mediaCacheKey(key: string) { return `${getActiveWorkspace()?.id 
 
 export async function saveMediaBlob(key: string, blob: Blob) {
     const response = await fetch(url(key), { method: "PUT", headers: { ...workspaceHeaders(), "content-type": blob.type || "application/octet-stream" }, body: blob });
-    if (response.status === 413) throw new Error("媒体超过 100 MB，未保存到服务器；请选择更小的文件后重试");
-    if (!response.ok) throw new Error(`媒体保存失败（${response.status}）`);
+    if (response.status === 413) throw new Error(i18n.t("common.mediaTooLarge"));
+    if (!response.ok) throw new Error(i18n.t("common.mediaSaveFailedStatus", { status: response.status }));
 }
 
 export async function loadMediaBlob(key: string): Promise<Blob | null> {

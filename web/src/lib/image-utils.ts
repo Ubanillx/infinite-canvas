@@ -31,11 +31,11 @@ export function getDataUrlByteSize(dataUrl: string) {
     return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
 }
 
-export function readFileAsDataUrl(file: File) {
+export function readFileAsDataUrl(file: Blob) {
     return new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(String(reader.result || ""));
-        reader.onerror = () => reject(new Error(i18n.t("common.imageReadFailed")));
+        reader.onerror = () => reject(new Error(i18n.t("common.fileReadFailed")));
         reader.readAsDataURL(file);
     });
 }

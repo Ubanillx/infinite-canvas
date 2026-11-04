@@ -136,7 +136,7 @@ export default function ImagePage() {
             );
             setReferences((value) => [...value, ...nextReferences]);
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "媒体保存失败");
+            message.error(error instanceof Error ? error.message : t("common.mediaSaveFailed"));
         }
     };
 
@@ -403,9 +403,9 @@ export default function ImagePage() {
             <div className={`flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground transition-[margin-right] duration-300 [&_.ant-btn]:!shadow-none ${settingsOpen || logsOpen ? "lg:mr-[420px]" : ""}`}>
                 <main className="thin-scrollbar min-h-0 flex-1 overflow-y-auto px-4 py-3 lg:px-6">
                     <div className="flex min-h-full w-full flex-col gap-3">
-                        <header className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-                            <h1 className="text-xl font-semibold">{t("imageWorkbench.title")}</h1>
-                            <p className="text-xs text-muted-foreground">{t("imageWorkbench.galleryHint")}</p>
+                        <header>
+                            <h1 className="text-2xl font-semibold">{t("imageWorkbench.title")}</h1>
+                            <p className="mt-1 text-sm text-muted-foreground">{t("imageWorkbench.galleryHint")}</p>
                         </header>
 
                         <section aria-label={t("workbench.logs")}>
@@ -430,6 +430,7 @@ export default function ImagePage() {
                             <div className="mb-2 flex h-8 items-center justify-between gap-1"><h2 className="text-base font-semibold">{t("imageWorkbench.references")}</h2><Tooltip title={t("workbench.clipboard")}><Button type="text" icon={<ClipboardPaste className="size-4" />} aria-label={t("workbench.clipboard")} onClick={() => void addReferencesFromClipboard()} /></Tooltip></div>
                             <div className={`flex min-h-[280px] flex-1 flex-wrap content-start gap-2 rounded-lg border p-2 transition-colors ${isReferenceDragActive ? "border-input bg-muted/40" : "border-border bg-card"}`} onDragEnter={(event) => { event.preventDefault(); dragDepthRef.current += 1; if (event.dataTransfer.types.includes("Files")) setIsReferenceDragActive(true); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; }} onDragLeave={(event) => { event.preventDefault(); dragDepthRef.current = Math.max(0, dragDepthRef.current - 1); if (!dragDepthRef.current) setIsReferenceDragActive(false); }} onDrop={(event) => { event.preventDefault(); dragDepthRef.current = 0; setIsReferenceDragActive(false); void addReferences(event.dataTransfer.files); }}>
                                 <button type="button" onClick={() => fileInputRef.current?.click()} className="flex h-10 w-full items-center justify-center gap-2 rounded-md border border-border bg-muted/30 text-sm transition-colors hover:bg-muted/60 focus-visible:outline-2 focus-visible:outline-ring"><Upload className="size-4" />{t("workbench.upload")}</button>
+                                {!references.length ? <div className="flex min-h-16 w-full items-center justify-center px-2 text-center text-xs text-muted-foreground">{t("imageWorkbench.noReferences")}</div> : null}
                                 {references.map((item, index) => <div key={item.id} className="group relative size-20 shrink-0 overflow-hidden rounded-md"><Image src={previewUrlFor(item.storageKey) || item.dataUrl} preview={{ src: item.dataUrl }} alt={item.name} width={80} height={80} style={{ objectFit: "cover" }} /><span className="pointer-events-none absolute left-1 top-1 rounded border border-border bg-card/90 px-1 text-[10px] text-foreground">{imageReferenceLabel(index)}</span><ReferenceOrderButtons index={index} total={references.length} flat onMove={(offset) => setReferences((value) => moveListItem(value, index, offset))} /><button type="button" aria-label={t("imageWorkbench.removeReference")} onClick={() => setReferences((value) => value.filter((ref) => ref.id !== item.id))} className="absolute right-1 top-1 flex size-6 items-center justify-center rounded border border-border bg-card/90 text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"><Trash2 className="size-3.5" /></button></div>)}
                                 {isReferenceDragActive ? <span className="w-full text-center text-xs text-muted-foreground">{t("imageWorkbench.dropReferences")}</span> : null}
                             </div>

@@ -2,6 +2,7 @@ import localforage from "localforage";
 
 import { nanoid } from "nanoid";
 import i18n from "@/i18n";
+import { readFileAsDataUrl } from "@/lib/image-utils";
 import { workspaceStoreName } from "@/lib/workspace";
 import { createImageThumbnail } from "@/lib/image-thumbnail";
 import { loadMediaBlob, mediaCacheKey, removeMediaBlob, saveMediaBlob } from "@/services/workspace-media";
@@ -21,6 +22,7 @@ const previewStore = localforage.createInstance({ name: "infinite-canvas", store
 const imageLogStore = localforage.createInstance({ name: "infinite-canvas", storeName: workspaceStoreName("image_generation_logs") });
 const videoLogStore = localforage.createInstance({ name: "infinite-canvas", storeName: workspaceStoreName("video_generation_logs") });
 const objectUrls = new Map<string, string>();
+const imageLoads = new Map<string, Promise<string | undefined>>();
 const previewUrls = new Map<string, string>();
 const previewListeners = new Set<() => void>();
 const previewListenersByKey = new Map<string, Set<() => void>>();
@@ -130,13 +132,20 @@ function throwIfAborted(signal?: AbortSignal) {
 
 export async function resolveImageUrl(storageKey?: string, fallback = "") {
     if (!storageKey) return fallback;
-    const cached = objectUrls.get(mediaCacheKey(storageKey));
+    const key = mediaCacheKey(storageKey);
+    const cached = objectUrls.get(key);
     if (cached) return cached;
-    const blob = await loadMediaBlob(storageKey);
-    if (!blob) return fallback;
-    const url = URL.createObjectURL(blob);
-    objectUrls.set(mediaCacheKey(storageKey), url);
-    return url;
+    let pending = imageLoads.get(key);
+    if (!pending) {
+        pending = loadMediaBlob(storageKey).then((blob) => {
+            if (!blob) return undefined;
+            const url = URL.createObjectURL(blob);
+            objectUrls.set(key, url);
+            return url;
+        }).finally(() => imageLoads.delete(key));
+        imageLoads.set(key, pending);
+    }
+    return (await pending) || fallback;
 }
 
 export async function getImageBlob(storageKey: string) {
@@ -229,7 +238,7 @@ export async function setImageBlob(storageKey: string, blob: Blob) {
 export async function imageToDataUrl(image: { url?: string; dataUrl?: string; storageKey?: string }, options?: ImageReadOptions) {
     const url = image.dataUrl || (await resolveImageUrl(image.storageKey, image.url || ""));
     if (!url || url.startsWith("data:")) return url;
-    return blobToDataUrl(await fetchImageBlob(url, options));
+    return readFileAsDataUrl(await fetchImageBlob(url, options));
 }
 
 export async function deleteStoredImages(keys: Iterable<string>) {
@@ -272,13 +281,4 @@ export function collectImageStorageKeys(value: unknown, keys = new Set<string>()
     if ("storageKey" in value && typeof value.storageKey === "string" && value.storageKey.startsWith("image:")) keys.add(value.storageKey);
     Object.values(value).forEach((item) => (Array.isArray(item) ? item.forEach((child) => collectImageStorageKeys(child, keys)) : collectImageStorageKeys(item, keys)));
     return keys;
-}
-
-function blobToDataUrl(blob: Blob) {
-    return new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ""));
-        reader.onerror = () => reject(new Error(i18n.t("common.imageReadFailed")));
-        reader.readAsDataURL(blob);
-    });
 }

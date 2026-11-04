@@ -348,7 +348,7 @@ async function resolveSeedanceVideoUrl(video: ReferenceVideo) {
     if (video.storageKey) blob = await getMediaBlob(video.storageKey);
     if (!blob && video.url?.startsWith("blob:")) blob = await (await fetch(video.url)).blob();
     if (!blob) throw new Error(apiText("invalidReferenceVideo"));
-    return blobToDataUrl(blob);
+    return readFileAsDataUrl(blob);
 }
 
 async function resolveSeedanceAudioUrl(audio: ReferenceAudio) {
@@ -357,7 +357,7 @@ async function resolveSeedanceAudioUrl(audio: ReferenceAudio) {
     if (audio.storageKey) blob = await getMediaBlob(audio.storageKey);
     if (!blob && audio.url?.startsWith("blob:")) blob = await (await fetch(audio.url)).blob();
     if (!blob) throw new Error(apiText("invalidReferenceAudio"));
-    return blobToDataUrl(blob);
+    return readFileAsDataUrl(blob);
 }
 
 async function videoResultFromUrl(url: string, options?: RequestOptions): Promise<VideoGenerationResult> {
