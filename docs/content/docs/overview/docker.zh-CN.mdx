@@ -28,6 +28,14 @@ docker compose -f docker-compose.local.yml up -d --build --wait --wait-timeout 1
 
 旧容器使用 root 目录的卷需要先离线备份并验证 UID、文件权限与配置内绝对路径；不自动修改未知卷。Codex 登录状态不能放入镜像，由管理员首次登录后保存在专用卷中。
 
+## Keycloak 统一登录
+
+配置 `KEYCLOAK_URL`、`KEYCLOAK_REALM`、`KEYCLOAK_CLIENT_ID`，机密客户端再配置 `KEYCLOAK_CLIENT_SECRET`，登录页就会提供「使用 Keycloak 登录」。应用使用 OpenID Connect 授权码流程与 PKCE，不保存 Keycloak 密码；首次登录会按 `preferred_username`（或 `email`）创建本地用户和个人工作区，后续按 Keycloak `sub` 复用。启用后默认关闭本地注册和登录；需要保留管理员应急入口时设置 `KEYCLOAK_ALLOW_LOCAL_LOGIN=true`。
+
+最早注册且当前仍可登录的账户会自动成为系统管理员（仅启用 Keycloak 登录时取最早的统一身份账户）。管理员可在配置页的「用户与工作区」标签中授予或撤销其他用户的管理员权限。设置 `INFINITE_CANVAS_ADMIN_USERNAMES` 为逗号分隔的用户名列表，可让这些账户始终保持管理员身份，适合 Keycloak 部署和应急恢复。
+
+Keycloak 客户端需要登记回调地址 `/api/auth/keycloak/callback` 和退出回跳地址 `/`。反向代理未传递 `X-Forwarded-Proto` / `X-Forwarded-Host` 时，用 `KEYCLOAK_REDIRECT_URI` 和 `KEYCLOAK_POST_LOGOUT_REDIRECT_URI` 显式指定完整地址。仅本地 HTTP 测试可设置 `KEYCLOAK_ALLOW_INSECURE=true`。现有本地账户不会自动绑定，详细配置与边界见仓库 `deploy/README.md`。
+
 ## 自动发布
 
 [Jenkins 自动部署](/zh-CN/docs/overview/jenkins) 使用 deploy 分支、GitHub Push Webhook、SSH 严格主机密钥校验、镜像 ID 校验、Compose 健康检查及上一版本恢复。冒烟检查会在隔离的 Compose 项目中临时拉起同一套 PostgreSQL 与 RustFS，通过后清理；部署只重建 `app`，数据服务与数据卷不随版本回滚。部署主机不访问镜像仓库，缺失的数据服务镜像由构建节点导出后经 SSH 传输加载。详细配置见仓库 deploy/README.md。

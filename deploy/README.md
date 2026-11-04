@@ -180,6 +180,25 @@ sudo install -m 600 -o canvas-deploy -g canvas-deploy deploy/production.env.exam
 
 首次部署遇到同名但不受 current 管理的已有容器会拒绝接管，防止误覆盖旧部署。Compose 项目名、数据卷身份和部署目录应长期稳定。
 
+### Keycloak 统一登录
+
+应用通过 OpenID Connect 授权码流程和 PKCE 接入 Keycloak，不代理或保存 Keycloak 密码。在 `shared/production.env` 中配置 `KEYCLOAK_URL`、`KEYCLOAK_REALM`、`KEYCLOAK_CLIENT_ID`；机密客户端再配置 `KEYCLOAK_CLIENT_SECRET`。`KEYCLOAK_URL` 必须是浏览器可访问的 Keycloak 外部地址，不能填容器内部地址；应用容器同时需要能访问该地址完成发现和令牌交换。三项必填配置齐全后，未登录页面会显示「使用 Keycloak 登录」，并默认关闭本地注册和登录，避免绕过统一认证；已有本地会话也会失效。需要保留管理员应急入口时显式设置 `KEYCLOAK_ALLOW_LOCAL_LOGIN=true`。
+
+最早注册且当前仍可登录的账户会自动成为系统管理员（仅启用 Keycloak 登录时取最早的统一身份账户）；管理员可在配置页「用户与工作区」中授予或撤销其他用户。`INFINITE_CANVAS_ADMIN_USERNAMES` 可配置逗号分隔的用户名列表，这些账户始终保留管理员身份，适合统一登录和应急恢复；从环境变量移除后，需在管理页确认管理员权限已按预期保留。
+
+Keycloak 侧需要：
+
+- 客户端启用 Standard flow，关闭 Implicit flow，响应模式保持默认 query。
+- 高级设置建议将 Proof Key for Code Exchange Code Challenge Method 设为 S256；应用始终发送 PKCE 参数。
+- Valid redirect URIs 登记 `https://canvas.example.com/api/auth/keycloak/callback`。
+- Valid post logout redirect URIs 登记 `https://canvas.example.com/`。
+- 使用公开客户端时可以留空 `KEYCLOAK_CLIENT_SECRET`，公开客户端必须在 Keycloak 侧启用 PKCE。
+- 应用接受该客户端签发的所有有效身份；需要限制访问范围时，应在 Keycloak 侧通过客户端角色、用户组或认证流程控制。
+
+通过 Keycloak 首次登录时，应用按 `preferred_username`（缺失时用 `email`）创建本地用户和个人工作区，并把 Keycloak 的 `sub` 保存到 `user_identities`；后续登录复用同一用户。用户名与现有本地账户冲突时会追加数字后缀。现有本地账户不会自动绑定 Keycloak 身份；启用统一登录后这些账户默认无法再登录，需要保留访问时设置 `KEYCLOAK_ALLOW_LOCAL_LOGIN=true`。
+
+反向代理没有传递 `X-Forwarded-Proto` / `X-Forwarded-Host` 时，必须显式设置 `KEYCLOAK_REDIRECT_URI` 和 `KEYCLOAK_POST_LOGOUT_REDIRECT_URI`，并保证与 Keycloak 登记值完全一致。只有本地 HTTP Keycloak 测试才设置 `KEYCLOAK_ALLOW_INSECURE=true`。退出登录会清除本地会话并跳转 Keycloak 结束会话；Keycloak 管理员禁用用户不会立即使已建立的本地会话失效。
+
 ### 导入宿主机 Codex 配置
 
 网页助手使用镜像内安装的 Codex，不使用宿主机的全局 CLI。将仓库中的 `deploy/import-codex-config.sh` 单独复制到部署机，以已经配置好 Codex 且可执行 Docker 的用户运行：

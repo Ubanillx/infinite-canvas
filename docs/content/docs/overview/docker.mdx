@@ -26,6 +26,14 @@ Two companion services hold the data layer: PostgreSQL stores accounts, workspac
 
 Named volumes persist `/data`, `/home/node/.infinite-canvas`, `/home/node/.codex` and the PostgreSQL and RustFS data directories. WebDAV uses manual snapshot upload/import. Do not delete volumes during updates. Back up both the PostgreSQL database and the object bucket; backing up only one leaves data and media inconsistent. Existing root-owned volumes require an explicit offline migration review of ownership and absolute workspace paths. Codex authentication is provisioned after startup and must never be baked into the image.
 
+## Keycloak single sign-on
+
+Set `KEYCLOAK_URL`, `KEYCLOAK_REALM` and `KEYCLOAK_CLIENT_ID`, plus `KEYCLOAK_CLIENT_SECRET` for a confidential client, to show the "Sign in with Keycloak" entry. The app uses the OpenID Connect authorization code flow with PKCE and never stores Keycloak passwords. The first login provisions a local user and personal workspace from `preferred_username` (or `email`), keyed by the Keycloak `sub` afterwards. Local registration and login are disabled by default while Keycloak is enabled; set `KEYCLOAK_ALLOW_LOCAL_LOGIN=true` only to keep an administrator fallback.
+
+The earliest registered account that can still sign in becomes the system administrator (when Keycloak-only login is enabled, this is the earliest Keycloak-linked account). Administrators can grant or revoke administrator access from the "Users & workspaces" settings tab. Set `INFINITE_CANVAS_ADMIN_USERNAMES` to a comma-separated username list to always keep those accounts as administrators, which is useful for Keycloak deployments and emergency recovery.
+
+Register `/api/auth/keycloak/callback` as a valid redirect URI and `/` as a valid post logout redirect URI in the Keycloak client. Behind a proxy that does not forward `X-Forwarded-Proto` / `X-Forwarded-Host`, set `KEYCLOAK_REDIRECT_URI` and `KEYCLOAK_POST_LOGOUT_REDIRECT_URI` explicitly. Only local HTTP testing should set `KEYCLOAK_ALLOW_INSECURE=true`. Existing local accounts are not linked automatically; see `deploy/README.md` for the detailed configuration and limits.
+
 ## Automatic releases
 
 [Jenkins Deployment](/docs/overview/jenkins) accepts only deploy-branch pushes through a GitHub Webhook, transfers images over pinned SSH and verifies Compose health before recording success. The smoke check briefly starts the same PostgreSQL and RustFS stack in an isolated Compose project and cleans it up afterwards. Deployments rebuild only `app`; data services and their volumes are never rolled back with an image. The deploy host does not reach an image registry; missing data service images are exported from the build node and transferred over SSH. Failed updates attempt to restore the previous image and runtime configuration, not business data. See deploy/README.md in the repository for setup and rollback.
