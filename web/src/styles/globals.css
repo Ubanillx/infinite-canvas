@@ -153,7 +153,8 @@
     }
 }
 
-.ant-select .ant-select-arrow {
+.ant-select .ant-select-arrow,
+.ant-select .ant-select-suffix {
     display: none;
 }
 

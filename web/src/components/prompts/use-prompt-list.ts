@@ -8,6 +8,8 @@ export const PROMPT_PAGE_SIZE = 20;
 
 export function usePromptList({ keyword, tags, category, enabled = true }: { keyword: string; tags: string[]; category: string; enabled?: boolean }) {
     const [debouncedKeyword, setDebouncedKeyword] = useState(keyword);
+    const [knownTags, setKnownTags] = useState<string[]>([]);
+    const [knownCategories, setKnownCategories] = useState<string[]>([]);
     useEffect(() => {
         const timer = setTimeout(() => setDebouncedKeyword(keyword), 300);
         return () => clearTimeout(timer);
@@ -20,11 +22,15 @@ export function usePromptList({ keyword, tags, category, enabled = true }: { key
         enabled,
     });
     const firstPage = query.data?.pages[0];
+    useEffect(() => {
+        if (firstPage?.tags?.length) setKnownTags(firstPage.tags);
+        if (firstPage?.categories?.length) setKnownCategories(firstPage.categories);
+    }, [firstPage]);
     return {
         query,
         items: useMemo(() => query.data?.pages.flatMap((page) => page.items) || [], [query.data?.pages]),
-        tags: useMemo(() => [ALL_PROMPTS_OPTION, ...(firstPage?.tags || [])], [firstPage?.tags]),
-        categories: useMemo(() => [ALL_PROMPTS_OPTION, ...(firstPage?.categories || [])], [firstPage?.categories]),
+        tags: useMemo(() => [ALL_PROMPTS_OPTION, ...(knownTags.length ? knownTags : firstPage?.tags || [])], [firstPage?.tags, knownTags]),
+        categories: useMemo(() => [ALL_PROMPTS_OPTION, ...(knownCategories.length ? knownCategories : firstPage?.categories || [])], [firstPage?.categories, knownCategories]),
         total: firstPage?.total || 0,
     };
 }

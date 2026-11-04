@@ -139,7 +139,7 @@ export default function AssetsPage() {
             if (!form.getFieldValue("coverUrl")) form.setFieldValue("coverUrl", draft.dataUrl);
             if (!form.getFieldValue("title")) form.setFieldValue("title", file.name);
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "媒体保存失败");
+            message.error(error instanceof Error ? error.message : t("common.mediaSaveFailed"));
         }
     };
 
@@ -203,10 +203,10 @@ export default function AssetsPage() {
                 <div className="flex w-full flex-col gap-6">
                     <header className="flex flex-wrap items-end justify-between gap-5">
                         <div><p className="text-xs text-muted-foreground">{t("assets.library")}</p><h1 className="mt-1 text-2xl font-semibold">{t("assets.title")}</h1><p className="mt-1 text-sm text-muted-foreground">{t("assets.description")}</p></div>
-                        <div className="flex flex-wrap gap-2">
+                        <div className="flex max-w-full w-full flex-wrap gap-2 sm:w-auto">
                             <Button icon={<Download className="size-4" />} onClick={() => void exportAllAssets()}>{t("assets.export")}</Button>
                             <Button icon={<FileUp className="size-4" />} onClick={() => assetInputRef.current?.click()}>{t("assets.import")}</Button>
-                            <Button type="primary" className="!shadow-none" icon={<Plus className="size-4" />} onClick={openCreate}>{t("assets.add")}</Button>
+                            <Button type="primary" className="order-first !shadow-none w-full sm:order-none sm:w-auto" icon={<Plus className="size-4" />} onClick={openCreate}>{t("assets.add")}</Button>
                         </div>
                     </header>
                     <div className="flex flex-wrap items-center gap-3 border-b border-border pb-5">
@@ -221,7 +221,7 @@ export default function AssetsPage() {
                         ))}
                     </div>
 
-                    {!visibleAssets.length ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("assets.empty")} className="py-20" /> : null}
+                    {!visibleAssets.length ? <div className="flex flex-col items-center py-16"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("assets.empty")} className="!my-0" /><Button type="primary" className="!mt-4 !shadow-none" icon={<Plus className="size-4" />} onClick={openCreate}>{t("assets.add")}</Button></div> : null}
 
                     <div className="flex justify-center pt-2">
                         <Pagination
@@ -279,7 +279,7 @@ export default function AssetsPage() {
                             </Form.Item>
                         ) : (
                             <Form.Item label={t("assets.fields.imageContent")} required>
-                                <div className="rounded-lg border border-dashed border-stone-300 p-4 dark:border-stone-700">
+                                <div className="rounded-lg border border-dashed border-border p-4">
                                     <Button icon={<Upload className="size-4" />} onClick={() => imageInputRef.current?.click()}>
                                         {t("assets.selectImageFile")}
                                     </Button>
@@ -296,13 +296,13 @@ export default function AssetsPage() {
                             </Form.Item>
                         )}
                     </Form>
-                    <div className="rounded-xl border border-stone-200 bg-stone-50 p-4 dark:border-stone-800 dark:bg-stone-950">
+                    <div className="rounded-xl border border-border bg-muted/40 p-4">
                         <Typography.Text strong>{t("assets.preview")}</Typography.Text>
-                        <div className="mt-3 overflow-hidden rounded-lg border border-stone-200 bg-background dark:border-stone-800">
+                        <div className="mt-3 overflow-hidden rounded-lg border border-border bg-background">
                             {coverUrl || imageDraft?.dataUrl ? (
                                 <img src={coverUrl || imageDraft?.dataUrl} alt="" className="aspect-[4/3] w-full object-cover" />
                             ) : (
-                                <div className="flex aspect-[4/3] items-center justify-center bg-stone-100 p-5 text-center text-sm text-stone-500 dark:bg-stone-900">{content || t("assets.noCover")}</div>
+                                <div className="flex aspect-[4/3] items-center justify-center bg-muted p-5 text-center text-sm text-muted-foreground">{content || t("assets.noCover")}</div>
                             )}
                             <div className="p-4">
                                 <Typography.Text strong ellipsis className="block">
@@ -360,7 +360,7 @@ function AssetCard({ asset, onOpen, onEdit, onCopy, onDownload, onDelete }: { as
     const { t } = useTranslation();
     useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
     const cover = assetCoverUrl(asset);
-    const summary = assetSummary(asset);
+    const summary = asset.kind === "text" ? asset.note?.trim() || "" : assetSummary(asset);
     return (
         <Card
             hoverable
@@ -380,16 +380,16 @@ function AssetCard({ asset, onOpen, onEdit, onCopy, onDownload, onDelete }: { as
                 <div className="p-4">
                     <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                            <h2 className="line-clamp-1 text-sm font-semibold text-stone-950 dark:text-stone-100">{asset.title}</h2>
+                            <h2 className="line-clamp-1 text-sm font-semibold text-foreground">{asset.title}</h2>
                             <Typography.Text type="secondary" className="mt-1 block text-xs">
                                 {asset.source || t("assets.unknownSource")}
                             </Typography.Text>
                         </div>
                         <Tag className="m-0 shrink-0 text-[11px]">{t(`assets.kinds.${asset.kind}`)}</Tag>
                     </div>
-                    <Typography.Paragraph type="secondary" ellipsis={{ rows: 3 }} className="!mb-0 !mt-2 !text-xs !leading-5">
+                    {summary ? <Typography.Paragraph type="secondary" ellipsis={{ rows: 3 }} className="!mb-0 !mt-2 !text-xs !leading-5">
                         {summary}
-                    </Typography.Paragraph>
+                    </Typography.Paragraph> : null}
                     <div className="mt-3 flex flex-wrap gap-1.5">
                         {(asset.tags || []).slice(0, 3).map((tag) => (
                             <Tag key={tag} className="m-0 text-[11px]">
@@ -401,25 +401,25 @@ function AssetCard({ asset, onOpen, onEdit, onCopy, onDownload, onDelete }: { as
                 </div>
             </button>
             <div className="flex items-center gap-2 px-4 pb-4">
-                <Button size="small" onClick={onOpen}>
+                <Button type="text" size="small" onClick={onOpen}>
                     {t("common.view")}
                 </Button>
                 {asset.kind !== "video" ? (
-                    <Button size="small" icon={<PencilLine className="size-3.5" />} onClick={onEdit}>
+                    <Button type="text" size="small" icon={<PencilLine className="size-3.5" />} onClick={onEdit}>
                         {t("common.edit")}
                     </Button>
                 ) : null}
                 {asset.kind === "text" ? (
-                    <Button size="small" icon={<Copy className="size-3.5" />} onClick={() => void onCopy(asset)}>
+                    <Button type="text" size="small" icon={<Copy className="size-3.5" />} onClick={() => void onCopy(asset)}>
                         {t("common.copy")}
                     </Button>
                 ) : null}
                 {asset.kind === "image" || asset.kind === "video" ? (
-                    <Button size="small" icon={<Download className="size-3.5" />} onClick={() => onDownload(asset)}>
+                    <Button type="text" size="small" icon={<Download className="size-3.5" />} onClick={() => onDownload(asset)}>
                         {t("common.download")}
                     </Button>
                 ) : null}
-                <Button size="small" danger icon={<Trash2 className="size-3.5" />} onClick={onDelete}>
+                <Button type="text" size="small" danger icon={<Trash2 className="size-3.5" />} onClick={onDelete}>
                     {t("common.delete")}
                 </Button>
             </div>
@@ -438,7 +438,7 @@ function AssetDrawer({ asset, onClose, onCopy, onDownload }: { asset: Asset | nu
                     {cover ? (
                         <Image src={assetCoverUrl(asset)} preview={{ src: cover }} alt={asset.title} className="rounded-lg" />
                     ) : (
-                        <div className="rounded-lg border border-stone-200 bg-stone-50 p-5 text-sm leading-6 text-stone-600 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-300">{asset.kind === "text" ? asset.data.content : t("assets.noCover")}</div>
+                        <div className="rounded-lg border border-border bg-muted/40 p-5 text-sm leading-6 text-muted-foreground">{asset.kind === "text" ? asset.data.content : t("assets.noCover")}</div>
                     )}
                     <div>
                         <Typography.Title level={4} className="!mb-2">
@@ -451,7 +451,7 @@ function AssetDrawer({ asset, onClose, onCopy, onDownload }: { asset: Asset | nu
                             ))}
                         </Space>
                     </div>
-                    <div className="rounded-lg border border-stone-200 p-4 dark:border-stone-800">
+                    <div className="rounded-lg border border-border p-4">
                         <Typography.Text type="secondary" className="block text-xs">
                             {t("assets.fields.textContent")}
                         </Typography.Text>
@@ -503,7 +503,8 @@ async function readAssetMediaBlob(asset: Extract<Asset, { kind: "image" | "video
 
 function assetSummary(asset: Asset) {
     if (asset.kind === "text") return asset.data.content;
-    return `${asset.data.width}x${asset.data.height} · ${formatBytes(asset.data.bytes)} · ${asset.data.mimeType}`;
+    const type = asset.data.mimeType.split("/")[1]?.split(";")[0]?.split("+")[0]?.toUpperCase() || asset.data.mimeType;
+    return `${asset.data.width}×${asset.data.height} · ${formatBytes(asset.data.bytes)} · ${type}`;
 }
 
 function assetSearchText(asset: Asset) {
