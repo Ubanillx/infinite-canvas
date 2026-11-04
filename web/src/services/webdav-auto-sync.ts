@@ -1,10 +1,10 @@
-import { syncAppDataToWebdav, type AppSyncProgress } from "@/services/app-sync";
+import { syncAppDataToWebdav, type AppSyncProgress, type AppSyncStageKey } from "@/services/app-sync";
 import { useConfigStore, type WebdavSyncConfig } from "@/stores/use-config-store";
 
 export type WebdavAutoSyncStatus = {
     state: "idle" | "syncing" | "success" | "error";
     reason: "config" | "data" | "manual";
-    stage: string;
+    stage: AppSyncStageKey | "";
     syncedAt: string;
     error: string;
 };
