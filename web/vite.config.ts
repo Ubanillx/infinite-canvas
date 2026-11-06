@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { readdirSync, readFileSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
@@ -15,7 +15,7 @@ import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 
 import { parseChangelog } from "./src/lib/release";
-import { execute, findOrCreateSsoUser, findSessionUser, getPool, hashPassword, hashToken, isConfiguredAdmin, isoNow, newId, newSessionToken, queryMany, queryOne, toIso, verifyPassword, withTransaction, type DbUser, type SessionUser, type SqlExecutor } from "./src/server/db";
+import { bindSsoIdentity, execute, findOrCreateSsoUser, findSessionUser, getPool, hashPassword, hashToken, isConfiguredAdmin, isoNow, listUserIdentities, newId, newSessionToken, queryMany, queryOne, readUserPreferences, saveUserPreferences, SsoBindingError, toIso, unbindSsoIdentity, verifyPassword, withTransaction, type DbUser, type SessionUser, type SqlExecutor } from "./src/server/db";
 import { completeKeycloakAuthorization, createKeycloakAuthorization, isKeycloakEnabled, keycloakLogoutUrl, keycloakProfile, localLoginAllowed, type KeycloakTransaction } from "./src/server/keycloak";
 import { copyMediaObject, getMediaObject, headMediaObject, isMissingObject, mediaObjectKey, putMediaStream } from "./src/server/object-storage";
 import { extractMediaReferences, MEDIA_REFERENCE_DOMAINS, MediaReferenceError, replaceDomainMediaReferences, runMediaGcDryRun } from "./src/server/media-references";
@@ -24,6 +24,8 @@ import { readAgentAttachments, saveAgentAttachments, updateAgentAttachments } fr
 import { AgentAttachmentError } from "./src/lib/agent/agent-attachment-contract";
 import { canvasAgentProxyPath, forwardCanvasAgent } from "./src/server/canvas-agent-gateway";
 import { homedir } from "node:os";
+import { consumeRegistrationCode, normalizeRegistrationEmail, readRegistrationConfig, redactRegistrationConfig, registrationPolicy, RegistrationError, saveRegistrationConfig, sendRegistrationCode, verifiedSsoRegistrationEmail, verifyRegistrationSmtp } from "./src/server/registration";
+import { normalizeUserPreferences } from "./src/lib/user-preferences";
 
 const webDir = dirname(fileURLToPath(import.meta.url));
 const localVersion = readFileSync(resolve(webDir, "../VERSION"), "utf8").trim() || "dev";
@@ -39,7 +41,7 @@ const maxServerConfigBytes = 1024 * 1024;
 const aiProxyPath = "/api/ai";
 const maxAiRequestBytes = 64 * 1024 * 1024;
 const maxMediaBytes = 100 * 1024 * 1024;
-const protectedApiPaths = ["/api/auth", "/api/config", "/api/workspaces", "/api/admin", "/api/data", "/api/prompts", "/api/media", "/api/prompt-source", "/api/remote-media", aiProxyPath, "/api/webdav", "/api/image-proxy", canvasAgentProxyPath];
+const protectedApiPaths = ["/api/auth", "/api/config", "/api/preferences", "/api/workspaces", "/api/admin", "/api/data", "/api/prompts", "/api/media", "/api/prompt-source", "/api/remote-media", aiProxyPath, "/api/webdav", "/api/image-proxy", canvasAgentProxyPath];
 const allowedNetworks = (process.env.INFINITE_CANVAS_ALLOWED_NETWORKS || "127.0.0.1,::1,192.168.0.0/22,172.16.0.0/12")
     .split(",")
     .map((value) => value.trim())
@@ -49,6 +51,8 @@ const authCookieName = "infinite_canvas_session";
 const authCookieMaxAgeSeconds = 60 * 60 * 24 * 30;
 const oidcCookieName = "infinite_canvas_oidc";
 const oidcCookieMaxAgeSeconds = 10 * 60;
+// 事务 cookie 只用于一次 OIDC 往返；未配置独立密钥时使用进程内密钥，重启后未完成的登录需重试。
+const oidcTransactionSecret = process.env.KEYCLOAK_CLIENT_SECRET?.trim() || randomBytes(32).toString("base64url");
 type AuthenticatedRequest = IncomingMessage & { infiniteCanvasUser?: SessionUser };
 
 function sessionContext(): Plugin {
@@ -87,17 +91,29 @@ function setSessionCookie(res: ServerResponse, token: string, maxAge = authCooki
     appendSetCookie(res, `${authCookieName}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? "; Secure" : ""}`);
 }
 
+function signOidcTransaction(value: string) {
+    return createHmac("sha256", oidcTransactionSecret).update(value).digest("base64url");
+}
+
 function oidcCookie(transaction: KeycloakTransaction | undefined, maxAge = oidcCookieMaxAgeSeconds, secure = false) {
     const value = transaction ? Buffer.from(JSON.stringify(transaction), "utf8").toString("base64url") : "";
-    return `${oidcCookieName}=${value}; Path=/api/auth/keycloak; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? "; Secure" : ""}`;
+    const signed = value ? `${value}.${signOidcTransaction(value)}` : "";
+    return `${oidcCookieName}=${signed}; Path=/api/auth/keycloak; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? "; Secure" : ""}`;
 }
 
 function parseOidcCookie(req: IncomingMessage) {
     const raw = parseCookie(req.headers.cookie || "")[oidcCookieName];
     if (!raw) return null;
     try {
-        const value = JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as Partial<KeycloakTransaction>;
+        const [payload, signature] = raw.split(".");
+        if (!payload || !signature) return null;
+        const expected = Buffer.from(signOidcTransaction(payload));
+        const actual = Buffer.from(signature);
+        if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return null;
+        const value = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Partial<KeycloakTransaction>;
         if (typeof value.state !== "string" || typeof value.nonce !== "string" || typeof value.codeVerifier !== "string" || typeof value.redirect !== "string" || typeof value.redirectUri !== "string") return null;
+        if (value.mode !== undefined && value.mode !== "login" && value.mode !== "bind") return null;
+        if (value.userId !== undefined && typeof value.userId !== "string") return null;
         const redirectUri = new URL(value.redirectUri);
         if (redirectUri.protocol !== "https:" && redirectUri.protocol !== "http:") return null;
         return value as KeycloakTransaction;
@@ -157,7 +173,21 @@ async function createSession(req: IncomingMessage, res: ServerResponse, db: SqlE
 }
 
 function publicUser(user: DbUser) {
-    return { id: user.id, username: user.username, displayName: user.displayName, isAdmin: user.isAdmin, createdAt: user.createdAt };
+    return { id: user.id, username: user.username, displayName: user.displayName, isAdmin: user.isAdmin, createdAt: user.createdAt, email: user.email ?? null, emailVerifiedAt: user.emailVerifiedAt ?? null, hasPassword: Boolean(user.hasPassword) };
+}
+
+function accountSettingsRedirect(value: string, notice: string) {
+    const url = new URL(safeRedirectPath(value), "http://localhost");
+    url.searchParams.set("account", "settings");
+    url.searchParams.set("notice", notice);
+    return `${url.pathname}${url.search}${url.hash}`;
+}
+
+function accountSettingsErrorRedirect(value: string, code: string) {
+    const url = new URL(safeRedirectPath(value), "http://localhost");
+    url.searchParams.set("account", "settings");
+    url.searchParams.set("auth_error", code);
+    return `${url.pathname}${url.search}${url.hash}`;
 }
 
 function authAccess(): Plugin {
@@ -169,11 +199,14 @@ function authAccess(): Plugin {
             const db = await getPool();
             const current = (req as AuthenticatedRequest).infiniteCanvasUser;
             const localAuthBlocked = !localLoginAllowed();
-            if (localAuthBlocked && req.method === "POST" && (requestUrl.pathname === "/api/auth/register" || requestUrl.pathname === "/api/auth/login")) return sendJson(res, 403, { error: "已启用统一登录，请使用 Keycloak 登录" });
+            if (localAuthBlocked && req.method === "POST" && ["/api/auth/register", "/api/auth/register/code", "/api/auth/login"].includes(requestUrl.pathname)) return sendJson(res, 403, { error: "已启用统一登录，请使用 Keycloak 登录" });
+            if (requestUrl.pathname === "/api/auth/registration" && req.method === "GET") return sendJson(res, 200, { ...registrationPolicy(await readRegistrationConfig(db)), localLogin: !localAuthBlocked });
+            if (requestUrl.pathname === "/api/auth/register/code" && req.method === "POST") return sendJson(res, 200, await sendRegistrationCode((await readJsonBody(req)).email));
             if (requestUrl.pathname === "/api/auth/register" && req.method === "POST") {
                 const body = await readJsonBody(req);
                 const username = typeof body.username === "string" ? body.username.trim() : "";
                 const password = typeof body.password === "string" ? body.password : "";
+                const email = normalizeRegistrationEmail(body.email);
                 const displayName = typeof body.displayName === "string" ? body.displayName.trim() : username;
                 const workspaceName = typeof body.workspaceName === "string" ? body.workspaceName.trim() : `${displayName || username}的工作区`;
                 if (!/^[\p{L}\p{N}._-]{3,64}$/u.test(username) || password.length < 8 || password.length > 256 || !displayName || displayName.length > 80 || !workspaceName || workspaceName.length > 80) return sendJson(res, 400, { error: "用户名、密码或工作区名称无效" });
@@ -182,14 +215,20 @@ function authAccess(): Plugin {
                 const userId = newId();
                 const workspaceId = newId();
                 let userIsAdmin = isConfiguredAdmin(username);
-                await withTransaction(async (tx) => {
+                const registrationError = await withTransaction(async (tx) => {
                     await execute(tx, "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)", "infinite-canvas:first-user");
+                    if (await queryOne(tx, "SELECT 1 FROM users WHERE lower(username) = lower($1)", username)) return "用户名已存在";
+                    if (await queryOne(tx, "SELECT 1 FROM users WHERE lower(email) = $1", email)) return "该工作邮箱已绑定账户，请直接登录";
+                    const codeError = await consumeRegistrationCode(tx, email, body.challengeToken, body.code);
+                    if (codeError) return codeError;
                     userIsAdmin ||= !(await queryOne(tx, "SELECT 1 FROM users LIMIT 1"));
-                    await execute(tx, "INSERT INTO users (id, username, display_name, password_hash, is_admin, created_at) VALUES ($1, $2, $3, $4, $5, $6)", userId, username, displayName, hashPassword(password), userIsAdmin, now);
+                    await execute(tx, "INSERT INTO users (id, username, display_name, password_hash, is_admin, created_at, email, email_verified_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $6)", userId, username, displayName, hashPassword(password), userIsAdmin, now, email);
                     await execute(tx, "INSERT INTO workspaces (id, name, owner_user_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)", workspaceId, workspaceName, userId, now, now);
                     await execute(tx, "INSERT INTO workspace_members (workspace_id, user_id, role, created_at) VALUES ($1, $2, 'owner', $3)", workspaceId, userId, now);
+                    return null;
                 });
-                const user = { id: userId, username, displayName, isAdmin: userIsAdmin, createdAt: now } satisfies DbUser;
+                if (registrationError) return sendJson(res, 400, { error: registrationError });
+                const user = { id: userId, username, displayName, isAdmin: userIsAdmin, createdAt: now, email, emailVerifiedAt: now, hasPassword: true } satisfies DbUser;
                 await createSession(req, res, db, userId);
                 return sendJson(res, 201, { user: publicUser(user), workspaces: [{ id: workspaceId, name: workspaceName, role: "owner", createdAt: now }] });
             }
@@ -200,17 +239,20 @@ function authAccess(): Plugin {
                 const row = await queryOne<{ id: string; username: string; display_name: string; is_admin: boolean; password_hash: string; created_at: Date }>(db, "SELECT id, username, display_name, is_admin, password_hash, created_at FROM users WHERE lower(username) = lower($1)", username);
                 if (!row || !verifyPassword(password, row.password_hash)) return sendJson(res, 401, { error: "用户名或密码不正确" });
                 await createSession(req, res, db, row.id);
-                return sendJson(res, 200, { user: { id: row.id, username: row.username, displayName: row.display_name, isAdmin: row.is_admin, createdAt: toIso(row.created_at) }, workspaces: await listUserWorkspaces(db, row.id) });
+                return sendJson(res, 200, { user: { id: row.id, username: row.username, displayName: row.display_name, isAdmin: row.is_admin, createdAt: toIso(row.created_at), hasPassword: Boolean(row.password_hash) }, workspaces: await listUserWorkspaces(db, row.id) });
             }
             if (requestUrl.pathname === "/api/auth/keycloak/login" && req.method === "GET") {
                 if (!isKeycloakEnabled()) return redirectAuthError(res, "keycloak_disabled");
+                const mode = requestUrl.searchParams.get("mode") === "bind" ? "bind" : "login";
+                if (mode === "bind" && !current) return redirectTo(res, "/?auth_error=keycloak_bind_login_required");
                 const origin = publicOrigin(req);
                 try {
-                    const { url, transaction } = await createKeycloakAuthorization(origin, safeRedirectPath(requestUrl.searchParams.get("redirect")));
+                    const { url, transaction } = await createKeycloakAuthorization(origin, safeRedirectPath(requestUrl.searchParams.get("redirect")), mode, mode === "bind" ? current?.id : undefined);
                     appendSetCookie(res, oidcCookie(transaction, oidcCookieMaxAgeSeconds, origin.startsWith("https://")));
                     return redirectTo(res, url.href);
                 } catch (error) {
                     console.error("Keycloak login failed", error instanceof Error ? error.message : error);
+                    if (mode === "bind") return redirectTo(res, accountSettingsErrorRedirect(requestUrl.searchParams.get("redirect") || "/", "keycloak_bind_failed"));
                     return redirectAuthError(res, "keycloak_unavailable");
                 }
             }
@@ -225,12 +267,43 @@ function authAccess(): Plugin {
                     callbackUrl.search = new URL(req.url || "/", "http://localhost").search;
                     const { claims, idToken } = await completeKeycloakAuthorization(callbackUrl, transaction);
                     const profile = keycloakProfile(claims);
-                    if (!profile) return redirectAuthError(res, "keycloak_profile");
-                    const user = await findOrCreateSsoUser({ provider: "keycloak", ...profile });
+                    if (!profile) return transaction.mode === "bind" ? redirectTo(res, accountSettingsErrorRedirect(transaction.redirect, "keycloak_bind_failed")) : redirectAuthError(res, "keycloak_profile");
+                    if (transaction.mode === "bind") {
+                        if (!current) return redirectTo(res, "/?auth_error=keycloak_bind_login_required");
+                        if (!transaction.userId || transaction.userId !== current.id) return redirectTo(res, accountSettingsErrorRedirect(transaction.redirect, "keycloak_bind_session_changed"));
+                        try {
+                            await bindSsoIdentity(current.id, { provider: "keycloak", ...profile, emailVerifiedMissing: claims.email_verified == null });
+                        } catch (error) {
+                            if (error instanceof SsoBindingError) {
+                                console.warn("Keycloak bind rejected", {
+                                    code: error.code,
+                                    emailPresent: Boolean(profile.email),
+                                    emailVerifiedClaim: claims.email_verified,
+                                    emailVerifiedType: typeof claims.email_verified,
+                                    scope: claims.scope,
+                                });
+                                const code = error.code === "user_missing" ? "failed" : error.code;
+                                return redirectTo(res, accountSettingsErrorRedirect(transaction.redirect, `keycloak_bind_${code}`));
+                            }
+                            throw error;
+                        }
+                        await execute(db, "UPDATE sessions SET id_token = $1 WHERE token_hash = $2", idToken || null, current.sessionTokenHash);
+                        return redirectTo(res, accountSettingsRedirect(transaction.redirect, "keycloak_bound"));
+                    }
+                    const existing = await queryOne(db, "SELECT 1 FROM user_identities WHERE provider = 'keycloak' AND subject = $1", profile.subject);
+                    let email: string | undefined;
+                    if (!existing) {
+                        if (!profile.emailVerified) return redirectAuthError(res, "keycloak_email_unverified");
+                        try { email = await verifiedSsoRegistrationEmail(profile.email, profile.emailVerified); }
+                        catch (error) { if (error instanceof RegistrationError) return redirectAuthError(res, "keycloak_email_domain"); throw error; }
+                        if (await queryOne(db, "SELECT 1 FROM users WHERE lower(email) = $1", email)) return redirectAuthError(res, "keycloak_email_conflict");
+                    }
+                    const user = await findOrCreateSsoUser({ provider: "keycloak", ...profile, email: email ?? profile.email });
                     await createSession(req, res, db, user.id, idToken);
                     return redirectTo(res, safeRedirectPath(transaction.redirect));
                 } catch (error) {
                     console.error("Keycloak callback failed", error instanceof Error ? error.message : error);
+                    if (transaction.mode === "bind") return redirectTo(res, accountSettingsErrorRedirect(transaction.redirect, "keycloak_bind_failed"));
                     return redirectAuthError(res, "keycloak_failed");
                 }
             }
@@ -250,13 +323,25 @@ function authAccess(): Plugin {
                 }
                 return sendJson(res, 200, { ok: true, logoutUrl });
             }
+            if (requestUrl.pathname === "/api/auth/identities/keycloak/unbind" && req.method === "POST") {
+                if (!current) return sendJson(res, 401, { error: "请先登录" });
+                if (!localLoginAllowed()) return sendJson(res, 403, { error: "当前仅允许 TOPMAX 登录，不能解除绑定" });
+                if (!current.hasPassword) return sendJson(res, 400, { error: "当前账户没有本地密码，不能解除绑定" });
+                await unbindSsoIdentity(db, current.id, "keycloak");
+                await execute(db, "UPDATE sessions SET id_token = NULL WHERE user_id = $1", current.id);
+                return sendJson(res, 200, { ok: true });
+            }
             if (requestUrl.pathname === "/api/auth/me" && req.method === "GET") {
                 const keycloak = { enabled: isKeycloakEnabled(), localLogin: localLoginAllowed() };
-                if (!current) return sendJson(res, 200, { user: null, workspaces: [], keycloak });
-                return sendJson(res, 200, { user: publicUser(current), workspaces: await listUserWorkspaces(db, current.id), keycloak });
+                if (!current) return sendJson(res, 200, { user: null, workspaces: [], identities: [], keycloak });
+                return sendJson(res, 200, { user: publicUser(current), workspaces: await listUserWorkspaces(db, current.id), identities: await listUserIdentities(db, current.id), keycloak });
             }
             return sendJson(res, 405, { error: "Method not allowed" });
         } catch (error) {
+            if (error instanceof RegistrationError) {
+                if (error.retryAfter) res.setHeader("Retry-After", error.retryAfter);
+                return sendJson(res, error.status, { error: error.message, retryAfter: error.retryAfter });
+            }
             if (error instanceof RequestBodyError) return sendJson(res, error.status, { error: error.message });
             console.error("Authentication request failed", error);
             return sendJson(res, 500, { error: "认证服务暂时不可用" });
@@ -782,6 +867,34 @@ function summarizeWorkspaceCanvas(payload: string | null) {
     }
 }
 
+function userPreferencesAccess(): Plugin {
+    const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+        const requestUrl = new URL(req.url || "/", "http://localhost");
+        if (requestUrl.pathname !== "/api/preferences") return next();
+        res.setHeader("Cache-Control", "no-store");
+        const user = (req as AuthenticatedRequest).infiniteCanvasUser;
+        if (!user) return sendJson(res, 401, { error: "请先登录" });
+        try {
+            const db = await getPool();
+            if (req.method === "GET") return sendJson(res, 200, { preferences: await readUserPreferences(db, user.id) });
+            if (req.method === "PUT") {
+                const body = await readJsonBody(req);
+                const preferences = normalizeUserPreferences(asRecord(body)?.preferences);
+                if (!preferences) return sendJson(res, 400, { error: "个人偏好格式不正确" });
+                await saveUserPreferences(db, user.id, preferences);
+                return sendJson(res, 200, { saved: true });
+            }
+            res.setHeader("Allow", "GET, PUT");
+            return sendJson(res, 405, { error: "Method not allowed" });
+        } catch (error) {
+            if (error instanceof RequestBodyError) return sendJson(res, error.status, { error: error.message });
+            console.error("User preferences request failed", error);
+            return sendJson(res, 500, { error: "个人偏好服务暂时不可用" });
+        }
+    };
+    return { name: "user-preferences", configureServer: (server) => { server.middlewares.use(middleware); }, configurePreviewServer: (server) => { server.middlewares.use(middleware); } };
+}
+
 function adminAccess(): Plugin {
     const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
         const requestUrl = new URL(req.url || "/", "http://localhost");
@@ -792,10 +905,13 @@ function adminAccess(): Plugin {
         if (!user.isAdmin) return sendJson(res, 403, { error: "仅管理员可以访问" });
         try {
             const db = await getPool();
+            if (requestUrl.pathname === "/api/admin/registration" && req.method === "GET") return sendJson(res, 200, redactRegistrationConfig(await readRegistrationConfig(db)));
+            if (requestUrl.pathname === "/api/admin/registration" && req.method === "PUT") return sendJson(res, 200, await saveRegistrationConfig(await readJsonBody(req)));
+            if (requestUrl.pathname === "/api/admin/registration/smtp-test" && req.method === "POST") { await verifyRegistrationSmtp(); return sendJson(res, 200, { ok: true }); }
             if (requestUrl.pathname === "/api/admin/overview" && req.method === "GET") {
-                const users = await queryMany<{ id: string; username: string; display_name: string; is_admin: boolean; created_at: Date; workspace_count: number }>(
+                const users = await queryMany<{ id: string; username: string; display_name: string; email: string | null; is_admin: boolean; created_at: Date; workspace_count: number }>(
                     db,
-                    `SELECT u.id, u.username, u.display_name, u.is_admin, u.created_at,
+                    `SELECT u.id, u.username, u.display_name, u.email, u.is_admin, u.created_at,
                         (SELECT COUNT(*) FROM workspace_members m WHERE m.user_id = u.id)::int AS workspace_count
                      FROM users u ORDER BY u.created_at, u.id`,
                 );
@@ -835,7 +951,7 @@ function adminAccess(): Plugin {
                     };
                 });
                 return sendJson(res, 200, {
-                    users: users.map((row) => ({ id: row.id, username: row.username, displayName: row.display_name, isAdmin: row.is_admin, envAdmin: isConfiguredAdmin(row.username), workspaceCount: Number(row.workspace_count), createdAt: toIso(row.created_at) })),
+                    users: users.map((row) => ({ id: row.id, username: row.username, displayName: row.display_name, email: row.email, isAdmin: row.is_admin, envAdmin: isConfiguredAdmin(row.username), workspaceCount: Number(row.workspace_count), createdAt: toIso(row.created_at) })),
                     workspaces: workspaceItems,
                     totals: {
                         users: users.length,
@@ -884,6 +1000,7 @@ function adminAccess(): Plugin {
             return sendJson(res, 405, { error: "Method not allowed" });
         } catch (error) {
             if (error instanceof RequestBodyError) return sendJson(res, error.status, { error: error.message });
+            if (error instanceof RegistrationError) return sendJson(res, error.status, { error: error.message });
             console.error("Admin request failed", error);
             return sendJson(res, 500, { error: "管理服务暂时不可用" });
         }
@@ -1571,7 +1688,7 @@ function localPluginsManifest(): Plugin {
 
 export default defineConfig({
     base: process.env.VITE_BASE || "/",
-    plugins: [react(), localPluginsManifest(), sessionContext(), authAccess(), serverApiAccessControl(), canvasAgentGateway(), workspaceAccess(), adminAccess(), workspaceMediaStorage(), workspaceDataAccess(), workspacePromptsAccess(), serverWebdavProxy(), serverConfigStorage(), aiProviderProxy(), promptSourceProxy(), remoteMediaProxy(), imageProxy()],
+    plugins: [react(), localPluginsManifest(), sessionContext(), authAccess(), serverApiAccessControl(), canvasAgentGateway(), workspaceAccess(), userPreferencesAccess(), adminAccess(), workspaceMediaStorage(), workspaceDataAccess(), workspacePromptsAccess(), serverWebdavProxy(), serverConfigStorage(), aiProviderProxy(), promptSourceProxy(), remoteMediaProxy(), imageProxy()],
     preview: { allowedHosts: (process.env.INFINITE_CANVAS_ALLOWED_HOSTS || "ubuntu-server").split(",").map((host) => host.trim()).filter(Boolean) },
     resolve: {
         alias: {
