@@ -99,6 +99,7 @@ export default {
         imported: "Imported {{count}} prompts",
         exported: "Exported {{count}} workspace prompts",
         promptTitle: "Title",
+        titlePlaceholder: "e.g. Brand key visual composition",
         promptText: "Prompt",
         promptPlaceholder: "Write a prompt, rewrite it with AI or generate an example image, then save",
         titleRequired: "Enter a title",
@@ -363,7 +364,7 @@ export default {
         describe: "Describe the image you want to create",
         generationSettings: "Generation settings",
         finishSettings: "Done",
-        promptPlaceholder: "Describe the subject, style, composition, lighting, and intended use",
+        promptPlaceholder: "Describe the subject, style, composition, lighting, and details",
         references: "Reference images",
         removeReference: "Remove reference image",
         dropReferences: "Drop to add reference images",
@@ -445,11 +446,11 @@ export default {
         import: "Import canvas",
         create: "New canvas",
         menu: { navigate: "Go to", canvas: "Canvas", files: "Files", edit: "Edit" },
-        createDialog: { name: "Canvas name", nameRequired: "Enter a canvas name", description: "Description (optional)" },
+        createDialog: { name: "Canvas name", namePlaceholder: "e.g. Autumn campaign posters", nameRequired: "Enter a canvas name", description: "Description (optional)", descriptionPlaceholder: "Briefly describe what this canvas is for" },
         templates: {
             preview: { defaultModel: "Default model", video: "Video asset", audio: "Audio asset", mediaUnavailable: "Image unavailable" },
             editor: {
-                namePlaceholder: "e.g. Product poster workflow", descriptionPlaceholder: "Briefly describe what this template does",
+                namePlaceholder: "e.g. Product poster workflow", descriptionPlaceholder: "e.g. The steps from prompt to final image",
                 preview: "Structure preview", previewHint: "Select a node to view its content", resetZoom: "Reset preview zoom", emptyPreview: "No nodes in this scope", customNode: "Extension node",
                 selection: "Current selection", whole: "Entire canvas", inputs: "Fill in when using", optional: "Optional", inputCount: "{{count}} inputs",
                 inputsHint: "Choose text or image nodes to clear their content on save and fill them in when using the template.",
@@ -462,7 +463,7 @@ export default {
                 scope: "Save {{nodes}} nodes and {{connections}} connections; {{dependencies}} external inputs and {{references}} separate media references.",
                 dependenciesRequired: "External dependencies include configuration, group, or plugin nodes. Include upstream dependencies.",
                 defineInputs: "Define replacement inputs", defineInputsHint: "Mark text or image nodes to clear their examples and request input when used. Other nodes and required references are preserved.",
-                inputName: "Input name", inputDescription: "Input description", inputNameRequired: "Enter an input name", required: "Required", input: "Replacement input",
+                inputName: "Input name", inputNamePlaceholder: "e.g. Main headline", inputDescription: "Input description", inputDescriptionPlaceholder: "e.g. The main headline shown in the image", inputNameRequired: "Enter an input name", required: "Required", input: "Replacement input", inputValuePlaceholder: "Enter {{name}}",
                 updateTarget: "Template to update", updateHint: "Replace the selected template's content, cover, name, and description with this snapshot. Source and previously created canvases are not changed.",
                 confirmUpdate: "I reviewed the scope and confirm replacement", useOptions: "Use options", keepExamples: "Keep generated examples",
                 examplesHint: "Uncheck to clear terminal generated results only. Connected inputs and explicit media references are retained to preserve dependencies.",
@@ -521,7 +522,7 @@ export default {
             deleteTitle: "Delete canvases?", deleteDescription: "This will delete {{count}} canvases along with their nodes and connections.",
         },
         folder: {
-            untitled: "New folder", create: "New folder", root: "Root", breadcrumb: "Folder path", itemCount: "{{count}} items", saveName: "Save folder name", cancelRename: "Cancel rename", rename: "Rename folder", delete: "Delete folder", deleteTitle: "Delete folder?", deleteDescription: "This will delete the folder “{{name}}” and all folders and canvases inside it.",
+            untitled: "New folder", namePlaceholder: "Enter folder name", create: "New folder", root: "Root", breadcrumb: "Folder path", itemCount: "{{count}} items", saveName: "Save folder name", cancelRename: "Cancel rename", rename: "Rename folder", delete: "Delete folder", deleteTitle: "Delete folder?", deleteDescription: "This will delete the folder “{{name}}” and all folders and canvases inside it.",
         },
         export: { defaultProjectName: "Infinite Canvas", defaultNodesName: "Canvas elements", item: "Element" },
         createMenu: {
@@ -529,7 +530,7 @@ export default {
         },
         node: {
             node: "Node",
-            untitled: "Untitled node", renameHint: "Double-click to rename the node", group: "Group", nodeCount: "{{count}} nodes", generating: "Generating", failed: "Generation failed", retry: "Retry", missingPlugin: "Plugin missing", missingPluginDescription: "The plugin for node type “{{type}}” is not installed or enabled", generateImage: "Generate image from text", generate: "Generate", editText: "Double-click to edit text", emptyImage: "Empty image node", emptyVideo: "Empty video node", emptyAudio: "Empty audio node", audio: "Audio", batchExpanded: "Image group expanded", batchCollapsed: "Image group collapsed", textBatchExpanded: "Text alternatives expanded", textBatchCollapsed: "Text alternatives collapsed", createCopy: "Create copy", setPrimary: "Set as primary", setPrimaryText: "Set as primary",
+            untitled: "Untitled node", textPlaceholder: "Enter text", renameHint: "Double-click to rename the node", group: "Group", nodeCount: "{{count}} nodes", generating: "Generating", failed: "Generation failed", retry: "Retry", missingPlugin: "Plugin missing", missingPluginDescription: "The plugin for node type “{{type}}” is not installed or enabled", generateImage: "Generate image from text", generate: "Generate", editText: "Double-click to edit text", emptyImage: "Empty image node", emptyVideo: "Empty video node", emptyAudio: "Empty audio node", audio: "Audio", batchExpanded: "Image group expanded", batchCollapsed: "Image group collapsed", textBatchExpanded: "Text alternatives expanded", textBatchCollapsed: "Text alternatives collapsed", createCopy: "Create copy", setPrimary: "Set as primary", setPrimaryText: "Set as primary",
         },
         videoFrames: { first: "Capture first frame", last: "Capture last frame", current: "Capture current frame", firstTitle: "{{name}} first frame", lastTitle: "{{name}} last frame", currentTitle: "{{name}} current frame", captured: "Image node created", failed: "Could not capture this frame. Try again." },
         sidePanel: {

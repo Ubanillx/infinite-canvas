@@ -97,7 +97,7 @@ export function PromptEditorDialog({ open, prompt, draft, onClose, onSave, onErr
     return (
         <Modal title={prompt ? t("prompts.edit") : t("prompts.create")} open={open} onCancel={() => { if (!saving && !generatingImage && !rewriting) onClose(); }} onOk={() => void save()} okText={t("prompts.save")} okButtonProps={{ loading: saving, disabled: generatingImage || rewriting, className: "!shadow-none" }} width={720} destroyOnHidden styles={{ container: { boxShadow: "none", border: "1px solid var(--border)" } }}>
             <Form form={form} layout="vertical" className="pt-3" initialValues={{ shared: false }}>
-                <Form.Item name="title" label={t("prompts.promptTitle")} rules={[{ required: true, whitespace: true, message: t("prompts.titleRequired") }]}><Input /></Form.Item>
+                <Form.Item name="title" label={t("prompts.promptTitle")} rules={[{ required: true, whitespace: true, message: t("prompts.titleRequired") }]}><Input placeholder={t("prompts.titlePlaceholder")} /></Form.Item>
                 <Form.Item name="prompt" label={t("prompts.promptText")} rules={[{ required: true, whitespace: true, message: t("prompts.textRequired") }]}>
                     <Input.TextArea rows={8} placeholder={t("prompts.promptPlaceholder")} />
                 </Form.Item>

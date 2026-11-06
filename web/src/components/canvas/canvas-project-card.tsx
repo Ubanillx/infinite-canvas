@@ -59,7 +59,7 @@ export function CanvasProjectCard({ project, onDragStart, onDragEnd }: { project
                     aria-label={t("canvas.project.select", { name: project.title })}
                 />
                 {editing ? (
-                    <Input className="min-w-0" value={editingTitle} onClick={(event) => event.stopPropagation()} onChange={(event) => setEditingTitle(event.target.value)} onKeyDown={(event) => event.key === "Enter" && saveTitle()} autoFocus />
+                    <Input className="min-w-0" value={editingTitle} placeholder={t("canvas.project.untitled")} onClick={(event) => event.stopPropagation()} onChange={(event) => setEditingTitle(event.target.value)} onKeyDown={(event) => event.key === "Enter" && saveTitle()} autoFocus />
                 ) : (
                     <button
                         type="button"

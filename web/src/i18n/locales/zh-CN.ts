@@ -99,6 +99,7 @@ export default {
         imported: "已导入 {{count}} 条提示词",
         exported: "已导出 {{count}} 条工作区提示词",
         promptTitle: "标题",
+        titlePlaceholder: "例如：品牌主视觉构图",
         promptText: "提示词",
         promptPlaceholder: "填写提示词，可用 AI 改写或生成示例图，确认后保存",
         titleRequired: "请填写标题",
@@ -363,7 +364,7 @@ export default {
         describe: "描述你想生成的画面",
         generationSettings: "生成设置",
         finishSettings: "完成",
-        promptPlaceholder: "描述画面主体、风格、构图、光线和用途",
+        promptPlaceholder: "描述画面主体、风格、构图、光线和细节",
         references: "参考图",
         removeReference: "移除参考图",
         dropReferences: "松开即可添加参考图",
@@ -445,11 +446,11 @@ export default {
         import: "导入画布",
         create: "新建画布",
         menu: { navigate: "前往", canvas: "画布管理", files: "文件", edit: "编辑" },
-        createDialog: { name: "画布名称", nameRequired: "请输入画布名称", description: "描述（选填）" },
+        createDialog: { name: "画布名称", namePlaceholder: "例如：秋季新品海报", nameRequired: "请输入画布名称", description: "描述（选填）", descriptionPlaceholder: "简单说明这张画布的用途" },
         templates: {
             preview: { defaultModel: "使用默认模型", video: "视频素材", audio: "音频素材", mediaUnavailable: "图片暂不可用" },
             editor: {
-                namePlaceholder: "例如：产品海报工作流", descriptionPlaceholder: "描述模板用途",
+                namePlaceholder: "例如：产品海报工作流", descriptionPlaceholder: "例如：从提示词到成品图的完整步骤",
                 preview: "结构预览", previewHint: "点击节点查看内容", resetZoom: "重置预览缩放", emptyPreview: "当前范围没有节点", customNode: "扩展节点",
                 selection: "当前选区", whole: "整张画布", inputs: "使用时填写", optional: "可选", inputCount: "{{count}} 个输入",
                 inputsHint: "勾选可替换的文本或图片，保存时清空其内容，使用模板时再填写。",
@@ -462,7 +463,7 @@ export default {
                 scope: "将保存 {{nodes}} 个节点、{{connections}} 条连线；外部输入 {{dependencies}} 个，独立引用素材 {{references}} 项。",
                 dependenciesRequired: "外部依赖含配置、分组或插件节点，请选择包含上游依赖。",
                 defineInputs: "定义待填写输入", defineInputsHint: "勾选文本或图片节点，保存时清空其示例内容，使用模板时填写。未勾选节点和必要引用不受影响。",
-                inputName: "输入名称", inputDescription: "输入说明", inputNameRequired: "请填写输入名称", required: "必填", input: "待填写输入",
+                inputName: "输入名称", inputNamePlaceholder: "例如：主标题", inputDescription: "输入说明", inputDescriptionPlaceholder: "例如：填写画面中的主标题文字", inputNameRequired: "请填写输入名称", required: "必填", input: "待填写输入", inputValuePlaceholder: "请输入{{name}}",
                 updateTarget: "要更新的模板", updateHint: "确认后以当前快照替换所选模板的全部内容、封面、名称与描述；源画布和已创建的画布均不改变。",
                 confirmUpdate: "我已核对范围，确认替换所选模板", useOptions: "使用选项", keepExamples: "保留生成示例",
                 examplesHint: "取消后仅清空末端生成结果；连线输入和显式引用素材仍保留，避免破坏依赖。",
@@ -521,7 +522,7 @@ export default {
             deleteTitle: "删除画布？", deleteDescription: "将删除 {{count}} 个画布及其全部节点和连线。",
         },
         folder: {
-            untitled: "新建文件夹", create: "新建文件夹", root: "根目录", breadcrumb: "文件夹路径", itemCount: "{{count}} 个项目", saveName: "保存文件夹名称", cancelRename: "取消重命名", rename: "重命名文件夹", delete: "删除文件夹", deleteTitle: "删除文件夹？", deleteDescription: "将删除文件夹“{{name}}”及其中的所有子文件夹和画布。",
+            untitled: "新建文件夹", namePlaceholder: "输入文件夹名称", create: "新建文件夹", root: "根目录", breadcrumb: "文件夹路径", itemCount: "{{count}} 个项目", saveName: "保存文件夹名称", cancelRename: "取消重命名", rename: "重命名文件夹", delete: "删除文件夹", deleteTitle: "删除文件夹？", deleteDescription: "将删除文件夹“{{name}}”及其中的所有子文件夹和画布。",
         },
         export: { defaultProjectName: "无限画布", defaultNodesName: "画布节点", item: "元素" },
         createMenu: {
@@ -529,7 +530,7 @@ export default {
         },
         node: {
             node: "节点",
-            untitled: "未命名节点", renameHint: "双击修改节点名称", group: "分组", nodeCount: "{{count}} 个节点", generating: "生成中", failed: "生成失败", retry: "重试", missingPlugin: "缺少插件", missingPluginDescription: "节点类型“{{type}}”的插件未安装或未启用", generateImage: "文本生成图片", generate: "生成图片", editText: "双击编辑文本", emptyImage: "空图片节点", emptyVideo: "空视频节点", emptyAudio: "空音频节点", audio: "音频", batchExpanded: "图片组已展开", batchCollapsed: "图片组已收起", textBatchExpanded: "备选文本已展开", textBatchCollapsed: "备选文本已收起", createCopy: "创建副本", setPrimary: "设为主图", setPrimaryText: "设为主文本",
+            untitled: "未命名节点", textPlaceholder: "输入文本内容", renameHint: "双击修改节点名称", group: "分组", nodeCount: "{{count}} 个节点", generating: "生成中", failed: "生成失败", retry: "重试", missingPlugin: "缺少插件", missingPluginDescription: "节点类型“{{type}}”的插件未安装或未启用", generateImage: "文本生成图片", generate: "生成图片", editText: "双击编辑文本", emptyImage: "空图片节点", emptyVideo: "空视频节点", emptyAudio: "空音频节点", audio: "音频", batchExpanded: "图片组已展开", batchCollapsed: "图片组已收起", textBatchExpanded: "备选文本已展开", textBatchCollapsed: "备选文本已收起", createCopy: "创建副本", setPrimary: "设为主图", setPrimaryText: "设为主文本",
         },
         videoFrames: { first: "截取首帧", last: "截取尾帧", current: "截取当前帧", firstTitle: "{{name}} 首帧", lastTitle: "{{name}} 尾帧", currentTitle: "{{name}} 当前帧", captured: "已生成图片节点", failed: "帧截取失败，请重试" },
         sidePanel: {

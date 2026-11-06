@@ -138,6 +138,7 @@ export function CanvasTopBar({
                             <input
                                 autoFocus
                                 value={titleDraft}
+                                placeholder={t("canvas.project.untitled")}
                                 onChange={(event) => onTitleDraftChange(event.target.value)}
                                 onBlur={onFinishTitleEditing}
                                 onKeyDown={(event) => {

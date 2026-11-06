@@ -81,10 +81,10 @@ export function CanvasCreateProjectDialog({ open, folderId = null, initialTempla
         <Form form={form} layout="vertical" onFinish={(values) => void create(values)} clearOnDestroy disabled={saving}>
             {mode === "template" && selectedTemplate ? <CanvasTemplateUseFields options={options} disabled={saving} /> : null}
             <Form.Item name="title" label={t("canvas.createDialog.name")} rules={[{ required: true, whitespace: true, message: t("canvas.createDialog.nameRequired") }]}>
-                <Input autoFocus />
+                <Input autoFocus placeholder={t("canvas.createDialog.namePlaceholder")} />
             </Form.Item>
             <Form.Item name="description" label={t("canvas.createDialog.description")}>
-                <Input.TextArea rows={3} />
+                <Input.TextArea rows={3} placeholder={t("canvas.createDialog.descriptionPlaceholder")} />
             </Form.Item>
             {error ? <p role="alert" className="mb-4 text-sm text-red-500">{error}</p> : null}
             <div className="flex justify-end gap-2">

@@ -104,9 +104,9 @@ export function CanvasTemplateEditorDialog({ source, template, onClose }: { sour
                         return <div key={node.id} className="rounded-lg border border-border p-3">
                             <Checkbox aria-label={node.title} disabled={saving || Boolean(node.metadata?.templateInput && source.selection && !includeDependencies)} checked={Boolean(slot)} onChange={(event) => setSlots((previous) => ({ ...previous, [node.id]: event.target.checked ? { name: node.title, description: "", required: true } : null }))}><span className="break-words">{node.title}</span><span className="ml-2 text-xs text-muted-foreground">{t(`canvas.nodeTypes.${node.type}`)}</span></Checkbox>
                             {slot ? <div className="mt-3 space-y-3 border-t border-border pt-3">
-                                <label className="block text-xs text-muted-foreground">{t("canvas.templates.v2.inputName")}<Input className="mt-1" value={slot.name} status={slot.name.trim() ? undefined : "error"} onChange={(event) => change({ name: event.target.value })} /></label>
+                                <label className="block text-xs text-muted-foreground">{t("canvas.templates.v2.inputName")}<Input className="mt-1" value={slot.name} placeholder={t("canvas.templates.v2.inputNamePlaceholder")} status={slot.name.trim() ? undefined : "error"} onChange={(event) => change({ name: event.target.value })} /></label>
                                 {!slot.name.trim() ? <p className="text-xs text-destructive">{t("canvas.templates.v2.inputNameRequired")}</p> : null}
-                                <Input aria-label={t("canvas.templates.v2.inputDescription")} placeholder={t("canvas.templates.v2.inputDescription")} value={slot.description} onChange={(event) => change({ description: event.target.value })} />
+                                <Input aria-label={t("canvas.templates.v2.inputDescription")} placeholder={t("canvas.templates.v2.inputDescriptionPlaceholder")} value={slot.description} onChange={(event) => change({ description: event.target.value })} />
                                 <Checkbox checked={slot.required} onChange={(event) => change({ required: event.target.checked })}>{t("canvas.templates.v2.required")}</Checkbox>
                             </div> : null}
                         </div>;

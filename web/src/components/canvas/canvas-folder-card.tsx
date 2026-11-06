@@ -69,7 +69,7 @@ export function CanvasFolderCard({
             <div className="flex items-start gap-3">
                 <Folder className="mt-0.5 size-5 shrink-0 text-muted-foreground" />
                 {editing ? (
-                    <Input className="min-w-0" value={editingTitle} onClick={(event) => event.stopPropagation()} onChange={(event) => onEditingTitleChange(event.target.value)} onKeyDown={(event) => event.key === "Enter" && onSave()} autoFocus />
+                    <Input className="min-w-0" value={editingTitle} placeholder={t("canvas.folder.namePlaceholder")} onClick={(event) => event.stopPropagation()} onChange={(event) => onEditingTitleChange(event.target.value)} onKeyDown={(event) => event.key === "Enter" && onSave()} autoFocus />
                 ) : (
                     <button type="button" className="min-w-0 cursor-pointer text-left" onClick={(event) => { event.stopPropagation(); onSelect(); }} onDoubleClick={(event) => { event.stopPropagation(); onOpen(); }}>
                         <h2 className="truncate text-base font-semibold">{folder.title}</h2>

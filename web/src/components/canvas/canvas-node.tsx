@@ -357,6 +357,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                             ref={titleInputRef}
                             value={titleDraft}
                             maxLength={64}
+                            placeholder={t("canvas.node.untitled")}
                             className="h-6 max-w-full border-0 border-b border-dashed bg-transparent px-0 text-left text-xs font-medium outline-none"
                             style={{ borderColor: theme.node.muted, color: theme.node.text }}
                             onChange={(event) => setTitleDraft(event.target.value)}
@@ -591,6 +592,7 @@ function TextContent({ node, theme, isEditingContent, textareaRef, mentionRefere
                         value={content}
                         references={mentionReferences}
                         highlightLabels={false}
+                        placeholder={t("canvas.node.textPlaceholder")}
                         onChange={(value) => onContentChange(node.id, value)}
                         onBlur={onStopEditing}
                         onKeyDown={(event) => {
