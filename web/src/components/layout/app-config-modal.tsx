@@ -1,6 +1,6 @@
 import { App, Button, Form, Input, Modal, Progress, Select, Tabs } from "antd";
 import type { TFunction } from "i18next";
-import { Cloud, Download, Info, KeyRound, Pencil, Plus, RefreshCw, Save, Trash2, Upload, Wifi } from "lucide-react";
+import { Download, Info, KeyRound, Pencil, Plus, RefreshCw, Save, Trash2, Upload, Wifi } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -289,7 +289,7 @@ export function AppConfigPanel({ showDoneButton = false, showTabs = true, showSa
                                 </section>
                                 <div className="grid items-start gap-5 md:grid-cols-2">
                                     <section className="rounded-xl border border-border p-5">
-                                        <div className="flex items-center gap-2 text-sm font-semibold"><Cloud className="size-4" />{t("config.webdav.syncSection")}</div>
+                                        <h2 className="text-sm font-semibold">{t("config.webdav.syncSection")}</h2>
                                         <p className="mt-2 text-xs leading-5 text-muted-foreground">{t("config.webdav.description")}</p>
                                         <p className="mt-5 text-xs text-muted-foreground">{webdav.lastSyncedAt ? t("config.webdav.lastSynced", { time: formatWebdavTime(webdav.lastSyncedAt, locale) }) : t("config.webdav.neverSynced")}</p>
                                         {webdav.lastConfigSyncedAt ? <p className="mt-1 text-xs text-muted-foreground">{t("config.webdav.configLastSynced", { time: formatWebdavTime(webdav.lastConfigSyncedAt, locale) })}</p> : null}

@@ -54,9 +54,9 @@ export function PromptSourceContentModal({ source, onClose }: { source: PromptSo
                     <div className="flex flex-wrap items-center justify-between gap-2 pr-6">
                         <div>
                             <div className="text-base font-semibold">{t("config.promptSources.content.title", { name: source?.name || "" })}</div>
-                            <div className="mt-0.5 text-xs font-normal text-stone-500">{t("config.promptSources.content.count", { count: items.length })}</div>
+                            <div className="mt-0.5 text-xs font-normal text-muted-foreground">{t("config.promptSources.content.count", { count: items.length })}</div>
                         </div>
-                        <Button size="small" icon={<RefreshCw className="size-3.5" />} loading={loading} onClick={() => void load(true)}>
+                        <Button size="small" className="ml-auto" icon={<RefreshCw className="size-3.5" />} loading={loading} onClick={() => void load(true)}>
                             {t("config.promptSources.content.refresh")}
                         </Button>
                     </div>
@@ -68,22 +68,23 @@ export function PromptSourceContentModal({ source, onClose }: { source: PromptSo
                     loading={loading}
                     dataSource={items}
                     pagination={{ pageSize: 10, showSizeChanger: false, size: "small" }}
-                    scroll={{ y: "56vh" }}
+                    scroll={{ x: 720, y: "56vh" }}
                     locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("config.promptSources.content.empty")} /> }}
                     columns={[
                         {
                             title: t("config.promptSources.content.cover"),
                             dataIndex: "coverUrl",
                             width: 72,
-                            render: (coverUrl: string) => (coverUrl ? <img src={coverUrl} alt="" className="size-12 rounded object-cover" /> : <div className="size-12 rounded bg-stone-100 dark:bg-stone-800" />),
+                            render: (coverUrl: string) => (coverUrl ? <img src={coverUrl} alt="" className="size-12 rounded object-cover" /> : <div className="size-12 rounded bg-muted" />),
                         },
                         {
                             title: t("config.promptSources.content.titleColumn"),
                             dataIndex: "title",
+                            width: 260,
                             render: (title: string, item) => (
                                 <div className="min-w-0">
                                     <div className="truncate font-medium">{title}</div>
-                                    <div className="mt-0.5 line-clamp-2 text-xs text-stone-500">{item.prompt}</div>
+                                    <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{item.prompt}</div>
                                 </div>
                             ),
                         },

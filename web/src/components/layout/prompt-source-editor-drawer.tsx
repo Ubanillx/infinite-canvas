@@ -30,7 +30,7 @@ export function PromptSourceEditorDrawer({ open, source, onSave, onClose }: { op
     return (
         <Drawer
             open={open}
-            width={560}
+            size={560}
             title={t(source?.name ? "config.promptSources.editor.editTitle" : "config.promptSources.editor.addTitle")}
             onClose={onClose}
             styles={{ body: { paddingTop: 16 } }}
@@ -56,13 +56,13 @@ export function PromptSourceEditorDrawer({ open, source, onSave, onClose }: { op
                     <span className="mb-1.5 block text-sm font-medium">{t("config.promptSources.editor.homepage")}</span>
                     <Input value={draft.homepage} onChange={(event) => patch({ homepage: event.target.value })} placeholder="https://example.com" />
                 </label>
-                <div className="flex items-center justify-between border-y border-stone-200 py-3 dark:border-stone-800">
+                <div className="flex items-center justify-between border-y border-border py-3">
                     <span className="text-sm font-medium">{t("config.promptSources.editor.enabled")}</span>
                     <Switch checked={draft.enabled} onChange={(enabled) => patch({ enabled })} />
                 </div>
                 <div>
                     <div className="mb-2 text-sm font-medium">{t("config.promptSources.editor.jsonFormat")}</div>
-                    <pre className="overflow-x-auto rounded-md bg-stone-100 p-3 text-xs leading-5 text-stone-600 dark:bg-stone-900 dark:text-stone-300">{`[
+                    <pre className="whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-xs leading-5 text-muted-foreground">{`[
   {
     "id": "product-photo-1",
     "title": "Product photo",

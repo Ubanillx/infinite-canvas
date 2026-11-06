@@ -51,9 +51,9 @@ export function ConfigLocalStorage({ active }: { active: boolean }) {
     const quotaPercent = local?.quota ? Math.min(100, (local.usage / local.quota) * 100) : 0;
 
     return <div className="space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="max-w-2xl text-sm leading-6 text-muted-foreground">{t("config.localStorage.overview")}</p>
-            <Button icon={<RefreshCw className="size-4" />} loading={loading} onClick={() => void refresh()}>{t("config.localStorage.refresh")}</Button>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <p className="min-w-0 flex-1 text-sm leading-6 text-muted-foreground">{t("config.localStorage.overview")}</p>
+            <Button className="shrink-0 self-end sm:self-auto" icon={<RefreshCw className="size-4" />} loading={loading} onClick={() => void refresh()}>{t("config.localStorage.refresh")}</Button>
         </div>
 
         <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
@@ -65,7 +65,7 @@ export function ConfigLocalStorage({ active }: { active: boolean }) {
                         <p className="mt-1 text-xs text-muted-foreground">{workspace?.name || t("config.localStorage.currentWorkspace")} · {t("config.localStorage.serverHint")}</p>
                     </div>
                 </div>
-                {server ? <div className="text-right"><div className="text-xl font-semibold tabular-nums">{formatStorageBytes(serverBytes)}</div><div className="text-xs text-muted-foreground">{t("config.localStorage.serverTotal")}</div></div> : null}
+                {server ? <div className="ml-auto text-right"><div className="text-xl font-semibold tabular-nums">{formatStorageBytes(serverBytes)}</div><div className="text-xs text-muted-foreground">{t("config.localStorage.serverTotal")}</div></div> : null}
             </div>
             {serverError ? <Alert className="mt-4" type="error" showIcon message={t("config.localStorage.serverReadFailed")} description={serverError} /> : null}
             {workspaceError?.key.startsWith(`${workspace?.id}:`) && workspaceError.mode !== "read" ? <Alert className="mt-4" type="error" showIcon message={t("config.localStorage.unsavedChanges")} description={workspaceError.message} /> : null}
@@ -91,7 +91,7 @@ export function ConfigLocalStorage({ active }: { active: boolean }) {
                         <p className="mt-1 text-xs text-muted-foreground">{t("config.localStorage.browserHint")}</p>
                     </div>
                 </div>
-                {local ? <div className="text-right"><div className="text-xl font-semibold tabular-nums">{formatStorageBytes(local.contentBytes)}</div><div className="text-xs text-muted-foreground">{t("config.localStorage.contentEstimate")}</div></div> : null}
+                {local ? <div className="ml-auto text-right"><div className="text-xl font-semibold tabular-nums">{formatStorageBytes(local.contentBytes)}</div><div className="text-xs text-muted-foreground">{t("config.localStorage.contentEstimate")}</div></div> : null}
             </div>
             {localError ? <Alert className="mt-4" type="error" showIcon message={t("config.localStorage.readFailed")} description={localError} /> : null}
             {!local && loading ? <div className="flex min-h-28 items-center justify-center"><Spin /></div> : null}

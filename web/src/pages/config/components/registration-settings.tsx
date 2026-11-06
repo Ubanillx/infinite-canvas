@@ -1,5 +1,7 @@
 import { App, Button, Input, Select } from "antd";
-import { useEffect, useState, type FormEvent } from "react";
+import { Save } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 
 import { registrationMailText, type RegistrationConfig } from "@/lib/registration";
@@ -7,19 +9,25 @@ import { getRegistrationConfig, saveRegistrationConfig, testRegistrationSmtp } f
 
 const limits = ["codeTtlMinutes", "resendSeconds", "maxAttempts", "hourlyLimit"] as const;
 
-export function RegistrationSettings() {
+export function RegistrationSettings({ headerActionsId }: { headerActionsId?: string }) {
     const { t } = useTranslation();
     const { message } = App.useApp();
     const [config, setConfig] = useState<RegistrationConfig | null>(null);
     const [domains, setDomains] = useState("");
     const [busy, setBusy] = useState<"save" | "test" | null>(null);
     const [error, setError] = useState("");
+    const [actionsTarget, setActionsTarget] = useState<HTMLElement | null>(null);
+    const formRef = useRef<HTMLFormElement>(null);
 
     useEffect(() => {
         let active = true;
         void getRegistrationConfig().then((value) => { if (active) { setConfig(value); setDomains(value.allowedDomains.join("\n")); } }).catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : t("registrationSettings.loadFailed")); });
         return () => { active = false; };
     }, [t]);
+
+    useLayoutEffect(() => {
+        setActionsTarget(headerActionsId ? document.getElementById(headerActionsId) : null);
+    }, [headerActionsId]);
 
     const save = async (test: boolean) => {
         if (!config) return;
@@ -40,8 +48,9 @@ export function RegistrationSettings() {
     if (!config) return <p role={error ? "alert" : "status"} className={error ? "text-sm text-destructive" : "text-sm text-muted-foreground"}>{error || t("registrationSettings.loading")}</p>;
     const smtp = config.smtp;
     const preview = { host: smtp.host, port: smtp.port, security: smtp.security, user: smtp.user, from: smtp.from, fromName: smtp.fromName, password: t(smtp.password || smtp.hasPassword ? "registrationSettings.passwordSet" : "registrationSettings.passwordEmpty") };
+    const saveButton = <Button type="primary" icon={<Save className="size-4" />} loading={busy === "save"} disabled={busy !== null} onClick={() => { if (formRef.current?.reportValidity()) void save(false); }}>{t("config.serverStorage.save")}</Button>;
 
-    return <form className="space-y-5" onSubmit={submit}>
+    return <form ref={formRef} className="space-y-5" onSubmit={submit}>
         {error ? <p role="alert" className="text-sm leading-6 text-destructive">{error}</p> : null}
         <fieldset disabled={busy !== null} className="min-w-0 space-y-5">
             <section className="space-y-4 rounded-xl border border-border p-5">
@@ -65,10 +74,11 @@ export function RegistrationSettings() {
                 <p className="text-xs leading-5 text-muted-foreground">{t("registrationSettings.smtpHint")}</p>
             </section>
         </fieldset>
-        <div className="flex flex-wrap gap-3"><Button type="primary" htmlType="submit" loading={busy === "save"} disabled={busy !== null}>{t("registrationSettings.save")}</Button><Button loading={busy === "test"} disabled={busy !== null} onClick={(event) => { if (event.currentTarget.closest("form")?.reportValidity()) void save(true); }}>{t("registrationSettings.test")}</Button></div>
+        <div className="mt-4 flex flex-wrap gap-3">{actionsTarget ? null : saveButton}<Button loading={busy === "test"} disabled={busy !== null} onClick={(event) => { if (event.currentTarget.closest("form")?.reportValidity()) void save(true); }}>{t("registrationSettings.test")}</Button></div>
         <div className="grid gap-5 lg:grid-cols-2">
             <section className="min-w-0 rounded-xl border border-border p-5"><h2 className="mb-3 text-sm font-semibold text-foreground">{t("registrationSettings.preview")}</h2><pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-lg bg-muted p-4 text-xs leading-6 text-foreground">{JSON.stringify(preview, null, 2)}</pre></section>
             <section className="min-w-0 rounded-xl border border-border p-5"><h2 className="mb-3 text-sm font-semibold text-foreground">{t("registrationSettings.mailPreview")}</h2><p className="whitespace-pre-line text-sm leading-7 text-muted-foreground">{registrationMailText("••••••", config.codeTtlMinutes)}</p></section>
         </div>
+        {actionsTarget ? createPortal(saveButton, actionsTarget) : null}
     </form>;
 }

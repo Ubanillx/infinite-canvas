@@ -90,18 +90,18 @@ export function ConfigPromptSources() {
 
     return (
         <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_260px]">
-            <section className="min-w-0 overflow-hidden rounded-xl border border-stone-200 dark:border-stone-800">
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-200 px-5 py-4 dark:border-stone-800">
+            <section className="min-w-0 overflow-hidden rounded-xl border border-border">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
                     <div>
                         <h2 className="text-sm font-semibold">{t("config.promptSources.listTitle")}</h2>
-                        <p className="mt-1 text-xs text-stone-500">{t("config.promptSources.sourceCount", { count: sources.length })}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">{t("config.promptSources.sourceCount", { count: sources.length })}</p>
                     </div>
                     <Button type="primary" icon={<Plus className="size-4" />} onClick={() => setEditingSource(addSource())}>
                         {t("config.promptSources.add")}
                     </Button>
                 </div>
-                {sources.length === 0 ? <div className="px-5 py-12 text-center text-sm text-stone-500">{t("config.promptSources.empty")}</div> : null}
-                <div className="divide-y divide-stone-200 dark:divide-stone-800">
+                {sources.length === 0 ? <div className="px-5 py-12 text-center text-sm text-muted-foreground">{t("config.promptSources.empty")}</div> : null}
+                <div className="divide-y divide-border">
                     {sources.map((source) => {
                         const status = statusQuery.data?.[source.id];
                         return (
@@ -112,18 +112,18 @@ export function ConfigPromptSources() {
                                         <span className="truncate text-sm font-semibold">{source.name}</span>
                                         {source.builtIn ? <Tag className="m-0 shrink-0 text-[10px]">{t("config.promptSources.builtIn")}</Tag> : null}
                                     </div>
-                                    <a className="mt-1 block max-w-full truncate text-xs text-stone-500 hover:underline" href={source.homepage || source.url} target="_blank" rel="noreferrer">
+                                    <a className="mt-1 block max-w-full truncate text-xs text-muted-foreground hover:underline" href={source.homepage || source.url} target="_blank" rel="noreferrer">
                                         {source.homepage || source.url}
                                     </a>
                                 </div>
-                                <Switch size="small" checked={source.enabled} aria-label={t("config.promptSources.toggle", { name: source.name })} onChange={(checked) => { toggleSource(source.id, checked); void invalidatePrompts(); }} />
+                                <Switch className="shrink-0" size="small" checked={source.enabled} aria-label={t("config.promptSources.toggle", { name: source.name })} onChange={(checked) => { toggleSource(source.id, checked); void invalidatePrompts(); }} />
                             </div>
-                            <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-stone-500">
+                            <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                                 <span className="tabular-nums">{t("config.promptSources.itemCount", { count: status?.count ?? 0 })}</span>
                                 {status?.lastError ? <Tag color="error" className="m-0 text-[10px]" title={status.lastError}>{t("config.promptSources.failed")}</Tag> : status?.lastSuccessAt ? <Tag color="success" className="m-0 text-[10px]">{t("config.promptSources.healthy")}</Tag> : <Tag className="m-0 text-[10px]">{t("config.promptSources.unsynced")}</Tag>}
                                 <span>{status?.lastSuccessAt ? t("config.promptSources.lastSuccess", { time: formatTime(status.lastSuccessAt, i18n.resolvedLanguage) }) : t("config.promptSources.neverFetched")}</span>
                             </div>
-                            <div className="mt-3 flex flex-wrap gap-1 border-t border-stone-100 pt-3 dark:border-stone-800">
+                            <div className="mt-3 flex flex-wrap gap-1 border-t border-border pt-3">
                                 <Button type="text" size="small" icon={<Eye className="size-3.5" />} onClick={() => setViewingId(source.id)}>
                                     {t("config.promptSources.view")}
                                 </Button>
@@ -139,15 +139,15 @@ export function ConfigPromptSources() {
                 </div>
             </section>
 
-            <section className="rounded-xl border border-stone-200 p-5 dark:border-stone-800">
+            <section className="rounded-xl border border-border p-5">
                 <h2 className="text-sm font-semibold">{t("config.promptSources.schedule")}</h2>
-                <p className="mt-1 text-xs leading-5 text-stone-500">{t("config.promptSources.scheduleDescription")}</p>
-                <label className="mt-5 block text-xs text-stone-500" htmlFor="prompt-source-interval">{t("config.promptSources.interval")}</label>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("config.promptSources.scheduleDescription")}</p>
+                <label className="mt-5 block text-xs text-muted-foreground" htmlFor="prompt-source-interval">{t("config.promptSources.interval")}</label>
                 <Select id="prompt-source-interval" className="mt-2 w-full" value={schedule.intervalMinutes} options={intervalOptions} onChange={(value) => updateSchedule("intervalMinutes", value)} />
-                <Button className="!mt-4 w-full" icon={<RefreshCw className="size-4" />} loading={refreshingAll} onClick={() => void handleRefreshAll()}>
+                <Button className="mt-4 w-full" icon={<RefreshCw className="size-4" />} loading={refreshingAll} onClick={() => void handleRefreshAll()}>
                     {t("config.promptSources.refreshAll")}
                 </Button>
-                <p className="!mb-0 !mt-3 text-xs text-stone-500">{schedule.lastFetchedAt ? t("config.promptSources.lastFetched", { time: formatTime(schedule.lastFetchedAt, i18n.resolvedLanguage) }) : t("config.promptSources.neverScheduled")}</p>
+                <p className="mb-0 mt-3 text-xs text-muted-foreground">{schedule.lastFetchedAt ? t("config.promptSources.lastFetched", { time: formatTime(schedule.lastFetchedAt, i18n.resolvedLanguage) }) : t("config.promptSources.neverScheduled")}</p>
             </section>
 
             <PromptSourceEditorDrawer open={Boolean(editingSource)} source={editingSource} onSave={handleSave} onClose={() => setEditingSource(null)} />

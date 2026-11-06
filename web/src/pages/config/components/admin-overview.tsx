@@ -26,6 +26,10 @@ function pageRange(total: number, page: number) {
     return { from: (page - 1) * PAGE_SIZE + 1, to: Math.min(page * PAGE_SIZE, total) };
 }
 
+function formatStorage(bytes: number) {
+    return formatCompactBytes(bytes).replace(/([0-9.])(KB|MB|B)$/, "$1 $2");
+}
+
 export function AdminOverview() {
     const { t, i18n } = useTranslation();
     const { message } = App.useApp();
@@ -129,18 +133,19 @@ export function AdminOverview() {
         {
             title: t("config.admin.permission"),
             key: "permission",
-            width: 170,
+            width: 140,
+            responsive: ["md"],
             render: (_, user) => user.isAdmin ? <div className="flex flex-wrap items-center gap-1.5">
                 <span className="inline-flex items-center gap-1 rounded bg-foreground/[0.06] px-1.5 py-0.5 text-xs font-medium text-foreground"><ShieldCheck className="size-3" strokeWidth={2} />{t("config.admin.administrator")}</span>
                 {user.envAdmin ? <span className="rounded border border-border px-1 py-0.5 text-[10px] leading-none text-muted-foreground">{t("config.admin.envAdmin")}</span> : null}
             </div> : <span className="text-xs text-muted-foreground">{t("config.admin.member")}</span>,
         },
-        { title: t("config.admin.workspaceCount"), dataIndex: "workspaceCount", key: "workspaceCount", width: 90, align: "right" },
-        { title: <span className="pl-4">{t("config.admin.createdAt")}</span>, dataIndex: "createdAt", key: "createdAt", width: 170, render: (value: string) => <span className="whitespace-nowrap pl-4 text-xs text-muted-foreground tabular-nums">{formatTime(value)}</span> },
+        { title: t("config.admin.workspaceCount"), dataIndex: "workspaceCount", key: "workspaceCount", width: 70, align: "right", responsive: ["md"] },
+        { title: <span className="pl-4">{t("config.admin.createdAt")}</span>, dataIndex: "createdAt", key: "createdAt", width: 150, responsive: ["md"], render: (value: string) => <span className="whitespace-nowrap pl-4 text-xs text-muted-foreground tabular-nums">{formatTime(value)}</span> },
         {
             title: <span className="sr-only">{t("config.admin.actions")}</span>,
             key: "actions",
-            width: 180,
+            width: 150,
             align: "right",
             render: (_, user) => {
                 const lastAdmin = Boolean(data && data.totals.admins <= 1);
@@ -170,20 +175,21 @@ export function AdminOverview() {
         {
             title: t("config.admin.owner"),
             key: "owner",
-            width: 150,
+            width: 140,
+            responsive: ["md"],
             render: (_, workspace) => workspace.owner ? <div className="min-w-0" title={`${workspace.owner.displayName} @${workspace.owner.username}`}>
                 <div className="truncate">{workspace.owner.displayName}</div>
                 <div className="truncate text-xs text-muted-foreground">@{workspace.owner.username}</div>
             </div> : <span className="text-xs text-muted-foreground">{t("config.admin.noOwner")}</span>,
         },
-        { title: t("config.admin.members"), dataIndex: "memberCount", key: "memberCount", width: 70, align: "right" },
-        { title: t("config.admin.content"), key: "content", width: 140, render: (_, workspace) => <span className="text-xs text-muted-foreground">{t("config.admin.canvasFolders", { canvases: workspace.canvasCount, folders: workspace.folderCount })}</span> },
-        { title: t("config.admin.storage"), key: "storage", width: 100, align: "right", render: (_, workspace) => <span className="whitespace-nowrap tabular-nums">{formatCompactBytes(workspace.dataBytes + workspace.mediaBytes)}</span> },
-        { title: <span className="pl-4">{t("config.admin.updatedAt")}</span>, dataIndex: "updatedAt", key: "updatedAt", width: 170, render: (value: string) => <span className="whitespace-nowrap pl-4 text-xs text-muted-foreground tabular-nums">{formatTime(value)}</span> },
+        { title: t("config.admin.members"), dataIndex: "memberCount", key: "memberCount", width: 60, align: "right", responsive: ["md"] },
+        { title: t("config.admin.content"), key: "content", width: 120, responsive: ["xl"], render: (_, workspace) => <span className="text-xs text-muted-foreground">{t("config.admin.canvasFolders", { canvases: workspace.canvasCount, folders: workspace.folderCount })}</span> },
+        { title: t("config.admin.storage"), key: "storage", width: 90, align: "right", responsive: ["md"], render: (_, workspace) => <span className="whitespace-nowrap tabular-nums">{formatStorage(workspace.dataBytes + workspace.mediaBytes)}</span> },
+        { title: <span className="pl-4">{t("config.admin.updatedAt")}</span>, dataIndex: "updatedAt", key: "updatedAt", width: 150, responsive: ["md"], render: (value: string) => <span className="whitespace-nowrap pl-4 text-xs text-muted-foreground tabular-nums">{formatTime(value)}</span> },
         {
             title: <span className="sr-only">{t("config.admin.actions")}</span>,
             key: "actions",
-            width: 150,
+            width: 120,
             align: "right",
             render: (_, workspace) => <div className="flex items-center justify-end gap-2">
                 {workspace.role === "viewer" ? <Tag className="m-0">{t("config.admin.readOnly")}</Tag> : null}
@@ -198,7 +204,7 @@ export function AdminOverview() {
         { label: t("config.admin.totals.admins"), value: totals?.admins ?? "—" },
         { label: t("config.admin.totals.workspaces"), value: totals?.workspaces ?? "—" },
         { label: t("config.admin.totals.canvases"), value: totals?.canvases ?? "—" },
-        { label: t("config.admin.totals.storage"), value: totals ? formatCompactBytes(totals.dataBytes + totals.mediaBytes) : "—" },
+        { label: t("config.admin.totals.storage"), value: totals ? formatStorage(totals.dataBytes + totals.mediaBytes) : "—" },
     ];
     const tabs: Array<{ key: AdminTab; label: string; count?: number }> = [
         { key: "users", label: t("config.admin.users"), count: totals?.users },
@@ -238,7 +244,7 @@ export function AdminOverview() {
         </div>
 
         <div id={`admin-panel-${activeTab}`} role="tabpanel" aria-labelledby={`admin-tab-${activeTab}`} className="mt-1">
-            {activeTab === "users" ? <Table<AdminUser> className={tableClassName} tableLayout="fixed" rowKey="id" size="small" loading={loading} columns={userColumns} dataSource={pagedUsers} pagination={false} scroll={{ x: 860 }} locale={{ emptyText: t("config.admin.noUsers") }} /> : <Table<AdminWorkspace> className={tableClassName} tableLayout="fixed" rowKey="id" size="small" loading={loading} columns={workspaceColumns} dataSource={pagedWorkspaces} pagination={false} scroll={{ x: 980 }} locale={{ emptyText: t("config.admin.noWorkspaces") }} />}
+            {activeTab === "users" ? <Table<AdminUser> className={tableClassName} tableLayout="fixed" rowKey="id" size="small" loading={loading} columns={userColumns} dataSource={pagedUsers} pagination={false} locale={{ emptyText: t("config.admin.noUsers") }} /> : <Table<AdminWorkspace> className={tableClassName} tableLayout="fixed" rowKey="id" size="small" loading={loading} columns={workspaceColumns} dataSource={pagedWorkspaces} pagination={false} locale={{ emptyText: t("config.admin.noWorkspaces") }} />}
         </div>
 
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
