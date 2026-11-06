@@ -33,8 +33,9 @@ try {
             }
         };
     });
-    const accountResponse = await context.request.post("/api/auth/register", { data: { username: `qa-agent-${randomUUID()}`, password: randomUUID() } });
-    assert.equal(accountResponse.status(), 201);
+    assert.ok(process.env.DEV_CHECK_USERNAME && process.env.DEV_CHECK_PASSWORD, "Set DEV_CHECK_USERNAME and DEV_CHECK_PASSWORD to a verified local diagnostic account; email verification cannot be bypassed.");
+    const accountResponse = await context.request.post("/api/auth/login", { data: { username: process.env.DEV_CHECK_USERNAME, password: process.env.DEV_CHECK_PASSWORD } });
+    assert.equal(accountResponse.status(), 200);
     const account = await accountResponse.json();
     const workspace = account.workspaces[0];
     const canvasId = process.argv.includes("--canvas-tools") ? `qa-agent-${randomUUID()}` : "";

@@ -8,6 +8,10 @@ import { homedir } from "node:os";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const artifacts = resolve(root, ".local");
+const agentProtocolVersion = (() => {
+    const match = readFileSync(resolve(root, "canvas-agent/src/canvas/session.ts"), "utf8").match(/export const AGENT_PROTOCOL_VERSION = (\d+);/);
+    return match ? Number(match[1]) : 0;
+})();
 const command = process.argv[2];
 mkdirSync(artifacts, { recursive: true });
 
@@ -56,7 +60,9 @@ async function agentRunning() {
         const config = JSON.parse(readFileSync(resolve(homedir(), ".infinite-canvas/canvas-agent.json"), "utf8"));
         const response = await fetch(`${config.url}/health`);
         if (!response.ok) return false;
-        if ((await response.json()).protocolVersion !== 7) throw new Error("Canvas Agent 协议已更新，请停止旧 Agent 后重新启动 npm run dev");
+        const health = await response.json();
+        if (!agentProtocolVersion) throw new Error("Canvas Agent 协议已更新，无法读取仓库协议版本，请检查 canvas-agent/src/canvas/session.ts");
+        if (health.protocolVersion !== agentProtocolVersion) throw new Error(`Canvas Agent 协议已更新（运行中 ${health.protocolVersion}，仓库要求 ${agentProtocolVersion}），请停止旧 Agent 后重新启动 npm run dev`);
         return true;
     } catch (error) {
         if (error instanceof Error && error.message.includes("协议已更新")) throw error;

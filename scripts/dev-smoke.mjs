@@ -35,9 +35,10 @@ let cookie = "";
 const authenticatedRequest = (url, options = {}) => requestJson(url, { ...options, headers: { cookie, ...options.headers } });
 
 try {
-    await check("register an isolated smoke account", async () => {
-        const response = await requestJson(`${baseUrl}/api/auth/register`, { method: "POST", body: { username: `smoke-${crypto.randomUUID()}`, password: crypto.randomUUID() } });
-        assert(response.status === 201, `registration failed: ${response.status}`);
+    await check("sign in with a verified diagnostic account", async () => {
+        assert(process.env.DEV_CHECK_USERNAME && process.env.DEV_CHECK_PASSWORD, "Set DEV_CHECK_USERNAME and DEV_CHECK_PASSWORD to a verified local diagnostic account; email verification cannot be bypassed.");
+        const response = await requestJson(`${baseUrl}/api/auth/login`, { method: "POST", body: { username: process.env.DEV_CHECK_USERNAME, password: process.env.DEV_CHECK_PASSWORD } });
+        assert(response.status === 200, `login failed: ${response.status}`);
         cookie = response.setCookie?.split(";")[0] || "";
         assert(cookie, "session cookie missing");
     });
