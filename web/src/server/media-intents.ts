@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { execute, queryOne, withTransaction, type SqlExecutor } from "./db";
 
-export type MediaIntentInput = { operation: "upload" | "copy"; sourceKey?: string; expectedBytes: number | null };
+export type MediaIntentInput = { operation: "upload" | "copy"; sourceKey?: string; expectedBytes: number | null; objectKey: string };
 
 // The caller holds the workspace lock and has rechecked the actor's write membership.
 export async function createMediaIntent(tx: SqlExecutor, workspaceId: string, userId: string, key: string, input: MediaIntentInput) {
@@ -9,9 +9,9 @@ export async function createMediaIntent(tx: SqlExecutor, workspaceId: string, us
         AND (storage_key = $2 OR source_key = $2 OR (storage_key = $3 AND operation = 'upload'))`, workspaceId, key, input.sourceKey ?? null);
     if (busy) return null;
     const intentId = randomUUID();
-    const row = await queryOne(tx, `INSERT INTO media_write_intents (intent_id, workspace_id, storage_key, operation, source_key, expected_bytes, created_by, state)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 'active') ON CONFLICT (workspace_id, storage_key) WHERE state = 'active' DO NOTHING RETURNING intent_id`,
-    intentId, workspaceId, key, input.operation, input.sourceKey ?? null, input.expectedBytes, userId);
+    const row = await queryOne(tx, `INSERT INTO media_write_intents (intent_id, workspace_id, storage_key, object_key, operation, source_key, expected_bytes, created_by, state)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active') ON CONFLICT (workspace_id, storage_key) WHERE state = 'active' DO NOTHING RETURNING intent_id`,
+    intentId, workspaceId, key, input.objectKey, input.operation, input.sourceKey ?? null, input.expectedBytes, userId);
     return row ? intentId : null;
 }
 

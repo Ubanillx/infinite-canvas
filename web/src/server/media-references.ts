@@ -100,8 +100,8 @@ export async function replaceDomainMediaReferences(db: SqlExecutor, workspaceId:
 }
 
 type DomainRow = { domain: string; payload: string; revision: number };
-type MediaRow = { storage_key: string; remote_path: string; bytes: string; lifecycle_state: string; updated_at: Date };
-type IntentRow = { intent_id: string; storage_key: string; operation: string; state: string; expected_bytes: string | null; created_at: Date; finished_at: Date | null };
+type MediaRow = { storage_key: string; remote_path: string; bytes: string; lifecycle_state: string; updated_at: Date; object_version: string; content_sha256: string };
+type IntentRow = { intent_id: string; storage_key: string; object_key: string; operation: string; state: string; expected_bytes: string | null; created_at: Date; finished_at: Date | null };
 const revisionMap = (rows: DomainRow[]) => Object.fromEntries(rows.map((row) => [row.domain, row.revision]));
 const mediaStamp = (rows: MediaRow[]) => JSON.stringify(rows);
 
@@ -133,9 +133,10 @@ export async function runMediaGcDryRun(workspaceId: string, inspectObject = head
         for (const file of snapshot.media) {
             if (file.remote_path) continue;
             try {
-                const object = await inspectObject(mediaObjectKey(workspaceId, file.storage_key));
+                const objectKey = mediaObjectKey(workspaceId, file.storage_key, file.object_version);
+                const object = await inspectObject(objectKey);
                 if (object.contentLength !== Number(file.bytes)) diagnostics.push({ storageKey: file.storage_key, reason: "对象大小与服务器索引不一致" });
-                const listed = objects.find((entry) => entry.objectKey === mediaObjectKey(workspaceId, file.storage_key));
+                const listed = objects.find((entry) => entry.objectKey === objectKey);
                 if (!listed || listed.bytes !== object.contentLength || (object.eTag && listed.eTag !== object.eTag)) diagnostics.push({ storageKey: file.storage_key, reason: "对象列表与 HEAD 结果不一致" });
             } catch (error) {
                 diagnostics.push({ storageKey: file.storage_key, reason: isMissingObject(error) ? "服务器索引对应的对象不存在" : "对象存储检查失败" });
@@ -145,9 +146,9 @@ export async function runMediaGcDryRun(workspaceId: string, inspectObject = head
     try {
         if (JSON.stringify(await listObjects(workspaceId)) !== JSON.stringify(objects)) diagnostics.push({ reason: "扫描期间工作区对象列表已变化，请重新扫描" });
     } catch { diagnostics.push({ reason: "工作区对象列表复核失败" }); }
-    const knownObjects = new Set(snapshot.media.filter((file) => !file.remote_path).map((file) => mediaObjectKey(workspaceId, file.storage_key)));
+    const knownObjects = new Set(snapshot.media.filter((file) => !file.remote_path).map((file) => mediaObjectKey(workspaceId, file.storage_key, file.object_version)));
     const unindexedObjects = objects.filter((object) => !knownObjects.has(object.objectKey)).map((object) => {
-        const intent = [...snapshot.intents].reverse().find((entry) => mediaObjectKey(workspaceId, entry.storage_key) === object.objectKey);
+        const intent = [...snapshot.intents].reverse().find((entry) => (entry.object_key || mediaObjectKey(workspaceId, entry.storage_key)) === object.objectKey);
         return { ...object, storageKey: intent?.storage_key ?? null, intentId: intent?.intent_id ?? null, intentState: intent?.state ?? null, eligibleForDeletion: false };
     });
     return withTransaction(async (tx) => {
@@ -176,8 +177,8 @@ function readDomains(db: SqlExecutor, workspaceId: string) {
     return queryMany<DomainRow>(db, "SELECT domain, payload, revision FROM workspace_data WHERE workspace_id = $1 ORDER BY domain", workspaceId);
 }
 function readMedia(db: SqlExecutor, workspaceId: string) {
-    return queryMany<MediaRow>(db, "SELECT storage_key, remote_path, bytes, lifecycle_state, updated_at FROM media_files WHERE workspace_id = $1 ORDER BY storage_key", workspaceId);
+    return queryMany<MediaRow>(db, "SELECT storage_key, remote_path, bytes, lifecycle_state, updated_at, object_version, content_sha256 FROM media_files WHERE workspace_id = $1 ORDER BY storage_key", workspaceId);
 }
 function readIntents(db: SqlExecutor, workspaceId: string) {
-    return queryMany<IntentRow>(db, "SELECT intent_id, storage_key, operation, state, expected_bytes, created_at, finished_at FROM media_write_intents WHERE workspace_id = $1 ORDER BY created_at, intent_id", workspaceId);
+    return queryMany<IntentRow>(db, "SELECT intent_id, storage_key, object_key, operation, state, expected_bytes, created_at, finished_at FROM media_write_intents WHERE workspace_id = $1 ORDER BY created_at, intent_id", workspaceId);
 }

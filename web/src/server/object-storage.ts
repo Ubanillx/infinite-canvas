@@ -26,8 +26,9 @@ function bucket() {
 }
 
 /** 对象键沿用原有按 workspace + storageKey 哈希的布局，避免把 image: 这类前缀写进 S3 语义。 */
-export function mediaObjectKey(workspaceId: string, storageKey: string) {
-    return `media/${workspaceId}/${createHash("sha256").update(storageKey).digest("hex")}`;
+export function mediaObjectKey(workspaceId: string, storageKey: string, objectVersion = "") {
+    const base = `media/${workspaceId}/${createHash("sha256").update(storageKey).digest("hex")}`;
+    return objectVersion ? `${base}-${objectVersion}` : base;
 }
 
 export async function putMediaStream(key: string, body: NodeJS.ReadableStream, contentType: string, contentLength?: number) {

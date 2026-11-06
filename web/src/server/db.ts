@@ -107,6 +107,7 @@ async function ensureSchema(pool: Pool) {
             created_at TIMESTAMPTZ NOT NULL,
             updated_at TIMESTAMPTZ NOT NULL
         );
+        ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS data_restored_at TIMESTAMPTZ;
         CREATE TABLE IF NOT EXISTS workspace_members (
             workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
             user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -162,6 +163,8 @@ async function ensureSchema(pool: Pool) {
         );
         ALTER TABLE media_files ADD COLUMN IF NOT EXISTS lifecycle_state TEXT NOT NULL DEFAULT 'staged' CHECK (lifecycle_state IN ('staged', 'ready'));
         ALTER TABLE media_files ADD COLUMN IF NOT EXISTS last_referenced_at TIMESTAMPTZ;
+        ALTER TABLE media_files ADD COLUMN IF NOT EXISTS object_version TEXT NOT NULL DEFAULT '';
+        ALTER TABLE media_files ADD COLUMN IF NOT EXISTS content_sha256 TEXT NOT NULL DEFAULT '';
         CREATE TABLE IF NOT EXISTS media_write_intents (
             intent_id TEXT PRIMARY KEY,
             workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -175,6 +178,7 @@ async function ensureSchema(pool: Pool) {
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             finished_at TIMESTAMPTZ
         );
+        ALTER TABLE media_write_intents ADD COLUMN IF NOT EXISTS object_key TEXT NOT NULL DEFAULT '';
         CREATE UNIQUE INDEX IF NOT EXISTS idx_media_active_write ON media_write_intents(workspace_id, storage_key) WHERE state = 'active';
         CREATE TABLE IF NOT EXISTS media_references (
             workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -198,6 +202,29 @@ async function ensureSchema(pool: Pool) {
             started_at TIMESTAMPTZ NOT NULL,
             finished_at TIMESTAMPTZ NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS backup_settings (
+            id TEXT PRIMARY KEY,
+            enabled BOOLEAN NOT NULL DEFAULT FALSE,
+            interval_minutes INTEGER NOT NULL DEFAULT 1440,
+            retention INTEGER NOT NULL DEFAULT 30,
+            safety_retention INTEGER NOT NULL DEFAULT 5,
+            updated_at TIMESTAMPTZ NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS backup_runs (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK (kind IN ('backup', 'restore')),
+            purpose TEXT NOT NULL CHECK (purpose IN ('manual', 'scheduled', 'pre-restore')),
+            status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'partial', 'failed', 'cancelled')),
+            backup_id TEXT,
+            workspace_id TEXT,
+            actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+            started_at TIMESTAMPTZ NOT NULL,
+            finished_at TIMESTAMPTZ,
+            heartbeat_at TIMESTAMPTZ NOT NULL,
+            summary JSONB,
+            error TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_backup_runs_started ON backup_runs(started_at DESC);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower ON users(lower(username));
         CREATE INDEX IF NOT EXISTS idx_user_identities_user ON user_identities(user_id);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_user_identities_user_provider ON user_identities(user_id, provider);
@@ -250,6 +277,14 @@ export async function withTransaction<T>(callback: (client: SqlExecutor) => Prom
     } finally {
         client.release();
     }
+}
+
+/** 同一事务内读取多个查询时使用固定快照，避免备份清单跨语句看到不同版本。 */
+export async function withReadSnapshot<T>(callback: (client: SqlExecutor) => Promise<T>) {
+    return withTransaction(async (tx) => {
+        await tx.query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+        return callback(tx);
+    });
 }
 
 export async function queryOne<T>(db: SqlExecutor, sql: string, ...params: unknown[]) {

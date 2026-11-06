@@ -1,10 +1,11 @@
 import { getActiveWorkspace } from "@/lib/workspace";
 
 export type WorkspaceDomain = "canvas" | "canvas-templates" | "assets" | "image-workbench" | "video-workbench" | "agent-sessions";
-type StoredDomain<T> = { payload: T | null; revision: number; updatedAt: string | null; updatedBy: string | null };
-type ConflictDetail = { domain: WorkspaceDomain; payload: unknown; revision: number };
+type StoredDomain<T> = { payload: T | null; revision: number; updatedAt: string | null; updatedBy: string | null; restoredAt?: string | null };
+type ConflictDetail = { domain: WorkspaceDomain; workspaceId: string; payload: unknown; revision: number; restoredAt?: string | null };
 
 const revisions = new Map<string, number>();
+const restoredAtByKey = new Map<string, string | null>();
 const writes = new Map<string, Promise<void>>();
 const failedWrites = new Map<string, { domain: WorkspaceDomain; payload: unknown }>();
 const errors = new Map<string, { message: string; mode: "read" | "write" | "conflict" }>();
@@ -47,6 +48,7 @@ async function loadWorkspaceDataFor<T>(domain: WorkspaceDomain, workspaceId: str
         if (!response.ok) throw new Error((await response.json().catch(() => ({})) as { error?: string }).error || "无法读取工作区数据");
         const data = await response.json() as StoredDomain<T>;
         revisions.set(key, data.revision);
+        restoredAtByKey.set(key, data.restoredAt || null);
         if (!failedWrites.has(key) && errors.get(key)?.mode !== "conflict") clearWorkspaceError(key);
         return data.payload;
     } catch (error) {
@@ -75,7 +77,9 @@ export function saveWorkspaceData(domain: WorkspaceDomain, payload: unknown, opt
         const data = await response.json().catch(() => ({})) as StoredDomain<unknown> & { error?: string };
         if (response.status === 409) {
             revisions.set(key, data.revision);
-            window.dispatchEvent(new CustomEvent<ConflictDetail>("infinite-canvas:workspace-conflict", { detail: { domain, payload: data.payload, revision: data.revision } }));
+            window.dispatchEvent(new CustomEvent<ConflictDetail>("infinite-canvas:workspace-conflict", { detail: { domain, workspaceId, payload: data.payload, revision: data.revision, restoredAt: data.restoredAt || null } }));
+            // The modal compares against the pre-conflict value; only then adopt the server value.
+            restoredAtByKey.set(key, data.restoredAt || null);
             const conflict = new Error(data.error || "工作区数据发生冲突") as Error & { code?: string };
             conflict.code = "conflict";
             throw conflict;
@@ -97,4 +101,9 @@ export function saveWorkspaceData(domain: WorkspaceDomain, payload: unknown, opt
 
 export function resetWorkspaceDataRevision(domain: WorkspaceDomain) {
     revisions.delete(`${getActiveWorkspace()?.id || "unselected"}:${domain}`);
+}
+
+export function getLoadedRestoredAt(domain: WorkspaceDomain, workspaceId = getActiveWorkspace()?.id) {
+    if (!workspaceId) return null;
+    return restoredAtByKey.get(`${workspaceId}:${domain}`) ?? null;
 }

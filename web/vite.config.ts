@@ -1,7 +1,7 @@
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
+import { type IncomingMessage, type ServerResponse } from "node:http";
 import { request as httpsRequest, type RequestOptions as HttpsRequestOptions } from "node:https";
 import { isIP } from "node:net";
 import { dirname, resolve } from "node:path";
@@ -20,6 +20,9 @@ import { copyMediaObject, getMediaObject, headMediaObject, isMissingObject, medi
 import { extractMediaReferences, MEDIA_REFERENCE_DOMAINS, MediaReferenceError, replaceDomainMediaReferences, runMediaGcDryRun } from "./src/server/media-references";
 import { completeMediaIntent, createMediaIntent, failMediaIntent, type MediaIntentInput } from "./src/server/media-intents";
 import { readAgentAttachments, saveAgentAttachments, updateAgentAttachments } from "./src/server/agent-attachments";
+import { cancelBackupTask, getBackupStatus, getWorkspaceBlockers, initializeSystemBackup, listBackupRuns, listBackupSnapshots, readBackupManifest, releaseStaleIntents, saveBackupSettings, startBackupTask, stopSystemBackup, SystemBackupError, testBackupConnection } from "./src/server/system-backup";
+import { startRestoreTask } from "./src/server/system-restore";
+import { readServerWebdavConfig } from "./src/server/webdav-client";
 import { AgentAttachmentError } from "./src/lib/agent/agent-attachment-contract";
 import { canvasAgentProxyPath, forwardCanvasAgent } from "./src/server/canvas-agent-gateway";
 import { homedir } from "node:os";
@@ -40,7 +43,7 @@ const maxServerConfigBytes = 1024 * 1024;
 const aiProxyPath = "/api/ai";
 const maxAiRequestBytes = 64 * 1024 * 1024;
 const maxMediaBytes = 100 * 1024 * 1024;
-const protectedApiPaths = ["/api/auth", "/api/config", "/api/preferences", "/api/workspaces", "/api/admin", "/api/data", "/api/prompts", "/api/media", "/api/prompt-source", "/api/remote-media", aiProxyPath, "/api/webdav", "/api/image-proxy", canvasAgentProxyPath];
+const protectedApiPaths = ["/api/auth", "/api/config", "/api/preferences", "/api/workspaces", "/api/admin", "/api/data", "/api/prompts", "/api/media", "/api/prompt-source", "/api/remote-media", aiProxyPath, "/api/image-proxy", canvasAgentProxyPath];
 const allowedNetworks = (process.env.INFINITE_CANVAS_ALLOWED_NETWORKS || "127.0.0.1,::1,192.168.0.0/22,172.16.0.0/12")
     .split(",")
     .map((value) => value.trim())
@@ -482,8 +485,12 @@ function workspaceDataAccess(): Plugin {
                 const domain = decodeURIComponent(dataMatch[1]);
                 if (!workspaceDataDomains.has(domain)) return sendJson(res, 404, { error: "未知数据域" });
                 if (req.method === "GET") {
-                    const row = await queryOne<{ payload: string; revision: number; updated_at: Date; updated_by: string }>(db, "SELECT payload, revision, updated_at, updated_by FROM workspace_data WHERE workspace_id = $1 AND domain = $2", context.id, domain);
-                    return sendJson(res, 200, row ? { domain, payload: JSON.parse(row.payload), revision: row.revision, updatedAt: toIso(row.updated_at), updatedBy: row.updated_by } : { domain, payload: null, revision: 0, updatedAt: null, updatedBy: null });
+                    const [row, workspace] = await Promise.all([
+                        queryOne<{ payload: string; revision: number; updated_at: Date; updated_by: string }>(db, "SELECT payload, revision, updated_at, updated_by FROM workspace_data WHERE workspace_id = $1 AND domain = $2", context.id, domain),
+                        queryOne<{ data_restored_at: Date | null }>(db, "SELECT data_restored_at FROM workspaces WHERE id = $1", context.id),
+                    ]);
+                    const restoredAt = workspace?.data_restored_at ? toIso(workspace.data_restored_at) : null;
+                    return sendJson(res, 200, row ? { domain, payload: JSON.parse(row.payload), revision: row.revision, updatedAt: toIso(row.updated_at), updatedBy: row.updated_by, restoredAt } : { domain, payload: null, revision: 0, updatedAt: null, updatedBy: null, restoredAt });
                 }
                 if (req.method !== "PUT") return sendJson(res, 405, { error: "Method not allowed" });
                 if (!canWriteWorkspace(context)) return sendJson(res, 403, { error: "当前工作区为只读权限" });
@@ -518,8 +525,11 @@ function workspaceDataAccess(): Plugin {
                     return result;
                 });
                 if (!written) {
-                    const current = await queryOne<{ payload: string; revision: number; updated_at: Date; updated_by: string }>(db, "SELECT payload, revision, updated_at, updated_by FROM workspace_data WHERE workspace_id = $1 AND domain = $2", context.id, domain);
-                    return sendJson(res, 409, { error: "数据已被其他成员更新，请先刷新后处理冲突", domain, payload: current ? JSON.parse(current.payload) : null, revision: current?.revision || 0, updatedAt: current ? toIso(current.updated_at) : null, updatedBy: current?.updated_by || null });
+                    const [current, workspace] = await Promise.all([
+                        queryOne<{ payload: string; revision: number; updated_at: Date; updated_by: string }>(db, "SELECT payload, revision, updated_at, updated_by FROM workspace_data WHERE workspace_id = $1 AND domain = $2", context.id, domain),
+                        queryOne<{ data_restored_at: Date | null }>(db, "SELECT data_restored_at FROM workspaces WHERE id = $1", context.id),
+                    ]);
+                    return sendJson(res, 409, { error: "数据已被其他成员更新，请先刷新后处理冲突", domain, payload: current ? JSON.parse(current.payload) : null, revision: current?.revision || 0, updatedAt: current ? toIso(current.updated_at) : null, updatedBy: current?.updated_by || null, restoredAt: workspace?.data_restored_at ? toIso(workspace.data_restored_at) : null });
                 }
                 return sendJson(res, 200, { domain, payload: body.payload, revision: written.revision, updatedAt: now, updatedBy: actorId });
             }
@@ -541,7 +551,7 @@ function workspaceDataAccess(): Plugin {
                     const mimeType = typeof file?.mimeType === "string" ? file.mimeType : "application/octet-stream";
                     const bytes = typeof file?.bytes === "number" ? file.bytes : -1;
                     if (!storageKey || !remotePath || bytes < 0 || !Number.isSafeInteger(bytes)) continue;
-                    await execute(tx, "INSERT INTO media_files (workspace_id, storage_key, remote_path, mime_type, bytes, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT(workspace_id, storage_key) DO UPDATE SET remote_path = CASE WHEN media_files.remote_path = '' THEN '' ELSE excluded.remote_path END, mime_type = excluded.mime_type, bytes = excluded.bytes, updated_at = excluded.updated_at", context.id, storageKey, remotePath, mimeType, bytes, now, now);
+                    await execute(tx, "INSERT INTO media_files (workspace_id, storage_key, remote_path, mime_type, bytes, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT(workspace_id, storage_key) DO NOTHING", context.id, storageKey, remotePath, mimeType, bytes, now, now);
                 }
             });
             return sendJson(res, 200, { saved: true });
@@ -640,7 +650,7 @@ function workspacePromptsAccess(): Plugin {
                 const items = Array.isArray(source) ? source : source?.format === "infinite-canvas-prompts" && source.version === 1 && Array.isArray(source.prompts) ? source.prompts : null;
                 if (!items) return sendJson(res, 400, { error: "不支持的提示词文件格式" });
                 const prompts = items.map(promptFields);
-                await withTransaction(async (tx) => {
+                await withWorkspaceWrite(workspace, async (tx) => {
                     for (const item of prompts) {
                         const id = newId();
                         const now = isoNow();
@@ -661,7 +671,7 @@ function workspacePromptsAccess(): Plugin {
                 if (typeof body?.shared !== "boolean") return sendJson(res, 400, { error: "共享状态无效" });
                 const id = newId();
                 const now = isoNow();
-                await withTransaction(async (tx) => {
+                await withWorkspaceWrite(workspace, async (tx) => {
                     await execute(tx, "INSERT INTO workspace_prompts (id, workspace_id, title, prompt, description, tags, shared, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)", id, workspace.id, title, prompt, description, JSON.stringify(tags), body.shared, now, now);
                     await savePromptImage(tx, id, image);
                 });
@@ -674,14 +684,14 @@ function workspacePromptsAccess(): Plugin {
             if (!existing) return sendJson(res, 404, { error: "提示词不存在或无权修改" });
             if (role === "viewer") return sendJson(res, 403, { error: "当前工作区为只读权限" });
             if (req.method === "DELETE") {
-                await execute(db, "DELETE FROM workspace_prompts WHERE id = $1 AND workspace_id = $2", id, workspace.id);
+                await withWorkspaceWrite(workspace, (tx) => execute(tx, "DELETE FROM workspace_prompts WHERE id = $1 AND workspace_id = $2", id, workspace.id));
                 return sendJson(res, 200, { ok: true });
             }
             if (req.method !== "PUT") return sendJson(res, 405, { error: "Method not allowed" });
             const body = asRecord(await readPromptsBody(req));
             const { title, prompt, description, tags, image, removeImage } = promptFields(body);
             if (typeof body?.shared !== "boolean") return sendJson(res, 400, { error: "共享状态无效" });
-            await withTransaction(async (tx) => {
+            await withWorkspaceWrite(workspace, async (tx) => {
                 await execute(tx, "UPDATE workspace_prompts SET title = $1, prompt = $2, description = $3, tags = $4, shared = $5, updated_at = $6 WHERE id = $7 AND workspace_id = $8", title, prompt, description, JSON.stringify(tags), body.shared, isoNow(), id, workspace.id);
                 if (removeImage) await execute(tx, "DELETE FROM workspace_prompt_images WHERE prompt_id = $1", id);
                 await savePromptImage(tx, id, image);
@@ -743,25 +753,27 @@ function workspaceMediaStorage(): Plugin {
             const context = await workspaceContext(req, requestUrl);
             if (!context) return sendJson(res, 403, { error: "工作区不存在或无权访问" });
             const db = await getPool();
-            const objectKey = mediaObjectKey(context.id, key);
             res.setHeader("Cache-Control", "no-store");
             res.setHeader("X-Content-Type-Options", "nosniff");
             if (match[2]) {
                 if (req.method !== "POST") return sendJson(res, 405, { error: "Method not allowed" });
                 if (!canWriteWorkspace(context)) return sendJson(res, 403, { error: "当前工作区为只读权限" });
-                const source = await queryOne<{ mime_type: string; bytes: number }>(db, "SELECT mime_type, bytes FROM media_files WHERE workspace_id = $1 AND storage_key = $2", context.id, key);
+                const source = await queryOne<{ mime_type: string; bytes: number; object_version: string; content_sha256: string }>(db, "SELECT mime_type, bytes, object_version, content_sha256 FROM media_files WHERE workspace_id = $1 AND storage_key = $2", context.id, key);
                 if (!source) return sendJson(res, 404, { error: "媒体不存在" });
                 const storageKey = `${key.split(":")[0]}:${randomUUID()}`;
+                const objectVersion = randomUUID();
+                const targetObjectKey = mediaObjectKey(context.id, storageKey, objectVersion);
                 const now = isoNow();
-                try { await withMediaIntent(context, storageKey, { operation: "copy", sourceKey: key, expectedBytes: Number(source.bytes) },
-                    () => copyMediaObject(objectKey, mediaObjectKey(context.id, storageKey)),
-                    (tx) => execute(tx, "INSERT INTO media_files (workspace_id, storage_key, remote_path, mime_type, bytes, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7)", context.id, storageKey, "", source.mime_type, source.bytes, now, now)); }
+                try { await withMediaIntent(context, storageKey, { operation: "copy", sourceKey: key, expectedBytes: Number(source.bytes), objectKey: targetObjectKey },
+                    () => copyMediaObject(mediaObjectKey(context.id, key, source.object_version), targetObjectKey),
+                    (tx) => execute(tx, "INSERT INTO media_files (workspace_id, storage_key, remote_path, mime_type, bytes, object_version, content_sha256, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)", context.id, storageKey, "", source.mime_type, source.bytes, objectVersion, source.content_sha256, now, now)); }
                 catch (error) { if (isMissingObject(error)) return sendJson(res, 404, { error: "媒体不存在" }); throw error; }
                 return sendJson(res, 200, { storageKey });
             }
             if (req.method === "GET" || req.method === "HEAD") {
-                const file = await queryOne<{ mime_type: string }>(db, "SELECT mime_type FROM media_files WHERE workspace_id = $1 AND storage_key = $2", context.id, key);
+                const file = await queryOne<{ mime_type: string; object_version: string }>(db, "SELECT mime_type, object_version FROM media_files WHERE workspace_id = $1 AND storage_key = $2", context.id, key);
                 if (!file) return sendJson(res, 404, { error: "媒体不存在" });
+                const objectKey = mediaObjectKey(context.id, key, file.object_version);
                 try {
                     // HEAD 只取对象元数据，GET 才拉取对象体，避免重复下载。
                     if (req.method === "HEAD") {
@@ -796,10 +808,19 @@ function workspaceMediaStorage(): Plugin {
             });
             // 请求流直接上传到对象存储，不再落本地临时文件；显式传 ContentLength 以免 chunked 编码导致签名失败。
             const now = isoNow();
+            const objectVersion = randomUUID();
+            const objectKey = mediaObjectKey(context.id, key, objectVersion);
+            const contentHash = createHash("sha256");
+            const hasher = new Transform({
+                transform(chunk: Buffer, _encoding, callback) {
+                    contentHash.update(chunk);
+                    callback(null, chunk);
+                },
+            });
             const mimeType = typeof req.headers["content-type"] === "string" ? req.headers["content-type"] : "application/octet-stream";
-            await withMediaIntent(context, key, { operation: "upload", expectedBytes: declaredLength || null },
-            () => putMediaStream(objectKey, req.pipe(limit), mimeType, declaredLength || undefined), async (tx) => {
-                await execute(tx, "INSERT INTO media_files (workspace_id, storage_key, remote_path, mime_type, bytes, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT(workspace_id, storage_key) DO UPDATE SET remote_path = excluded.remote_path, mime_type = excluded.mime_type, bytes = excluded.bytes, updated_at = excluded.updated_at", context.id, key, "", mimeType, receivedBytes, now, now);
+            await withMediaIntent(context, key, { operation: "upload", expectedBytes: declaredLength || null, objectKey },
+            () => putMediaStream(objectKey, req.pipe(limit).pipe(hasher), mimeType, declaredLength || undefined), async (tx) => {
+                await execute(tx, "INSERT INTO media_files (workspace_id, storage_key, remote_path, mime_type, bytes, object_version, content_sha256, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT(workspace_id, storage_key) DO UPDATE SET remote_path = excluded.remote_path, mime_type = excluded.mime_type, bytes = excluded.bytes, object_version = excluded.object_version, content_sha256 = excluded.content_sha256, updated_at = excluded.updated_at", context.id, key, "", mimeType, receivedBytes, objectVersion, contentHash.digest("hex"), now, now);
                 await execute(tx, "UPDATE media_files SET lifecycle_state = 'ready', last_referenced_at = now() WHERE workspace_id = $1 AND storage_key = $2 AND EXISTS (SELECT 1 FROM media_references WHERE workspace_id = $1 AND storage_key = $2)", context.id, key);
             });
             return sendJson(res, 200, { saved: true });
@@ -1007,80 +1028,59 @@ function adminAccess(): Plugin {
     return { name: "admin-access", configureServer: (server) => { server.middlewares.use(middleware); }, configurePreviewServer: (server) => { server.middlewares.use(middleware); } };
 }
 
-function serverWebdavProxy(): Plugin {
+function systemBackupAccess(): Plugin {
     const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
         const requestUrl = new URL(req.url || "/", "http://localhost");
-        if (requestUrl.pathname !== "/api/webdav" && !requestUrl.pathname.startsWith("/api/webdav/")) return next();
-
-        const workspace = await workspaceContext(req, requestUrl);
-        if (!workspace) return sendJson(res, 401, { error: "Workspace selection required" });
-        const isPropfind = req.method === "PROPFIND";
-        const isWrite = Boolean(req.method && ["MKCOL", "PUT", "DELETE"].includes(req.method));
-        if (isWrite && !canWriteWorkspace(workspace)) return sendJson(res, 403, { error: "当前工作区为只读权限" });
-
-        let target: URL;
-        let authorization: string;
+        if (!requestUrl.pathname.startsWith("/api/admin/backup")) return next();
+        res.setHeader("Cache-Control", "no-store");
+        const user = (req as AuthenticatedRequest).infiniteCanvasUser;
+        if (!user) return sendJson(res, 401, { error: "请先登录" });
+        if (!user.isAdmin) return sendJson(res, 403, { error: "仅管理员可以访问" });
         try {
-            const webdav = readServerWebdavConfig();
-            target = buildServerWebdavUrl(requestUrl, webdav);
-            authorization = webdav.authorization;
-        } catch (error) {
-            console.error("Server WebDAV configuration failed", error);
-            return sendJson(res, 503, { error: "WebDAV is not configured" });
-        }
-
-        if (isWrite && req.headers["x-infinite-canvas-sync-mode"] !== "manual") {
-            return sendJson(res, 409, { error: "Automatic WebDAV writes are disabled; refresh the page and use manual sync" });
-        }
-        const headers: Record<string, string | string[] | undefined> = { ...req.headers, authorization };
-        for (const name of Object.keys(headers)) if (name.startsWith("x-infinite-canvas-")) delete headers[name];
-        delete headers["x-canvas-agent-token"];
-        delete headers.host;
-        delete headers.connection;
-        if (isPropfind) delete headers["accept-encoding"];
-        const transport = target.protocol === "https:" ? httpsRequest : httpRequest;
-        const relativePath = requestUrl.pathname === "/api/webdav" ? "" : requestUrl.pathname.slice("/api/webdav/".length);
-        const relativeSegments = safeWebdavSegments(relativePath);
-        const isWorkspaceRoot = relativeSegments.length === 1 && relativeSegments[0] === "workspaces";
-        const isCurrentWorkspacePath = relativeSegments.length >= 2 && relativeSegments[0] === "workspaces" && relativeSegments[1] === workspace.id;
-        // Directory initialization probes/creates the shared root before the
-        // current workspace directory. Allow only those narrow root requests;
-        // never allow listing or traversing other workspace paths.
-        const canAccessWorkspaceRoot = isWorkspaceRoot && (req.method === "MKCOL" || (req.method === "PROPFIND" && req.headers.depth === "0"));
-        if (relativeSegments.length && !isCurrentWorkspacePath && !canAccessWorkspaceRoot) return sendJson(res, 403, { error: "Workspace path is not allowed" });
-        const upstream = transport(target, { method: req.method, headers }, (upstreamResponse) => {
-            res.statusCode = upstreamResponse.statusCode || 502;
-            for (const [name, value] of Object.entries(upstreamResponse.headers)) {
-                if (value === undefined || name === "www-authenticate" || name === "connection" || (isPropfind && (name === "content-length" || name === "transfer-encoding"))) continue;
-                res.setHeader(name, value);
+            if (requestUrl.pathname === "/api/admin/backup/status" && req.method === "GET") return sendJson(res, 200, await getBackupStatus());
+            if (requestUrl.pathname === "/api/admin/backup/settings" && req.method === "PUT") return sendJson(res, 200, await saveBackupSettings(await readJsonBody(req)));
+            if (requestUrl.pathname === "/api/admin/backup/test" && req.method === "POST") { await testBackupConnection(); return sendJson(res, 200, { ok: true }); }
+            if (requestUrl.pathname === "/api/admin/backup/run" && req.method === "POST") return sendJson(res, 202, { runId: await startBackupTask(user.id, "manual") });
+            if (requestUrl.pathname === "/api/admin/backup/snapshots" && req.method === "GET") return sendJson(res, 200, { items: await listBackupSnapshots() });
+            const snapshot = /^\/api\/admin\/backup\/snapshots\/(snapshots|safety)\/([^/]+)$/.exec(requestUrl.pathname);
+            if (snapshot && req.method === "GET") return sendJson(res, 200, await readBackupManifest(readServerWebdavConfig(), snapshot[1] as "snapshots" | "safety", decodeURIComponent(snapshot[2])));
+            if (requestUrl.pathname === "/api/admin/backup/runs" && req.method === "GET") return sendJson(res, 200, { items: await listBackupRuns() });
+            if (requestUrl.pathname === "/api/admin/backup/cancel" && req.method === "POST") return sendJson(res, 200, { cancelled: cancelBackupTask() });
+            const blockers = /^\/api\/admin\/backup\/workspaces\/([^/]+)\/blockers$/.exec(requestUrl.pathname);
+            if (blockers && req.method === "GET") return sendJson(res, 200, { items: await getWorkspaceBlockers(decodeURIComponent(blockers[1])) });
+            const release = /^\/api\/admin\/backup\/workspaces\/([^/]+)\/release-intents$/.exec(requestUrl.pathname);
+            if (release && req.method === "POST") {
+                const body = await readJsonBody(req);
+                const intentIds = Array.isArray(body.intentIds) ? body.intentIds.filter((id): id is string => typeof id === "string") : [];
+                return sendJson(res, 200, { released: await releaseStaleIntents(decodeURIComponent(release[1]), intentIds) });
             }
-            if (!isPropfind) return upstreamResponse.pipe(res);
-            const chunks: Buffer[] = [];
-            upstreamResponse.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-            upstreamResponse.on("end", () => {
-                const publicHref = requestUrl.pathname || "/api/webdav";
-                const body = Buffer.concat(chunks)
-                    .toString("utf8")
-                    .replace(/<([A-Za-z][\w.-]*):href>[^<]*<\/\1:href>/gi, (_match, namespace: string) => `<${namespace}:href>${publicHref}</${namespace}:href>`);
-                res.setHeader("Content-Length", Buffer.byteLength(body));
-                res.end(body);
-            });
-        });
-        upstream.on("error", (error) => {
-            console.error("Server WebDAV proxy failed", error);
-            if (!res.headersSent) return sendJson(res, 502, { error: "WebDAV request failed" });
-            res.destroy(error);
-        });
-        req.on("aborted", () => upstream.destroy());
-        req.pipe(upstream);
+            if (requestUrl.pathname === "/api/admin/backup/restore" && req.method === "POST") {
+                const body = await readJsonBody(req);
+                const snapshotId = typeof body.snapshotId === "string" ? body.snapshotId : "";
+                const workspaceId = typeof body.workspaceId === "string" ? body.workspaceId : "";
+                const source = body.source === "safety" ? "safety" : "snapshots";
+                if (!snapshotId || !workspaceId) return sendJson(res, 400, { error: "请选择备份和工作区" });
+                return sendJson(res, 202, { runId: await startRestoreTask(user.id, snapshotId, workspaceId, source) });
+            }
+            return sendJson(res, 405, { error: "Method not allowed" });
+        } catch (error) {
+            if (error instanceof SystemBackupError) return sendJson(res, error.status, { error: error.message });
+            if (error instanceof RequestBodyError) return sendJson(res, error.status, { error: error.message });
+            console.error("System backup request failed", error);
+            return sendJson(res, 500, { error: error instanceof Error ? error.message : "备份服务暂时不可用" });
+        }
     };
     return {
-        name: "server-webdav-proxy",
+        name: "system-backup-access",
         configureServer(server) {
             server.middlewares.use(middleware);
+            server.httpServer?.once("close", stopSystemBackup);
+            void initializeSystemBackup();
         },
         configurePreviewServer(server) {
             server.middlewares.use(middleware);
+            server.httpServer?.once("close", stopSystemBackup);
+            void initializeSystemBackup();
         },
     };
 }
@@ -1519,47 +1519,6 @@ function asRecord(value: unknown) {
     return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
-function normalizeWebdavPath(value: string) {
-    return value.trim().replace(/^\/+|\/+$/g, "");
-}
-
-function readServerWebdavConfig() {
-    const config = JSON.parse(readFileSync(serverConfigPath, "utf8"));
-    if (!isServerConfig(config)) throw new Error("Invalid server configuration");
-    const webdav = asRecord(asRecord(config)?.webdav);
-    const username = typeof webdav?.username === "string" ? webdav.username : "";
-    const password = typeof webdav?.password === "string" ? webdav.password : "";
-    const directory = typeof webdav?.directory === "string" ? webdav.directory : "";
-    const target = new URL(typeof webdav?.url === "string" ? webdav.url : "");
-    if (!["http:", "https:"].includes(target.protocol) || target.username || target.password || !username || !password) throw new Error("Invalid WebDAV configuration");
-    target.search = "";
-    target.hash = "";
-    return { target, directory, authorization: `Basic ${Buffer.from(`${username}:${password}`, "utf8").toString("base64")}` };
-}
-
-function buildServerWebdavUrl(requestUrl: URL, config: ReturnType<typeof readServerWebdavConfig>) {
-    const relativePath = requestUrl.pathname === "/api/webdav" ? "" : requestUrl.pathname.slice("/api/webdav/".length);
-    const configuredSegments = safeWebdavSegments(config.directory);
-    const requestSegments = safeWebdavSegments(relativePath);
-    const target = new URL(config.target);
-    const targetPath = target.pathname.replace(/\/+$/, "");
-    const encodedPath = [...configuredSegments, ...requestSegments].map(encodeURIComponent).join("/");
-    target.pathname = `${targetPath}/${encodedPath}` || "/";
-    target.search = requestUrl.search;
-    return target;
-}
-
-function safeWebdavSegments(value: string) {
-    return normalizeWebdavPath(value)
-        .split("/")
-        .filter(Boolean)
-        .map((segment) => {
-            const decoded = decodeURIComponent(segment);
-            if (decoded === "." || decoded === ".." || decoded.includes("/") || decoded.includes("\\") || decoded.includes("\0")) throw new Error("Invalid WebDAV path");
-            return decoded;
-        });
-}
-
 function cloneJson<T>(value: T): T {
     return JSON.parse(JSON.stringify(value)) as T;
 }
@@ -1671,7 +1630,7 @@ function localPluginsManifest(): Plugin {
 export default defineConfig({
     base: process.env.VITE_BASE || "/",
     optimizeDeps: { include: ["file-type"] },
-    plugins: [react(), localPluginsManifest(), sessionContext(), authAccess(), serverApiAccessControl(), canvasAgentGateway(), workspaceAccess(), userPreferencesAccess(), adminAccess(), workspaceMediaStorage(), workspaceDataAccess(), workspacePromptsAccess(), serverWebdavProxy(), serverConfigStorage(), aiProviderProxy(), promptSourceProxy(), remoteMediaProxy(), imageProxy()],
+    plugins: [react(), localPluginsManifest(), sessionContext(), authAccess(), serverApiAccessControl(), canvasAgentGateway(), workspaceAccess(), userPreferencesAccess(), systemBackupAccess(), adminAccess(), workspaceMediaStorage(), workspaceDataAccess(), workspacePromptsAccess(), serverConfigStorage(), aiProviderProxy(), promptSourceProxy(), remoteMediaProxy(), imageProxy()],
     preview: { allowedHosts: (process.env.INFINITE_CANVAS_ALLOWED_HOSTS || "ubuntu-server").split(",").map((host) => host.trim()).filter(Boolean) },
     resolve: {
         alias: {
