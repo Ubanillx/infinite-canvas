@@ -32,7 +32,38 @@ Node.js 22 and Python 3 are also needed for the full test suite. `--legacy-peer-
 
 From the repository root, run `npm run dev` and open `http://127.0.0.1:3000`. Accounts, workspace data and the media index live in PostgreSQL, media objects in RustFS; the browser still only calls same-origin `/api/*` routes. The command starts Vite and Canvas Agent with the same `INFINITE_CANVAS_DATA_DIR`; run `npm run dev:agent` when only the Agent is needed. Server output is appended as JSONL to `.local/dev-server.jsonl`.
 
+### Optional: local Keycloak login
+
+Create a dedicated development client in the existing application realm. Enable Client authentication and Standard flow, require PKCE `S256`, and disable Implicit flow, Direct access grants and Service accounts. Register these exact addresses without wildcards:
+
+- Valid redirect URIs: `http://localhost:3000/api/auth/keycloak/callback` and `http://127.0.0.1:3000/api/auth/keycloak/callback`.
+- Valid post logout redirect URIs: `http://localhost:3000/` and `http://127.0.0.1:3000/`.
+
+Create the Git-ignored `.env.local` at the **repository root**, fill in the actual server, realm and client ID, and copy the Secret from the client's credentials page:
+
+```dotenv
+KEYCLOAK_URL=https://sso.example.com
+KEYCLOAK_REALM=your-realm
+KEYCLOAK_CLIENT_ID=infinite-canvas-local
+KEYCLOAK_CLIENT_SECRET=
+KEYCLOAK_SCOPES=profile email
+KEYCLOAK_ALLOW_INSECURE=false
+KEYCLOAK_ALLOW_LOCAL_LOGIN=true
+```
+
+Restart `npm run dev` from the root. Bun loads this file and passes the values to the server. Keep the Secret out of browser configuration and never prefix it with `VITE_`. With redirect overrides unset, the server derives the callback from the current localhost or 127.0.0.1 origin; use the same origin throughout each login.
+
+`KEYCLOAK_ALLOW_LOCAL_LOGIN=true` preserves existing accounts during local integration. SSO users receive separate workspaces and are not linked to old accounts automatically. Set it to `false` and restart when only SSO should be accepted. Realms using Email as username require the full email address when signing in. See the Keycloak section in `deploy/README.md` for client roles, administrator grants and deployment configuration.
+
 ## Tests and diagnostics
+
+### Registration email and SMTP
+
+New local registrations require a verified work email. Administrators configure `/config/registration` with allowed domains, verification limits and SMTP, then save and test the connection. Empty domain lists allow any domain; configured domains match exactly without implicit subdomains. Codes contain 6 digits. Defaults are 10 minutes validity, 60 seconds between resends, 5 incorrect attempts per code and 5 successful emails per address per hour; all four limits are editable. SMTP passwords stay on the server and are excluded from configuration exports.
+
+For a new deployment without an administrator, set `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY` (`starttls` or `tls`), `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` and `SMTP_FROM_NAME` in the root `.env.local` or deployment environment. After the first verified registration, use system settings; saved database settings override the initial environment values. Without SMTP, existing users can log in while new local registration is paused. First-time TOPMAX provisioning requires a verified email and an allowed domain; existing identities retain access.
+
+Smoke and Agent checks need a verified local diagnostic account via `DEV_CHECK_USERNAME` and `DEV_CHECK_PASSWORD`. E2E prepares delivered-email fixtures only inside isolated E2E databases; there is no development registration bypass switch.
 
 - `npm test` runs the web, Canvas Agent, and deployment unit suites.
 - `npm run test:e2e` starts a server on port 3100, creates a dedicated PostgreSQL database and RustFS bucket for the run, and deletes both afterwards, so development data is never read or modified. Run one suite at a time to avoid a port 3100 conflict. Install the browser once with `npx --prefix web playwright install chromium`.

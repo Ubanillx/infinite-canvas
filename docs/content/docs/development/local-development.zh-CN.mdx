@@ -34,7 +34,38 @@ npx --prefix web playwright install chromium
 
 开发服务器的接口与中间件共用同一进程内的服务端逻辑：账号认证、工作区数据、媒体索引走 PostgreSQL，媒体对象走 RustFS。浏览器仍然只访问同源的 `/api/*`；Agent 网关会校验登录工作区成员身份，不暴露本机 Agent 端口。
 
+### 可选：本地接入 Keycloak
+
+在现有业务 realm 中创建独立的本地开发客户端，开启 Client authentication 和 Standard flow，要求 PKCE `S256`，关闭 Implicit flow、Direct access grants 和 Service accounts。精确登记以下地址，不使用通配符：
+
+- Valid redirect URIs：`http://localhost:3000/api/auth/keycloak/callback`、`http://127.0.0.1:3000/api/auth/keycloak/callback`。
+- Valid post logout redirect URIs：`http://localhost:3000/`、`http://127.0.0.1:3000/`。
+
+在**仓库根目录**创建已被 Git 忽略的 `.env.local`，填写实际服务地址、realm、客户端 ID，并从客户端凭据页复制 Secret：
+
+```dotenv
+KEYCLOAK_URL=https://sso.example.com
+KEYCLOAK_REALM=your-realm
+KEYCLOAK_CLIENT_ID=infinite-canvas-local
+KEYCLOAK_CLIENT_SECRET=
+KEYCLOAK_SCOPES=profile email
+KEYCLOAK_ALLOW_INSECURE=false
+KEYCLOAK_ALLOW_LOCAL_LOGIN=true
+```
+
+从根目录重新运行 `npm run dev`，Bun 会加载该文件并把配置传给服务端。Secret 不加 `VITE_` 前缀，不放进浏览器配置。保持回调覆盖项未设置时，服务端会按当前访问的 localhost 或 127.0.0.1 生成对应回调，登录全程使用同一个地址。
+
+`KEYCLOAK_ALLOW_LOCAL_LOGIN=true` 仅用于本地联调时保留已有账号入口；统一登录用户使用独立工作区，不自动关联旧账号。需要统一登录独占入口时改为 `false` 后重启。若 realm 开启 Email as username，登录时使用完整邮箱，不能只填邮箱前缀。客户端角色、管理员授权与部署配置见 `deploy/README.md` 的 Keycloak 统一登录说明。
+
 ## 4. 配置模型
+
+### 注册邮箱与 SMTP
+
+新本地注册必须验证工作邮箱。管理员打开 `/config/registration`，配置允许域名、验证码规则和 SMTP，再使用「保存并测试连接」。域名留空不限制；填写后精确匹配，不自动允许子域名。默认 6 位验证码，10 分钟有效、60 秒后可重发、单码最多错误 5 次、每邮箱每小时最多成功发送 5 封；后四项均可在配置页调整。SMTP 密码只保存在服务器，不随配置导出。
+
+首次部署尚无管理员时，可在根目录 `.env.local` 或部署环境设置 `SMTP_HOST`、`SMTP_PORT`、`SMTP_SECURITY`（`starttls` 或 `tls`）、`SMTP_USER`、`SMTP_PASSWORD`、`SMTP_FROM`、`SMTP_FROM_NAME`，完成首个邮箱验证注册后再进入系统配置。配置页保存的数据库配置优先于环境初始值。SMTP 未配置时已有用户仍可登录，但本地新注册暂停。TOPMAX 首次建号要求身份服务返回已验证邮箱，并遵循本系统域名规则；已有身份继续登录。
+
+`dev:smoke` 和 Agent 检查需要通过环境变量 `DEV_CHECK_USERNAME`、`DEV_CHECK_PASSWORD` 指定已验证的本地测试账号。E2E 在独立数据库内准备已投递的邮件夹具，不对开发环境增加验证码绕过开关。
 
 打开右上角配置弹窗，填写自己的 `Base URL`、`API Key` 和模型名；凭据保存到服务器，浏览器只保留是否已配置的状态。提示词来源、远程媒体下载、AI 请求和 WebDAV 都经服务端同源代理，浏览器不直接访问外部地址。
 
