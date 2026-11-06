@@ -4,7 +4,8 @@ import { Alert, App, Button, Modal, Result } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { applyServerConfig, createAppConfigSnapshot } from "@/services/config-file";
-import { applyLocalConfigPreferences, getServerConfigSaveStatus, loadServerConfig, retryServerConfigSave, saveServerConfig, startLocalConfigPersistence, startServerConfigAutoSave, subscribeServerConfigSaveStatus } from "@/services/server-config";
+import { getServerConfigSaveStatus, loadServerConfig, retryServerConfigSave, saveServerConfig, startServerConfigAutoSave, subscribeServerConfigSaveStatus } from "@/services/server-config";
+import { applyUserPreferences, getUserPreferencesSaveStatus, loadUserPreferences, retryUserPreferencesSave, setUserPreferenceDefaults, startUserPreferencesAutoSave, subscribeUserPreferencesSaveStatus } from "@/services/user-preferences";
 import { getWorkspaceDataError, retryWorkspaceData, subscribeWorkspaceDataError } from "@/services/workspace-data";
 import { useConfigStore } from "@/stores/use-config-store";
 import { usePromptSourceScheduler } from "@/hooks/use-prompt-source-scheduler";
@@ -30,7 +31,7 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
     }, [error, finishAppLoading, ready, routeHydrated]);
 
     if (error) {
-        return <Result status="error" title={t("config.serverStorage.loadFailed")} subTitle={error} extra={<Button type="primary" onClick={() => { startAppLoading(); setAttempt((value) => value + 1); }}>{t("common.retry")}</Button>} />;
+        return <Result status="error" title={t("config.loadFailedTitle")} subTitle={error} extra={<Button type="primary" onClick={() => { startAppLoading(); setAttempt((value) => value + 1); }}>{t("common.retry")}</Button>} />;
     }
     if (!ready) return null;
     return <ReadyClientRoot>{children}</ReadyClientRoot>;
@@ -44,6 +45,7 @@ function ReadyClientRoot({ children }: { children: ReactNode }) {
     const importChannelCredentials = useConfigStore((state) => state.importChannelCredentials);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const saveError = useSyncExternalStore(subscribeServerConfigSaveStatus, getServerConfigSaveStatus).error;
+    const preferenceSaveError = useSyncExternalStore(subscribeUserPreferencesSaveStatus, getUserPreferencesSaveStatus).error;
     const workspaceError = useSyncExternalStore(subscribeWorkspaceDataError, getWorkspaceDataError);
     const [conflict, setConflict] = useState<string>("");
 
@@ -87,8 +89,9 @@ function ReadyClientRoot({ children }: { children: ReactNode }) {
 
     return <>
         {children}
-        {saveError || workspaceError ? <div className="fixed left-4 right-4 top-4 z-[1100] flex flex-col gap-2 sm:left-auto sm:max-w-md">
+        {saveError || preferenceSaveError || workspaceError ? <div className="fixed left-4 right-4 top-4 z-[1100] flex flex-col gap-2 sm:left-auto sm:max-w-md">
             {saveError ? <Alert type="error" showIcon message={t("config.serverStorage.saveFailed")} description={saveError} action={<Button size="small" onClick={retryServerConfigSave}>{t("common.retry")}</Button>} /> : null}
+            {preferenceSaveError ? <Alert type="error" showIcon message={t("config.personalPreferences.saveFailed")} description={preferenceSaveError} action={<Button size="small" onClick={retryUserPreferencesSave}>{t("common.retry")}</Button>} /> : null}
             {workspaceError ? <Alert type="error" showIcon message={workspaceError.mode === "conflict" ? t("conflict.dataConflict") : t("conflict.dataUnsaved")} description={workspaceError.message} action={<Button size="small" onClick={retryWorkspaceData}>{workspaceError.mode === "conflict" ? t("conflict.refresh") : t("common.retry")}</Button>} /> : null}
         </div> : null}
         <Modal open={Boolean(conflict)} title={t("conflict.title")} okText={t("conflict.refreshAndLoad")} cancelText={t("conflict.keepLocal")} onOk={() => window.location.reload()} onCancel={() => setConflict("")}>{t("conflict.description", { name: conflict })}</Modal>
@@ -116,8 +119,11 @@ function useServerConfigSync(attempt: number, isAdmin: boolean) {
                 if (serverConfig) applyServerConfig(serverConfig);
                 if (!isAdmin) {
                     if (userId) {
-                        applyLocalConfigPreferences(userId);
-                        stopAutoSave = startLocalConfigPersistence(userId);
+                        setUserPreferenceDefaults(useConfigStore.getState().config);
+                        const preferences = await loadUserPreferences();
+                        if (!active) return;
+                        applyUserPreferences(preferences);
+                        stopAutoSave = startUserPreferencesAutoSave();
                     }
                     setState({ ready: true, error: "" });
                     return;

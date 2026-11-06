@@ -1,13 +1,12 @@
-import { App, Button, Form, Input, Modal, Progress, Radio, Select, Switch, Tabs } from "antd";
+import { App, Button, Form, Input, Modal, Progress, Select, Tabs } from "antd";
 import type { TFunction } from "i18next";
 import { Cloud, Download, Info, KeyRound, Pencil, Plus, RefreshCw, Save, Trash2, Upload, Wifi } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 
 import { formatCompactBytes as formatBytes } from "@/lib/format";
-import { ModelPicker } from "@/components/model-picker";
-import { videoResolutionOptions } from "@/components/video-settings-panel";
 import { ChannelEditorDrawer } from "@/components/layout/channel-editor-drawer";
+import { ConfigPreferencesForm } from "@/components/layout/config-preferences";
 import { ConfigPromptSources } from "@/components/layout/config-prompt-sources";
 import { ConfigLocalStorage } from "@/components/layout/config-local-storage";
 import type { AppLocale } from "@/i18n";
@@ -15,16 +14,9 @@ import { getServerConfigSaveStatus, saveServerConfigNow, subscribeServerConfigSa
 import { importWorkspaceSnapshot, listWorkspaceSnapshots, type AppSyncDomainKey, type AppSyncProgressEvent, type AppSyncStageKey, type WebdavSnapshot } from "@/services/app-sync";
 import { isWebdavConfigured, syncAllDataToWebdav } from "@/services/webdav-auto-sync";
 import { testWebdavConnection } from "@/services/webdav-sync";
-import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
-import { computeMediaSize, inferMediaRatio, inferMediaScale, mediaScaleOptions, parseVideoResolution } from "@/lib/media-size";
 import { createModelChannel, modelOptionsFromChannels, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore, type AiConfig, type ApiCallFormat, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
 import { useIsAdmin } from "@/stores/use-session-store";
-
-type ModelGroup = {
-    capability: ModelCapability;
-    modelKey: "imageModel" | "videoModel" | "textModel" | "audioModel";
-    labelKey: string;
-};
+import { RegistrationSettings } from "@/pages/config/components/registration-settings";
 
 type WebdavDomainProgress = {
     stageKey?: AppSyncStageKey;
@@ -34,13 +26,6 @@ type WebdavDomainProgress = {
     total?: number;
     status?: "active" | "success" | "exception";
 };
-
-const modelGroups: ModelGroup[] = [
-    { capability: "image", modelKey: "imageModel", labelKey: "config.preferences.defaultImageModel" },
-    { capability: "video", modelKey: "videoModel", labelKey: "config.preferences.defaultVideoModel" },
-    { capability: "text", modelKey: "textModel", labelKey: "config.preferences.defaultTextModel" },
-    { capability: "audio", modelKey: "audioModel", labelKey: "config.preferences.defaultAudioModel" },
-];
 
 const webdavDomainKeys: AppSyncDomainKey[] = ["canvas", "assets", "image-workbench", "video-workbench"];
 function createWebdavDomainProgress(): Record<AppSyncDomainKey, WebdavDomainProgress> {
@@ -96,7 +81,6 @@ export function AppConfigPanel({ showDoneButton = false, showTabs = true, showSa
     const webdavReady = isWebdavConfigured({ ...webdav, password: webdavPasswordDraft || webdav.password });
     const editingChannel = config.channels.find((channel) => channel.id === editingChannelId) || null;
     const locale = i18n.resolvedLanguage as AppLocale;
-    const imageResolutionOptions = mediaScaleOptions.map((value) => ({ value, label: value === "auto" ? t("settingsPanels.common.auto") : value.toUpperCase() }));
     useEffect(() => setSelectedTab(initialTab), [initialTab]);
 
     const saveConfig = (nextConfig: AiConfig) => {
@@ -220,19 +204,20 @@ export function AppConfigPanel({ showDoneButton = false, showTabs = true, showSa
 
     return (
         <div className={showDoneButton ? "flex h-full min-h-0 flex-col" : undefined}>
-            {showSaveButton && !showDoneButton && activeTab !== "local-storage" ? <div className="mb-4 flex justify-end"><SaveConfigButton /></div> : null}
+            {showSaveButton && !showDoneButton && activeTab !== "local-storage" && activeTab !== "registration" ? <div className="mb-4 flex justify-end"><SaveConfigButton /></div> : null}
             <Tabs
                 activeKey={activeTab}
                 onChange={(key) => setSelectedTab(key as ConfigTabKey)}
                 renderTabBar={showTabs ? undefined : () => <></>}
                 className={showDoneButton ? "[&_.ant-tabs-content-holder]:overflow-y-auto" : undefined}
-                tabBarExtraContent={showDoneButton && showSaveButton && activeTab !== "local-storage" ? <SaveConfigButton /> : undefined}
+                tabBarExtraContent={showDoneButton && showSaveButton && activeTab !== "local-storage" && activeTab !== "registration" ? <SaveConfigButton /> : undefined}
                 styles={showDoneButton ? {
                     root: { display: "flex", flex: 1, flexDirection: "column", minHeight: 0 },
                     header: { marginBottom: 0 },
                     content: { paddingTop: 16, paddingRight: 4 },
                 } : undefined}
                 items={[
+                    { key: "registration", label: t("config.tabs.registration"), children: <RegistrationSettings /> },
                     {
                         key: "channels",
                         label: t("config.tabs.channels"),
@@ -270,87 +255,8 @@ export function AppConfigPanel({ showDoneButton = false, showTabs = true, showSa
                     },
                     {
                         key: "preferences",
-                        label: t("config.tabs.preferences"),
-                        children: (
-                            <Form layout="vertical" requiredMark={false} className="space-y-5">
-                                <section className="rounded-xl border border-border p-5">
-                                    <h2 className="mb-4 text-sm font-semibold">{t("config.preferences.defaultModels")}</h2>
-                                    <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2">
-                                    {modelGroups.map((group) => (
-                                        <Form.Item key={group.modelKey} label={t(group.labelKey)} className="mb-0">
-                                            <ModelPicker config={config} value={config[group.modelKey]} onChange={(model) => updateConfig(group.modelKey, model)} capability={group.capability} fullWidth />
-                                        </Form.Item>
-                                    ))}
-                                    </div>
-                                </section>
-                                <section className="rounded-xl border border-border p-5">
-                                    <h2 className="mb-4 text-sm font-semibold">{t("config.preferences.generation")}</h2>
-                                    <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
-                                    <Form.Item label={t("config.preferences.canvasImageCount")} extra={t("config.preferences.canvasImageCountDescription")} className="mb-0">
-                                        <Input
-                                            type="number"
-                                            min={1}
-                                            max={15}
-                                            value={config.canvasImageCount}
-                                            onChange={(event) => updateConfig("canvasImageCount", event.target.value)}
-                                            onBlur={(event) => updateConfig("canvasImageCount", normalizeImageCount(event.target.value))}
-                                        />
-                                    </Form.Item>
-                                    <Form.Item label={t("config.preferences.imageResolution")} className="mb-0">
-                                        <Select value={inferMediaScale(config.size)} options={imageResolutionOptions} onChange={(scale) => updateConfig("size", computeMediaSize(scale, inferMediaRatio(config.size)))} />
-                                    </Form.Item>
-                                    <Form.Item label={t("config.preferences.videoResolution")} className="mb-0">
-                                        <Select value={parseVideoResolution(config.vquality)} options={videoResolutionOptions} onChange={(value) => updateConfig("vquality", value)} />
-                                    </Form.Item>
-                                    <Form.Item label={t("config.preferences.audioVoice")} className="mb-0">
-                                        <Select value={config.audioVoice} options={audioVoiceOptions} onChange={(value) => updateConfig("audioVoice", value)} />
-                                    </Form.Item>
-                                    <Form.Item label={t("config.preferences.audioFormat")} className="mb-0">
-                                        <Select value={config.audioFormat} options={audioFormatOptions} onChange={(value) => updateConfig("audioFormat", value)} />
-                                    </Form.Item>
-                                    <Form.Item label={t("config.preferences.audioSpeed")} className="mb-0">
-                                        <Input
-                                            type="number"
-                                            min={0.25}
-                                            max={4}
-                                            step={0.05}
-                                            value={config.audioSpeed}
-                                            onChange={(event) => updateConfig("audioSpeed", event.target.value)}
-                                            onBlur={(event) => updateConfig("audioSpeed", normalizeAudioSpeedValue(event.target.value))}
-                                        />
-                                    </Form.Item>
-                                    </div>
-                                </section>
-                                <section className="rounded-xl border border-border p-5">
-                                    <h2 className="mb-4 text-sm font-semibold">{t("config.preferences.canvasBehavior")}</h2>
-                                    <Form.Item label={t("config.preferences.regenerateBehavior")} className="mb-4">
-                                    <Radio.Group value={config.nodeRegenerateBehavior} onChange={(event) => updateConfig("nodeRegenerateBehavior", event.target.value)} className="flex flex-col gap-2">
-                                        <Radio value="overwrite">
-                                            <span className="block text-sm font-medium">{t("config.preferences.regenerateBehaviorOverwrite")}</span>
-                                            <span className="mt-0.5 block text-xs opacity-60">{t("config.preferences.regenerateBehaviorOverwriteDescription")}</span>
-                                        </Radio>
-                                        <Radio value="new-node">
-                                            <span className="block text-sm font-medium">{t("config.preferences.regenerateBehaviorNewNode")}</span>
-                                            <span className="mt-0.5 block text-xs opacity-60">{t("config.preferences.regenerateBehaviorNewNodeDescription")}</span>
-                                        </Radio>
-                                    </Radio.Group>
-                                    </Form.Item>
-                                    <div className="flex items-center justify-between gap-3 border-t border-border pt-4">
-                                        <span className="text-sm">{t("config.preferences.autoFocusOnSelect")}</span>
-                                        <Switch checked={config.autoFocusOnSelect} onChange={(checked) => updateConfig("autoFocusOnSelect", checked)} />
-                                    </div>
-                                </section>
-                                <section className="rounded-xl border border-border p-5">
-                                    <h2 className="mb-4 text-sm font-semibold">{t("config.preferences.instructions")}</h2>
-                                    <Form.Item label={t("config.preferences.audioInstructions")} className="mb-4">
-                                    <Input.TextArea rows={2} value={config.audioInstructions} placeholder={t("config.preferences.audioInstructionsPlaceholder")} onChange={(event) => updateConfig("audioInstructions", event.target.value)} />
-                                    </Form.Item>
-                                    <Form.Item label={t("config.preferences.systemPrompt")} className="mb-0">
-                                    <Input.TextArea rows={4} value={config.systemPrompt} placeholder={t("config.preferences.systemPromptPlaceholder")} onChange={(event) => updateConfig("systemPrompt", event.target.value)} />
-                                    </Form.Item>
-                                </section>
-                            </Form>
-                        ),
+                        label: t("config.tabs.defaultPreferences"),
+                        children: <ConfigPreferencesForm mode="defaults" />,
                     },
                     {
                         key: "prompt-sources",
@@ -373,7 +279,7 @@ export function AppConfigPanel({ showDoneButton = false, showTabs = true, showSa
                                             <Input value={webdav.directory} placeholder={t("config.webdav.directoryPlaceholder")} onChange={(event) => updateWebdavConfig("directory", event.target.value)} />
                                         </Form.Item>
                                         <Form.Item label={t("config.webdav.username")} className="mb-0">
-                                            <Input value={webdav.username} autoComplete="username" onChange={(event) => updateWebdavConfig("username", event.target.value)} />
+                                            <Input value={webdav.username} autoComplete="username" placeholder={t("config.webdav.usernamePlaceholder")} onChange={(event) => updateWebdavConfig("username", event.target.value)} />
                                         </Form.Item>
                                         <Form.Item label={t("config.webdav.password")} className="mb-0">
                                             <Input.Password value={webdavPasswordDraft} autoComplete="new-password" placeholder={webdav.hasPassword ? t("config.webdav.passwordConfigured") : t("config.webdav.passwordPlaceholder")} onChange={(event) => setWebdavPasswordDraft(event.target.value)} onBlur={() => { if (webdavPasswordDraft) updateWebdavConfig("password", webdavPasswordDraft); setWebdavPasswordDraft(""); }} />
@@ -486,10 +392,6 @@ function pickDefaultModel(config: AiConfig, capability: ModelCapability, current
     const options = selectableModelsByCapability(config, capability);
     const normalized = normalizeModelOptionValue(current, config.channels);
     return options.includes(normalized) ? normalized : options[0] || "";
-}
-
-function normalizeImageCount(value: string) {
-    return String(Math.max(1, Math.min(15, Math.floor(Math.abs(Number(value)) || 3))));
 }
 
 function apiFormatLabel(apiFormat: ApiCallFormat, t: TFunction) {

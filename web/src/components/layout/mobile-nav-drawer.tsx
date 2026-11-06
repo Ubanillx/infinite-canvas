@@ -3,7 +3,7 @@ import { Link, useLocation } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 
 import { UserStatusActions } from "@/components/layout/user-status-actions";
-import { adminConfigSection, configSections, navigationGroups, type NavigationToolSlug } from "@/constant/navigation-tools";
+import { adminConfigSection, configSections, navigationGroups, personalConfigSections, type NavigationToolSlug } from "@/constant/navigation-tools";
 import { cn } from "@/lib/utils";
 import { useAgentStore } from "@/stores/use-agent-store";
 import { useIsAdmin } from "@/stores/use-session-store";
@@ -19,13 +19,14 @@ export function MobileNavDrawer({ open, activeToolSlug, onClose }: MobileNavDraw
     const { pathname } = useLocation();
     const panelOpen = useAgentStore((state) => state.panelOpen);
     const isAdmin = useIsAdmin();
-    const settingsSections = isAdmin ? [...configSections, adminConfigSection] : configSections;
+    const settingsSections = isAdmin ? [...configSections, adminConfigSection] : personalConfigSections;
+    const defaultSectionSlug = isAdmin ? "channels" : "preferences";
 
     return (
         <Drawer title={t("topNav.navigation")} placement="left" size={280} open={open} onClose={onClose} className={panelOpen ? "2xl:hidden" : "lg:hidden"}>
             <div className="space-y-6">
                 {navigationGroups.map((group) => {
-                    const tools = group.tools.filter((tool) => tool.slug !== "config" || isAdmin);
+                    const tools = group.tools;
                     if (!tools.length) return null;
                     return <section key={group.key} aria-label={t(`navigationGroups.${group.key}`)}>
                     <div className="mb-2 px-3 text-xs font-medium text-muted-foreground">{t(`navigationGroups.${group.key}`)}</div>
@@ -40,10 +41,10 @@ export function MobileNavDrawer({ open, activeToolSlug, onClose }: MobileNavDraw
                             {tool.slug === "config" && active ? <div className="ml-5 mt-1 space-y-0.5 border-l border-border pl-2">
                                 {settingsSections.map((section) => {
                                     const SectionIcon = section.icon;
-                                    const selected = (pathname.split("/")[2] || "channels") === section.slug;
+                                    const selected = (pathname.split("/")[2] || defaultSectionSlug) === section.slug;
                                     return <Link key={section.slug} to={`/config/${section.slug}`} onClick={onClose} aria-current={pathname === `/config/${section.slug}` ? "page" : undefined} className={cn("flex h-10 items-center gap-2 rounded-md px-2 text-sm", selected ? "bg-foreground/5 font-medium text-foreground dark:bg-foreground/10" : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground")}>
                                         <SectionIcon className="size-4 shrink-0" strokeWidth={1.8} />
-                                        <span>{t(section.label)}</span>
+                                        <span>{t(section.slug === "preferences" && isAdmin ? "config.tabs.defaultPreferences" : section.label)}</span>
                                     </Link>;
                                 })}
                             </div> : null}

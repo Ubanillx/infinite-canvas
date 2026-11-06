@@ -4,7 +4,7 @@ import { ChevronsLeft } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 
-import { adminConfigSection, configSections, navigationGroups } from "@/constant/navigation-tools";
+import { adminConfigSection, configSections, navigationGroups, personalConfigSections } from "@/constant/navigation-tools";
 import { cn } from "@/lib/utils";
 import { useAgentStore } from "@/stores/use-agent-store";
 import { useIsAdmin } from "@/stores/use-session-store";
@@ -16,7 +16,8 @@ export function AppSidebar() {
     const { t } = useTranslation();
     const panelOpen = useAgentStore((state) => state.panelOpen);
     const isAdmin = useIsAdmin();
-    const settingsSections = isAdmin ? [...configSections, adminConfigSection] : configSections;
+    const settingsSections = isAdmin ? [...configSections, adminConfigSection] : personalConfigSections;
+    const defaultSectionSlug = isAdmin ? "channels" : "preferences";
     const [collapsed, setCollapsed] = useState(() => typeof window !== "undefined" && window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1");
 
     const toggleCollapsed = () => {
@@ -29,7 +30,7 @@ export function AppSidebar() {
         <aside className={cn("hidden h-full shrink-0 flex-col overflow-hidden border-r border-border bg-sidebar transition-[width] duration-300 ease-out motion-reduce:transition-none", panelOpen ? "2xl:flex" : "lg:flex", collapsed ? "w-[72px]" : "w-64")}>
             <nav id="app-sidebar-navigation" className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2 py-5" aria-label={t("topNav.navigation")}>
                 {navigationGroups.map((group) => {
-                    const tools = group.tools.filter((tool) => tool.slug !== "config" || isAdmin);
+                    const tools = group.tools;
                     if (!tools.length) return null;
                     return (
                     <section key={group.key} className="mb-5" aria-label={t(`navigationGroups.${group.key}`)}>
@@ -58,8 +59,8 @@ export function AppSidebar() {
                                     {tool.slug === "config" && active ? <div className={cn("mt-1 space-y-0.5", !collapsed && "ml-5 border-l border-border pl-2")}>
                                         {settingsSections.map((section) => {
                                             const SectionIcon = section.icon;
-                                            const sectionLabel = t(section.label);
-                                            const selected = (pathname.split("/")[2] || "channels") === section.slug;
+                                            const sectionLabel = t(section.slug === "preferences" && isAdmin ? "config.tabs.defaultPreferences" : section.label);
+                                            const selected = (pathname.split("/")[2] || defaultSectionSlug) === section.slug;
                                             return <Tooltip key={section.slug} title={collapsed ? sectionLabel : null} placement="right" mouseEnterDelay={0.15}>
                                                 <Link to={`/config/${section.slug}`} aria-label={sectionLabel} aria-current={pathname === `/config/${section.slug}` ? "page" : undefined} className={cn("flex h-9 items-center gap-2 rounded-md text-xs transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground", collapsed ? "justify-center" : "px-2", selected ? "bg-foreground/5 font-medium text-foreground dark:bg-foreground/10" : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground")}>
                                                     <SectionIcon className="size-4 shrink-0" strokeWidth={1.8} />

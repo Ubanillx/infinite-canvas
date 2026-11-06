@@ -71,7 +71,7 @@ export type WebdavSyncConfig = {
     autoSyncEnabled: boolean;
     autoSyncIntervalMinutes: number;
 };
-export type ConfigTabKey = "channels" | "preferences" | "prompt-sources" | "webdav" | "local-storage";
+export type ConfigTabKey = "channels" | "preferences" | "prompt-sources" | "webdav" | "local-storage" | "registration";
 
 export type ChannelCredentialsImportResult = {
     status: "created" | "updated" | "missing-base-url" | "invalid-base-url";

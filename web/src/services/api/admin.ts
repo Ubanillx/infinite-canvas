@@ -4,6 +4,7 @@ export type AdminUser = {
     id: string;
     username: string;
     displayName: string;
+    email: string | null;
     isAdmin: boolean;
     envAdmin: boolean;
     workspaceCount: number;
