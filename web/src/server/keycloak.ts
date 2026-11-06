@@ -6,12 +6,16 @@ export type KeycloakTransaction = {
     codeVerifier: string;
     redirect: string;
     redirectUri: string;
+    mode?: "login" | "bind";
+    userId?: string;
 };
 
 export type KeycloakProfile = {
     subject: string;
     username: string;
     displayName: string;
+    email: string;
+    emailVerified: boolean;
 };
 
 type Settings = {
@@ -88,7 +92,7 @@ export function keycloakPostLogoutRedirectUrl(origin: string) {
     return configuredUrl("KEYCLOAK_POST_LOGOUT_REDIRECT_URI") || `${origin}/`;
 }
 
-export async function createKeycloakAuthorization(origin: string, redirect: string) {
+export async function createKeycloakAuthorization(origin: string, redirect: string, mode: "login" | "bind" = "login", bindUserId?: string) {
     const current = settings();
     if (!current) throw new Error("Keycloak is not configured");
     const config = await keycloakClient(current);
@@ -105,7 +109,7 @@ export async function createKeycloakAuthorization(origin: string, redirect: stri
         code_challenge: codeChallenge,
         code_challenge_method: "S256",
     });
-    return { url, transaction: { state, nonce, codeVerifier, redirect, redirectUri } satisfies KeycloakTransaction };
+    return { url, transaction: { state, nonce, codeVerifier, redirect, redirectUri, mode, userId: mode === "bind" ? bindUserId : undefined } satisfies KeycloakTransaction };
 }
 
 export async function completeKeycloakAuthorization(callbackUrl: URL, transaction: KeycloakTransaction) {
@@ -131,7 +135,7 @@ export function keycloakProfile(claims: client.IDToken): KeycloakProfile | null 
     const subject = claimString(claims, "sub");
     if (!subject) return null;
     const username = claimString(claims, "preferred_username") || claimString(claims, "email") || subject;
-    return { subject, username, displayName: claimString(claims, "name") || username };
+    return { subject, username, displayName: claimString(claims, "name") || username, email: claimString(claims, "email"), emailVerified: claims.email_verified === true || claims.email_verified === "true" };
 }
 
 export async function keycloakLogoutUrl(origin: string, idToken: string) {

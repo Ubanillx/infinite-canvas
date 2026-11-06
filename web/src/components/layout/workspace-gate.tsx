@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { App, Button, Form, Input, Popover } from "antd";
-import { ArrowLeft, ArrowUpRight, Check, FolderClosed, LayoutGrid, LogOut, Plus } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Check, FolderClosed, LayoutGrid, LogOut, Plus, UserRound } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { AccountSettingsModal } from "@/components/layout/account-settings-modal";
 import { WorkspaceAmbientBackground } from "@/components/layout/workspace-ambient-background";
 import { WorkspaceAccountForm } from "@/components/layout/workspace-account-form";
 import { getAdminWorkspaceAccess } from "@/services/api/admin";
@@ -129,6 +130,25 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
 
     if (ready) return <>{children}</>;
     if (loading && cachedWorkspace) return null;
+    if (!loading && mode === "account") return (
+        <div className="relative flex min-h-dvh flex-col bg-background text-foreground">
+            <header className="mx-auto flex w-full max-w-7xl items-center gap-3 px-6 py-7 sm:px-10 lg:px-14">
+                <span aria-hidden="true" className="block size-8 shrink-0 bg-current" style={{ mask: "url(/logo.svg) center / contain no-repeat", WebkitMask: "url(/logo.svg) center / contain no-repeat" }} />
+                <span className="text-sm font-semibold tracking-wider">{t("meta.title")}</span>
+            </header>
+            <main className="mx-auto grid w-full max-w-7xl flex-1 items-center gap-12 px-6 pb-10 pt-5 sm:px-10 lg:grid-cols-[1fr_440px] lg:gap-20 lg:px-14 lg:py-12">
+                <section className="hidden self-center pb-12 lg:block" aria-label={t("meta.title")}>
+                    <p className="mb-6 text-sm font-medium text-muted-foreground">{t("workspaceGate.loginEyebrow")}</p>
+                    <p className="max-w-xl text-5xl font-semibold leading-[1.3] tracking-tight xl:text-[3.5rem]">{t("workspaceGate.loginHeadlineStart")}<br />{t("workspaceGate.loginHeadlineEnd")}</p>
+                    <p className="mt-6 max-w-md text-base leading-8 text-muted-foreground">{t("workspaceGate.loginDescription")}</p>
+                </section>
+                <section className="mx-auto w-full max-w-[440px] rounded-2xl border border-border bg-card p-6 sm:p-8" aria-labelledby="workspace-login-title">
+                    {error ? <p role="alert" className="mb-5 text-sm text-destructive">{error}</p> : null}
+                    <WorkspaceAccountForm keycloakEnabled={keycloakEnabled} localLoginEnabled={localLoginEnabled} />
+                </section>
+            </main>
+        </div>
+    );
     return (
         <div className="relative min-h-dvh w-full overflow-y-auto" style={{ backgroundColor: theme.canvas.background, color: theme.node.text }}>
             <WorkspaceAmbientBackground theme={theme} />
@@ -139,11 +159,11 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
                 </div>
                 {mode === "create" && workspaces.length ? <button type="button" className="mb-8 inline-flex items-center gap-2 text-sm transition-opacity hover:opacity-60" style={{ color: theme.node.muted }} onClick={() => { form.resetFields(); setError(""); setMode("select"); }}><ArrowLeft className="size-4" />{t("workspaceGate.backToList")}</button> : null}
                 <header className="mb-10 sm:mb-14">
-                    <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">{mode === "account" ? t("workspaceGate.loginTitle") : mode === "create" ? t("workspaceGate.createTitle") : t("workspaceGate.selectTitle")}</h1>
+                    <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">{mode === "create" ? t("workspaceGate.createTitle") : t("workspaceGate.selectTitle")}</h1>
                     <p className="mt-3 text-sm" style={{ color: theme.node.muted }}>{t("workspaceGate.subtitle")}</p>
                 </header>
                 {error ? <div role="alert" className="mb-6 max-w-xl rounded-md border border-red-400/40 px-4 py-3 text-sm text-red-500">{error}</div> : null}
-                {loading ? null : mode === "account" ? <WorkspaceAccountForm keycloakEnabled={keycloakEnabled} localLoginEnabled={localLoginEnabled} /> : mode === "select" ? (
+                {loading ? null : mode === "select" ? (
                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-5">
                         {workspaces.map((workspace) => {
                             const summary = summaries[workspace.id];
@@ -174,16 +194,41 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
 
 export function WorkspaceSwitcher() {
     const [open, setOpen] = useState(false);
+    const [accountOpen, setAccountOpen] = useState(false);
+    const [accountError, setAccountError] = useState("");
     const [workspaces, setWorkspaces] = useState<WorkspaceAccess[]>(getKnownWorkspaces);
     const [summaries, setSummaries] = useState<Record<string, WorkspaceCanvasSummary | null>>({});
     const [loadError, setLoadError] = useState(false);
     const [signingOut, setSigningOut] = useState(false);
     const triggerRef = useRef<HTMLButtonElement>(null);
     const panelRef = useRef<HTMLDivElement>(null);
+    const handledAuthNoticeRef = useRef(false);
     const { t } = useTranslation();
     const { message } = App.useApp();
     const startAppLoading = useAppLoadingStore((state) => state.start);
     const workspace = getActiveWorkspace();
+
+    useEffect(() => {
+        if (handledAuthNoticeRef.current) return;
+        handledAuthNoticeRef.current = true;
+        const url = new URL(window.location.href);
+        const notice = url.searchParams.get("notice");
+        const authError = url.searchParams.get("auth_error");
+        const wantsAccount = url.searchParams.get("account") === "settings";
+        const bindError = authError?.startsWith("keycloak_bind_") ? authError : "";
+        if (notice === "keycloak_bound") {
+            setAccountError("");
+            void message.success(t("accountSettings.bindSuccess"));
+        }
+        if (bindError) setAccountError(bindError);
+        if (notice === "keycloak_bound" || bindError || wantsAccount) setAccountOpen(true);
+        if (notice || bindError || wantsAccount) {
+            url.searchParams.delete("notice");
+            url.searchParams.delete("account");
+            if (bindError) url.searchParams.delete("auth_error");
+            window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+        }
+    }, [message, t]);
 
     useEffect(() => {
         if (!open) return;
@@ -222,7 +267,8 @@ export function WorkspaceSwitcher() {
         }
     };
 
-    return <Popover
+    return <>
+        <Popover
         trigger="click"
         placement="bottomRight"
         arrow={false}
@@ -250,6 +296,10 @@ export function WorkspaceSwitcher() {
                 <button type="button" className="inline-flex min-h-9 shrink-0 items-center gap-1 rounded-md bg-foreground/5 px-3 text-xs font-medium text-foreground transition-colors hover:bg-foreground/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground" onClick={() => showWorkspaceGate(true)}><Plus className="size-3.5" />{t("topNav.newWorkspace")}</button>
             </div>
             <div className="border-t border-border px-2 pb-2 pt-2">
+                <button type="button" className="flex min-h-9 w-full items-center gap-2 rounded-md px-3 text-left text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-foreground" onClick={() => { setAccountError(""); setOpen(false); setAccountOpen(true); }}>
+                    <UserRound className="size-3.5" />
+                    {t("accountSettings.title")}
+                </button>
                 <button type="button" disabled={signingOut} className="flex min-h-9 w-full items-center gap-2 rounded-md px-3 text-left text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-foreground disabled:opacity-50" onClick={() => void signOut()}>
                     <LogOut className="size-3.5" />
                     {signingOut ? t("topNav.signingOut") : t("topNav.signOut")}
@@ -260,5 +310,7 @@ export function WorkspaceSwitcher() {
         <button ref={triggerRef} type="button" title={workspace.name} aria-label={t("topNav.workspaceTrigger", { name: workspace.name })} aria-haspopup="dialog" aria-expanded={open} className="inline-flex h-8 max-w-28 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm font-medium text-foreground transition-colors hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground sm:max-w-40">
             <span className="truncate">{workspace.name}</span>
         </button>
-    </Popover>;
+        </Popover>
+        <AccountSettingsModal open={accountOpen} errorNotice={accountError} onClose={() => { setAccountOpen(false); setAccountError(""); window.requestAnimationFrame(() => triggerRef.current?.focus()); }} />
+    </>;
 }
