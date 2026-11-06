@@ -97,6 +97,32 @@ test("Gemini image resolution, Ark editing timeout and audio retain server-owned
     expect(calls.at(-1)?.options.headers.Authorization).toBeUndefined();
 });
 
+test("image generation accepts temporary download links in common response shapes", async () => {
+    const url = "https://downloads.example/result?signature=test&expires=123";
+    for (const payload of [url, [url], { url }, { data: url }, { data: { url } }, { data: [{ url }] }, { images: [url] }, { results: [{ url }] }]) {
+        response = payload;
+        const images = await requestGeneration(configured("openai", "image"), "prompt");
+        expect(images.map((image) => image.dataUrl)).toEqual([url]);
+    }
+});
+
+test("image editing accepts URL results and keeps base64 support", async () => {
+    response = { images: ["https://downloads.example/result?signature=test", { b64_json: "aA==" }] };
+    for (const format of ["openai", "ark"] as const) {
+        const images = await requestEdit(configured(format, "image"), "prompt", []);
+        expect(images.map((image) => image.dataUrl)).toEqual([response.images[0], "data:image/png;base64,aA=="]);
+    }
+});
+
+test("invalid image responses report missing images or the provider error", async () => {
+    for (const payload of [null, { data: {} }]) {
+        response = payload;
+        await expect(requestGeneration(configured("openai", "image"), "prompt")).rejects.toThrow(/接口.*(没有返回图片|未知格式)/);
+    }
+    response = { error: { message: "provider failed" } };
+    await expect(requestGeneration(configured("openai", "image"), "prompt")).rejects.toThrow("provider failed");
+});
+
 test("Gemini video script template downloads through its request helper", async () => {
     const template = getPluginTemplates().video.find((item) => item.script.includes("predictLongRunning"))!;
     axios.request = (async (request: any) => {

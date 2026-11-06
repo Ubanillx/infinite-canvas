@@ -1,5 +1,4 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { lookup } from "node:dns/promises";
 import { readdirSync, readFileSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
@@ -9,8 +8,8 @@ import { dirname, resolve } from "node:path";
 import { Transform } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { pipeline } from "node:stream/promises";
-import ipaddr from "ipaddr.js";
 import { forwardAiResponse, failAiResponse } from "./src/server/ai-response";
+import { openRemoteMedia, publicHttpsAddress, RemoteMediaError } from "./src/server/remote-media";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 
@@ -1254,7 +1253,7 @@ function promptSourceProxy(): Plugin {
             const upstream = httpsRequest(target, {
                 headers: { Accept: "application/json" },
                 autoSelectFamily: false,
-                lookup: (_hostname, _options, callback) => callback(null, address.address, address.family),
+                lookup: (_hostname, options, callback) => options.all ? callback(null, [address]) : callback(null, address.address, address.family),
             } as HttpsRequestOptions & { autoSelectFamily?: boolean }, (response) => {
                 if ((response.statusCode || 0) >= 300 && (response.statusCode || 0) < 400) {
                     response.resume();
@@ -1280,48 +1279,31 @@ function promptSourceProxy(): Plugin {
     return { name: "prompt-source-proxy", configureServer: (server) => { server.middlewares.use(middleware); }, configurePreviewServer: (server) => { server.middlewares.use(middleware); } };
 }
 
-async function publicHttpsAddress(target: URL) {
-    if (target.protocol !== "https:" || target.username || target.password || (target.port && target.port !== "443")) throw new Error("仅支持公网 HTTPS 地址");
-    const addresses = await lookup(target.hostname, { all: true });
-    if (!addresses.length || addresses.some(({ address }) => ipaddr.process(address).range() !== "unicast")) throw new Error("目标地址不是公网地址");
-    return addresses[0];
-}
-
 function remoteMediaProxy(): Plugin {
     const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
         const requestUrl = new URL(req.url || "/", "http://localhost");
         if (requestUrl.pathname !== "/api/remote-media") return next();
         if (req.method !== "GET") return sendJson(res, 405, { error: "Method not allowed" });
+        const controller = new AbortController();
+        const onClose = () => controller.abort();
+        res.once("close", onClose);
         try {
             const target = new URL(requestUrl.searchParams.get("url") || "");
-            const address = await publicHttpsAddress(target);
+            const response = await openRemoteMedia(target, controller.signal);
             res.setHeader("Cache-Control", "no-store");
             res.setHeader("X-Content-Type-Options", "nosniff");
-            const upstream = httpsRequest(target, {
-                autoSelectFamily: false,
-                lookup: (_hostname, _options, callback) => callback(null, address.address, address.family),
-            } as HttpsRequestOptions & { autoSelectFamily?: boolean }, (response) => {
-                if ((response.statusCode || 0) >= 300 && (response.statusCode || 0) < 400) {
-                    response.resume();
-                    return sendJson(res, 502, { error: "远程媒体不允许重定向" });
-                }
-                res.statusCode = response.statusCode || 502;
-                for (const name of ["content-type", "content-length"]) {
-                    const value = response.headers[name];
-                    if (value) res.setHeader(name, value);
-                }
-                response.on("error", (error) => res.destroy(error));
-                response.pipe(res);
-            });
-            upstream.on("error", (error) => {
-                console.error("Remote media request failed", error);
-                if (!res.headersSent) return sendJson(res, 502, { error: "远程媒体请求失败" });
-                res.destroy(error);
-            });
-            res.on("close", () => upstream.destroy());
-            upstream.end();
+            res.statusCode = response.statusCode || 502;
+            for (const name of ["content-type", "content-length"]) {
+                const value = response.headers[name];
+                if (value) res.setHeader(name, value);
+            }
+            await pipeline(response, res);
         } catch (error) {
-            return sendJson(res, 403, { error: error instanceof Error ? error.message : "远程媒体地址无效" });
+            if (res.destroyed) return;
+            if (res.headersSent) return res.destroy();
+            return sendJson(res, error instanceof RemoteMediaError ? error.status : 502, { error: error instanceof Error ? error.message : "远程媒体下载失败" });
+        } finally {
+            res.off("close", onClose);
         }
     };
     return { name: "remote-media-proxy", configureServer: (server) => { server.middlewares.use(middleware); }, configurePreviewServer: (server) => { server.middlewares.use(middleware); } };
@@ -1688,6 +1670,7 @@ function localPluginsManifest(): Plugin {
 
 export default defineConfig({
     base: process.env.VITE_BASE || "/",
+    optimizeDeps: { include: ["file-type"] },
     plugins: [react(), localPluginsManifest(), sessionContext(), authAccess(), serverApiAccessControl(), canvasAgentGateway(), workspaceAccess(), userPreferencesAccess(), adminAccess(), workspaceMediaStorage(), workspaceDataAccess(), workspacePromptsAccess(), serverWebdavProxy(), serverConfigStorage(), aiProviderProxy(), promptSourceProxy(), remoteMediaProxy(), imageProxy()],
     preview: { allowedHosts: (process.env.INFINITE_CANVAS_ALLOWED_HOSTS || "ubuntu-server").split(",").map((host) => host.trim()).filter(Boolean) },
     resolve: {

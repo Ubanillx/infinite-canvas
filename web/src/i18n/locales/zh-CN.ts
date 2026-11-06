@@ -28,6 +28,8 @@ export default {
         durationMinutes: "{{minutes}}分{{seconds}}秒",
         durationSeconds: "{{seconds}}秒",
         imageReadFailed: "读取图片失败",
+        imageDownloadFailed: "图片下载失败（HTTP {{status}}），请检查下载链接是否已过期或无访问权限",
+        imageDownloadTimeout: "图片下载超时，请重新生成或更换渠道后重试",
         fileReadFailed: "读取文件失败",
         mediaSaveFailed: "媒体保存失败",
         mediaSaveFailedStatus: "媒体保存失败（{{status}}）",

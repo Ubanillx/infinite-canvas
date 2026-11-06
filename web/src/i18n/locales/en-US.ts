@@ -28,6 +28,8 @@ export default {
         durationMinutes: "{{minutes}}m {{seconds}}s",
         durationSeconds: "{{seconds}}s",
         imageReadFailed: "Failed to read image",
+        imageDownloadFailed: "Image download failed (HTTP {{status}}). Check whether the download link has expired or requires permission.",
+        imageDownloadTimeout: "Image download timed out. Generate again or try another channel.",
         fileReadFailed: "Failed to read file",
         mediaSaveFailed: "Failed to save media",
         mediaSaveFailedStatus: "Failed to save media ({{status}})",

@@ -69,8 +69,11 @@ type ResponseApiPayload = {
 };
 type ResponseStreamState = { buffer: string; text: string; payload?: ResponseApiPayload; error?: string };
 
-type ImageApiResponse = {
-    data?: Array<Record<string, unknown>>;
+type ImageApiResponse = string | unknown[] | {
+    data?: unknown;
+    images?: unknown;
+    results?: unknown;
+    url?: string;
     error?: { message?: string };
     code?: number;
     msg?: string;
@@ -208,33 +211,30 @@ function resolveGeminiImageSize(dimensions: { width: number; height: number } | 
     return "4K";
 }
 
-function resolveImageSource(item: Record<string, unknown>) {
-    if (typeof item.b64_json === "string" && item.b64_json) {
+function resolveImageSource(item: unknown) {
+    if (isRecord(item) && typeof item.b64_json === "string" && item.b64_json) {
         return `data:image/png;base64,${item.b64_json}`;
     }
-    if (typeof item.url === "string" && item.url) {
-        return item.url;
-    }
-    return null;
+    const source = typeof item === "string" ? item : isRecord(item) ? item.url : undefined;
+    return typeof source === "string" && /^(https?:\/\/|data:image\/)/i.test(source.trim()) ? source.trim() : null;
 }
 
 function parseImagePayload(payload: ImageApiResponse) {
-    if (typeof payload.code === "number" && payload.code !== 0) {
-        throw new Error(payload.msg || apiText("requestFailed"));
+    const record = isRecord(payload) ? payload : undefined;
+    if (typeof record?.code === "number" && record.code !== 0) {
+        throw new Error(readApiErrorMessage(record) || apiText("requestFailed"));
     }
-    // Support data, images, and results response fields used by different APIs.
-    const imageList = payload.data
-        || (payload as Record<string, unknown>).images as Array<Record<string, unknown>> | undefined
-        || (payload as Record<string, unknown>).results as Array<Record<string, unknown>> | undefined
-        || [];
-    const images = imageList
+    if (record?.error) throw new Error(readApiErrorMessage(record) || apiText("requestFailed"));
+    // Providers may return signed download URLs directly or inside an image list.
+    const imageList = record?.data ?? record?.images ?? record?.results ?? payload;
+    const images = (Array.isArray(imageList) ? imageList : [imageList])
         .map(resolveImageSource)
         .filter((value): value is string => Boolean(value))
         .map((dataUrl) => ({ id: nanoid(), dataUrl }));
 
     if (images.length === 0) {
         // Check whether the response contains data in an unrecognized format.
-        const rawKeys = Object.keys(payload).filter((k) => k !== "code" && k !== "msg" && k !== "error");
+        const rawKeys = Object.keys(record || {}).filter((k) => k !== "code" && k !== "msg" && k !== "error");
         throw new Error(rawKeys.length > 0
             ? apiText("unknownImageResponse", { fields: rawKeys.join(", ") })
             : apiText("noImageReturned"));

@@ -44,6 +44,12 @@ export async function uploadImage(input: string | Blob, options?: ImageReadOptio
 }
 
 async function storeImage(blob: Blob, options?: ImageReadOptions): Promise<UploadedImage> {
+    if (!blob.type.startsWith("image/")) {
+        const { fileTypeFromBlob } = await import("file-type");
+        const type = await fileTypeFromBlob(blob, { signal: options?.signal });
+        if (!type?.mime.startsWith("image/")) throw new Error(i18n.t("common.imageReadFailed"));
+        blob = blob.slice(0, blob.size, type.mime);
+    }
     const storageKey = `image:${nanoid()}`;
     const url = URL.createObjectURL(blob);
     try {
@@ -74,10 +80,10 @@ async function fetchImageBlob(url: string, options?: ImageReadOptions) {
     }, IMAGE_DOWNLOAD_TIMEOUT_MS);
     try {
         const response = await fetch(remoteMediaUrl(url), { signal: controller.signal });
-        if (!response.ok) throw namedError(IMAGE_RESPONSE_ERROR);
+        if (!response.ok) throw namedError(IMAGE_RESPONSE_ERROR, i18n.t("common.imageDownloadFailed", { status: response.status }));
         return await response.blob();
     } catch (error) {
-        if (timedOut) throw namedError(IMAGE_TIMEOUT_ERROR);
+        if (timedOut) throw namedError(IMAGE_TIMEOUT_ERROR, i18n.t("common.imageDownloadTimeout"));
         if (options?.signal?.aborted) throw abortReason(options.signal);
         throw error;
     } finally {
@@ -116,8 +122,8 @@ function loadImageMeta(url: string, options?: ImageReadOptions, timeoutMs = IMAG
     });
 }
 
-function namedError(name: string) {
-    const error = new Error(i18n.t("common.imageReadFailed"));
+function namedError(name: string, message: string) {
+    const error = new Error(message);
     error.name = name;
     return error;
 }
