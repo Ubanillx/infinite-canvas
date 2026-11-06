@@ -15,7 +15,7 @@ description: 已实现的成员权限、事务引用清单与只扫描的 GC，�
 - 媒体使用 `PUT/GET/HEAD /api/media/blob/:storageKey`，对象键固定映射为 `media/<workspaceId>/<sha256(storageKey)>`；复制接口在同一工作区内检查读取和写入权限，新副本使用新的 `storageKey`。
 - 上传沿用既有 100 MiB 上限，向对象存储明确传入 `ContentLength`。本阶段未新增保留期、扫描频率、超时、重试次数或并发边界。
 - `/api/media/agent-attachments` 提供版本化工作区附件清单：成员可读取，owner/editor 可登记、绑定或释放消息引用，viewer 不能修改。服务器在提交清单与引用行前，会核对每个对象属于当前工作区且索引元数据完全匹配。
-- 既有 WebDAV 手动快照未加入模板；提示词示例图保存在 PostgreSQL，不属于 RustFS 媒体清单。
+- 既有 WebDAV 手动快照已由服务端系统备份替代；系统备份包含模板与提示词示例图，但示例图仍保存在 PostgreSQL，不属于 RustFS 媒体清单。
 
 ## 已实现的媒体引用清单
 

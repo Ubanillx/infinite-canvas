@@ -15,7 +15,7 @@ Membership authorization, media reference tables, and GC dry-run are implemented
 - Media uses `PUT/GET/HEAD /api/media/blob/:storageKey`, deterministically mapped to `media/<workspaceId>/<sha256(storageKey)>`. Same-workspace copies check read/write access and receive fresh storage keys.
 - Uploads retain the existing 100 MiB limit and explicit `ContentLength`. No retention period, scan schedule, timeout, retry count, or concurrency boundary is added here.
 - `/api/media/agent-attachments` exposes the versioned workspace inventory: members may read it, owners/editors may reserve, bind, or release message references, and viewers cannot mutate it. The server validates every referenced object against the current workspace index before committing the manifest and reference rows.
-- Existing manual WebDAV snapshots still exclude templates. Prompt example images live in PostgreSQL rather than the RustFS inventory.
+- The former manual WebDAV snapshots are replaced by server-side system backups. System backups include templates and prompt example images, but example images remain in PostgreSQL rather than the RustFS inventory.
 
 ## Implemented reference inventory
 

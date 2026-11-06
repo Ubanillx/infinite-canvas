@@ -24,7 +24,7 @@ The non-root container (UID/GID 1000) supervises a Bun/Vite preview Web service 
 
 Two companion services hold the data layer: PostgreSQL stores accounts, workspace data and the media index, while RustFS stores media objects. RustFS is S3-compatible and the application only uses the standard S3 API, so another compatible implementation can be substituted. The application connects through `DATABASE_URL` and the `S3_*` variables; browsers never reach the bucket directly and media still flows through authenticated same-origin routes.
 
-Named volumes persist `/data`, `/home/node/.infinite-canvas`, `/home/node/.codex` and the PostgreSQL and RustFS data directories. WebDAV uses manual snapshot upload/import. Do not delete volumes during updates. Back up both the PostgreSQL database and the object bucket; backing up only one leaves data and media inconsistent. Existing root-owned volumes require an explicit offline migration review of ownership and absolute workspace paths. Codex authentication is provisioned after startup and must never be baked into the image.
+Named volumes persist `/data`, `/home/node/.infinite-canvas`, `/home/node/.codex` and the PostgreSQL and RustFS data directories. WebDAV backups are run by the server for all workspaces, manually or on an interval, with per-workspace restore. Do not delete volumes during updates. Back up both the PostgreSQL database and the object bucket; backing up only one leaves data and media inconsistent. Existing root-owned volumes require an explicit offline migration review of ownership and absolute workspace paths. Codex authentication is provisioned after startup and must never be baked into the image.
 
 ## Keycloak single sign-on
 

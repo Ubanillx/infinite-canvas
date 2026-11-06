@@ -8,10 +8,11 @@ description: 当前项目后续值得处理的事项
 - 超大前端模块：`web/src/pages/canvas/project.tsx`（约 3600 行）和 `web/src/components/agent/local-agent-panel.tsx`（约 1900 行）需要分阶段拆分，不能一次性重写。画布页先抽视口/选择/连线指针与键盘事件到 `web/src/pages/canvas/hooks/use-canvas-interactions.ts`，上传与拖放抽到 `use-canvas-upload.ts`，生成/重试流水线抽到 `use-canvas-generation.ts`，剪贴板与历史抽到 `use-canvas-clipboard.ts`，页面只保留组合与渲染；Agent 面板把连接初始化、队列/中断、附件上传和会话历史抽到 `web/src/components/agent/hooks/`。每完成一次抽取运行 `tsc --noEmit` 与现有 smoke/browse 脚本。工作区文案、深色主题、WebDAV 状态键和技能术语修复已移入待测试。
 
 - 画布性能：渲染复用、图片请求合并、连线缓存与临时 3D 合成提示已进入待测试；已完成合成夹具及真实 109 节点/62 连线画布的 RTX/D3D11 初步采样，并追加逐节点 JSX 缓存。真实 24% 总览、首次选中拖动和连续缩放仍有慢帧，继续分析编辑面板、绘制、显存/内存峰值及生产构建表现后，再决定是否引入空间索引或 WebGL 渲染；不将局部采样当作稳定 60fps 或线上提速保证。
-- 画布模板后续：选区、插入、输入、手动更新、依赖检查、只读预览和服务端素材复制已移入待测试；按[画布模板规划](/zh-CN/docs/progress/canvas-template-plan)继续设计模板包及素材清单，再做导入导出与 WebDAV 手动快照。分享和跨工作区复制须先完成账户归属、成员权限及媒体授权；未经验收的第一、二版不转入正式功能说明。
+- 画布模板后续：选区、插入、输入、手动更新、依赖检查、只读预览和服务端素材复制已移入待测试；按[画布模板规划](/zh-CN/docs/progress/canvas-template-plan)继续设计模板包及素材清单，再做导入导出。模板已包含在 WebDAV 系统备份中，模板包导入导出仍需单独实现。分享和跨工作区复制须先完成账户归属、成员权限及媒体授权；未经验收的第一、二版不转入正式功能说明。
 - 工作区归属后续：真实会话与成员角色校验已移入待测试；旧版无成员工作区现在拒绝访问，不自动认领。管理员总览、管理员授予和进入任意工作区只读查看已移入待测试；成员管理界面与旧工作区绑定仍待实现和验收。
 
 - 服务端媒体：成员校验、事务引用清单、version 1 独立 Agent 附件、持久化上传前 intent/租约和精确前缀对象对账已移入待测试；按[媒体引用与安全垃圾回收规划](/zh-CN/docs/progress/canvas-media-lifecycle-plan)继续定义崩溃遗留租约处置及删除前原子 claim/代际隔离。实际删除、保留期和调度均未启用，需另行确认；候选不等于可删除授权。
+- WebDAV 系统备份后续：Agent 线程历史和消息元数据仍未纳入备份，需要单独规划 Agent 运行目录；媒体对象版本只增不删，后续需按剩余快照引用集做安全 GC；多副本部署前需要 PostgreSQL advisory lock 或独立 worker。
 - 请求边界：默认 Agent 同源网关连接已移入待测试；继续核对自定义模型脚本、外链图片展示和显式手动 Agent 连接等浏览器出站路径，确认服务端代理覆盖后移除本地代理遗留配置与实现。
 - 本地 Agent 接入后续：按[本地 Agent 接入规划](/zh-CN/docs/progress/local-agent-integration-plan)把 Claude Code CLI Adapter 升级为 Claude Agent SDK Adapter，并完善工具队列体验。
 - Pi 引擎后续：本地 Skill、自动模型发现、逐模型协议与参数推断、引擎身份和历史隔离已移入待测试；仍需补齐上下文压缩和工具集精简（全部 35 个工具的 schema 约占 5000 tokens 以上，每轮都会发送），并补充 Pi 引擎的链路说明文档。

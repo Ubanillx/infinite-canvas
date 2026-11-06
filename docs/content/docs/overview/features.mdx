@@ -59,13 +59,13 @@ See [Third-party Prompt Sources](/docs/overview/third-party-prompt-repositories)
 
 ## Configuration and synchronization
 
-- Change AI channels, generation preferences, prompt sources, and WebDAV settings in Settings; every change saves automatically to the server, and a failed save keeps a retryable error.
+- Change AI channels, generation preferences, prompt sources, and WebDAV system-backup settings in Settings; every change saves automatically to the server, and a failed save keeps a retryable error.
 - Store AI channels and write-only API credentials on the server; the browser receives only redacted configuration.
 - Store canvases, assets and records per authenticated workspace, with local browser caches.
-- Upload workspace WebDAV snapshots and explicitly select a snapshot to import; existing local records take precedence and canvas deletion markers are retained.
+- Back up every workspace to WebDAV from the server, manually or on an interval; restore a complete workspace snapshot explicitly. Backups include canvases, templates, assets, studio logs, prompts and media, but not accounts, server settings, or Agent thread history.
 
 ## Current limitations
 
 - The dev deployment includes server-side authentication and workspace data; it requires the Bun/Node service rather than a static frontend alone.
-- Server-managed AI and WebDAV requests use same-origin proxies; optional local forwarding does not bypass those boundaries.
+- Server-managed AI requests use same-origin proxies; WebDAV credentials stay on the server for system backups. Optional local forwarding does not bypass those boundaries.
 - Production Docker static-resource paths still require broader deployment verification.

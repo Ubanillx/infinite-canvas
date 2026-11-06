@@ -47,4 +47,4 @@
 
 - The application needs PostgreSQL and S3-compatible object storage (RustFS by default). Workspace data lives on the server; browsers keep caches only.
 - AI keys are server-managed; browsers use authenticated same-origin proxies and snapshots exclude server credentials.
-- Prompt sources are fetched by the server; WebDAV uses manual snapshot upload and explicit import.
+- Prompt sources are fetched by the server; administrators can back up every workspace to WebDAV from the server, manually or on an interval, with snapshot retention and per-workspace restore.

@@ -37,7 +37,7 @@ The default binding is `127.0.0.1:3000`. Put an HTTPS reverse proxy in front of 
 
 - Open Settings and enter your `Base URL`, `API Key`, and model names. Credentials are stored on the server; the browser only learns whether they are configured.
 - Add standard JSON prompt sources in Settings; the server proxies those fetches and the browser keeps a cache.
-- WebDAV only supports manual snapshot upload and explicit snapshot import, never two-way automatic sync.
+- An administrator can back up every workspace to WebDAV from the server, manually or on an interval, with snapshot retention and per-workspace restore. It is still not two-way automatic sync and does not include accounts, server settings, or Agent thread history.
 
 ## Notes
 
