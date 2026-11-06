@@ -199,6 +199,14 @@ Keycloak 侧需要：
 
 反向代理没有传递 `X-Forwarded-Proto` / `X-Forwarded-Host` 时，必须显式设置 `KEYCLOAK_REDIRECT_URI` 和 `KEYCLOAK_POST_LOGOUT_REDIRECT_URI`，并保证与 Keycloak 登记值完全一致。只有本地 HTTP Keycloak 测试才设置 `KEYCLOAK_ALLOW_INSECURE=true`。退出登录会清除本地会话并跳转 Keycloak 结束会话；Keycloak 管理员禁用用户不会立即使已建立的本地会话失效。
 
+#### 仅局域网部署
+
+局域网入口也使用 HTTPS。没有正式域名时，可由专用内部 CA 签发包含部署机 IP SAN 的站点证书；每台访问设备先核对 CA 证书指纹，再安装信任。只分发公开 CA 证书，签发私钥与站点私钥分开保存，私钥文件权限为 `600`、所在目录为 `700`；内部 CA 可通过名称约束限制可签发的地址。证书有效期和续期方式记录在部署机运维记录中，不以关闭证书校验或忽略浏览器警告代替信任配置。
+
+Nginx 只向允许的局域网提供应用 HTTPS，HTTP 固定跳转到同一个 HTTPS 地址；覆盖客户端传入的 `X-Forwarded-*`，不记录认证路径的访问日志，避免把授权码写入日志。Keycloak 仍使用正常校验的 HTTPS issuer，客户端精确登记 IP 地址对应的回调和退出地址，不使用通配符，`KEYCLOAK_ALLOW_INSECURE=false`。
+
+启用前检查旧账户的统一身份绑定；未绑定时先保留本地登录，不能凭用户名自动关联。修改配置时持有部署锁，备份 `shared/production.env`、当前 release 的 `runtime.env` 与 Nginx 配置，并同时更新前两者，避免下次 Jenkins 发布覆盖登录配置。只重建应用，沿用现有健康等待参数，随后按上文同步 Magpie 网关。Nginx 从通配监听改为特定 IP 监听时，热加载可能与旧监听冲突；先检查配置，必要时正常重启 Nginx，再验证实际 HTTPS 响应。
+
 ### 导入宿主机 Codex 配置
 
 网页助手使用镜像内安装的 Codex，不使用宿主机的全局 CLI。将仓库中的 `deploy/import-codex-config.sh` 单独复制到部署机，以已经配置好 Codex 且可执行 Docker 的用户运行：
