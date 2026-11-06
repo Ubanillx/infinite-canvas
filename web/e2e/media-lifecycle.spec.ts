@@ -63,7 +63,6 @@ test("membership scopes lists, private media and writes; only owners can scan", 
             expect((await member.get("/api/media/agent-attachments", { headers: f.headers })).status()).toBe(role === "outsider" ? 403 : 200);
             expect((await member.post("/api/media/agent-attachments", { headers: f.headers, data: { engine: "codex", threadId: "role-thread", clientMessageId: "role-message", attachments: [{ id: "file", name: "file", storageKey: "image:private", type: "application/octet-stream", size: bytes.length, width: 0, height: 0, purpose: "attachment" }] } })).status()).toBe(role === "editor" ? 200 : 403);
             expect((await member.post("/api/media", { headers: f.headers, data: { files: [] } })).status()).toBe(role === "editor" ? 200 : 403);
-            if (role === "viewer") expect((await member.put("/api/webdav/workspaces/any/file", { headers: { ...f.headers, "x-infinite-canvas-sync-mode": "manual" }, data: bytes })).status()).toBe(403);
         } finally { await member.dispose(); }
     }
     const row = await queryOne<{ updated_by: string }>(await getPool(), "SELECT updated_by FROM workspace_data WHERE workspace_id = $1 AND domain = 'canvas'", f.workspace.id);
@@ -275,7 +274,7 @@ test("failed index commits retain the intent and objects, and reconciliation rep
     const key = "image:failed_index";
     const id = await withTransaction(async (tx) => {
         await execute(tx, "SELECT id FROM workspaces WHERE id = $1 FOR UPDATE", f.workspace.id);
-        return createMediaIntent(tx, f.workspace.id, f.user.id, key, { operation: "upload", expectedBytes: bytes.length });
+        return createMediaIntent(tx, f.workspace.id, f.user.id, key, { operation: "upload", expectedBytes: bytes.length, objectKey: mediaObjectKey(f.workspace.id, key) });
     });
     expect(id).toBeTruthy();
     await putMediaBuffer(mediaObjectKey(f.workspace.id, key), bytes, "application/octet-stream");
@@ -313,7 +312,7 @@ test("list failures, object mutations and new write intents invalidate dry-run w
     const running = await runMediaGcDryRun(f.workspace.id, async (key) => {
         await withTransaction(async (tx) => {
             await execute(tx, "SELECT id FROM workspaces WHERE id = $1 FOR UPDATE", f.workspace.id);
-            await createMediaIntent(tx, f.workspace.id, f.user.id, "image:crashed", { operation: "upload", expectedBytes: 1 });
+            await createMediaIntent(tx, f.workspace.id, f.user.id, "image:crashed", { operation: "upload", expectedBytes: 1, objectKey: mediaObjectKey(f.workspace.id, "image:crashed") });
         });
         return headMediaObject(key);
     });

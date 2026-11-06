@@ -144,10 +144,10 @@ export function ConfigPromptSources() {
                 <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("config.promptSources.scheduleDescription")}</p>
                 <label className="mt-5 block text-xs text-muted-foreground" htmlFor="prompt-source-interval">{t("config.promptSources.interval")}</label>
                 <Select id="prompt-source-interval" className="mt-2 w-full" value={schedule.intervalMinutes} options={intervalOptions} onChange={(value) => updateSchedule("intervalMinutes", value)} />
-                <Button className="mt-4 w-full" icon={<RefreshCw className="size-4" />} loading={refreshingAll} onClick={() => void handleRefreshAll()}>
+                <Button className="!mt-4 w-full" icon={<RefreshCw className="size-4" />} loading={refreshingAll} onClick={() => void handleRefreshAll()}>
                     {t("config.promptSources.refreshAll")}
                 </Button>
-                <p className="mb-0 mt-3 text-xs text-muted-foreground">{schedule.lastFetchedAt ? t("config.promptSources.lastFetched", { time: formatTime(schedule.lastFetchedAt, i18n.resolvedLanguage) }) : t("config.promptSources.neverScheduled")}</p>
+                <p className="!mb-0 !mt-3 text-xs text-muted-foreground">{schedule.lastFetchedAt ? t("config.promptSources.lastFetched", { time: formatTime(schedule.lastFetchedAt, i18n.resolvedLanguage) }) : t("config.promptSources.neverScheduled")}</p>
             </section>
 
             <PromptSourceEditorDrawer open={Boolean(editingSource)} source={editingSource} onSave={handleSave} onClose={() => setEditingSource(null)} />

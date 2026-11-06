@@ -74,7 +74,7 @@ export function RegistrationSettings({ headerActionsId }: { headerActionsId?: st
                 <p className="text-xs leading-5 text-muted-foreground">{t("registrationSettings.smtpHint")}</p>
             </section>
         </fieldset>
-        <div className="mt-4 flex flex-wrap gap-3">{actionsTarget ? null : saveButton}<Button loading={busy === "test"} disabled={busy !== null} onClick={(event) => { if (event.currentTarget.closest("form")?.reportValidity()) void save(true); }}>{t("registrationSettings.test")}</Button></div>
+        <div className="flex flex-wrap gap-3 pt-4">{actionsTarget ? null : saveButton}<Button loading={busy === "test"} disabled={busy !== null} onClick={(event) => { if (event.currentTarget.closest("form")?.reportValidity()) void save(true); }}>{t("registrationSettings.test")}</Button></div>
         <div className="grid gap-5 lg:grid-cols-2">
             <section className="min-w-0 rounded-xl border border-border p-5"><h2 className="mb-3 text-sm font-semibold text-foreground">{t("registrationSettings.preview")}</h2><pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-lg bg-muted p-4 text-xs leading-6 text-foreground">{JSON.stringify(preview, null, 2)}</pre></section>
             <section className="min-w-0 rounded-xl border border-border p-5"><h2 className="mb-3 text-sm font-semibold text-foreground">{t("registrationSettings.mailPreview")}</h2><p className="whitespace-pre-line text-sm leading-7 text-muted-foreground">{registrationMailText("••••••", config.codeTtlMinutes)}</p></section>
