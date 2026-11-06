@@ -66,10 +66,6 @@ export type WebdavSyncConfig = {
     password: string;
     hasPassword?: boolean;
     directory: string;
-    lastSyncedAt: string;
-    lastConfigSyncedAt: string;
-    autoSyncEnabled: boolean;
-    autoSyncIntervalMinutes: number;
 };
 export type ConfigTabKey = "channels" | "preferences" | "prompt-sources" | "webdav" | "local-storage" | "registration";
 
@@ -137,11 +133,6 @@ export const defaultWebdavSyncConfig: WebdavSyncConfig = {
     username: "",
     password: "",
     directory: "",
-    lastSyncedAt: "",
-    lastConfigSyncedAt: "",
-    // Configuration and WebDAV synchronization are intentionally manual.
-    autoSyncEnabled: false,
-    autoSyncIntervalMinutes: 5,
 };
 
 type ConfigStore = {

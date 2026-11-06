@@ -6,7 +6,7 @@ import { useTranslation } from "react-i18next";
 import { applyServerConfig, createAppConfigSnapshot } from "@/services/config-file";
 import { getServerConfigSaveStatus, loadServerConfig, retryServerConfigSave, saveServerConfig, startServerConfigAutoSave, subscribeServerConfigSaveStatus } from "@/services/server-config";
 import { applyUserPreferences, getUserPreferencesSaveStatus, loadUserPreferences, retryUserPreferencesSave, setUserPreferenceDefaults, startUserPreferencesAutoSave, subscribeUserPreferencesSaveStatus } from "@/services/user-preferences";
-import { getWorkspaceDataError, retryWorkspaceData, subscribeWorkspaceDataError } from "@/services/workspace-data";
+import { getLoadedRestoredAt, getWorkspaceDataError, retryWorkspaceData, subscribeWorkspaceDataError, type WorkspaceDomain } from "@/services/workspace-data";
 import { useConfigStore } from "@/stores/use-config-store";
 import { usePromptSourceScheduler } from "@/hooks/use-prompt-source-scheduler";
 import { useAppLoadingStore } from "@/stores/use-app-loading-store";
@@ -47,15 +47,16 @@ function ReadyClientRoot({ children }: { children: ReactNode }) {
     const saveError = useSyncExternalStore(subscribeServerConfigSaveStatus, getServerConfigSaveStatus).error;
     const preferenceSaveError = useSyncExternalStore(subscribeUserPreferencesSaveStatus, getUserPreferencesSaveStatus).error;
     const workspaceError = useSyncExternalStore(subscribeWorkspaceDataError, getWorkspaceDataError);
-    const [conflict, setConflict] = useState<string>("");
+    const [conflict, setConflict] = useState<{ label: string; forceRefresh: boolean } | null>(null);
 
     usePromptSourceScheduler();
 
     useEffect(() => {
         const onConflict = (event: Event) => {
-            const detail = (event as CustomEvent<{ domain?: string }>).detail;
+            const detail = (event as CustomEvent<{ domain?: WorkspaceDomain; workspaceId?: string; restoredAt?: string | null }>).detail;
             const labels: Record<string, string> = { canvas: t("conflict.canvas"), "canvas-templates": t("conflict.canvasTemplates"), assets: t("conflict.assets"), "image-workbench": t("conflict.imageWorkbench"), "video-workbench": t("conflict.videoWorkbench"), "agent-sessions": t("conflict.agentSessions") };
-            setConflict(labels[detail?.domain || ""] || t("conflict.workspaceData"));
+            const loaded = detail?.domain ? getLoadedRestoredAt(detail.domain, detail.workspaceId) : null;
+            setConflict({ label: labels[detail?.domain || ""] || t("conflict.workspaceData"), forceRefresh: Boolean(detail?.restoredAt && detail.restoredAt !== loaded) });
         };
         window.addEventListener("infinite-canvas:workspace-conflict", onConflict);
         return () => window.removeEventListener("infinite-canvas:workspace-conflict", onConflict);
@@ -94,7 +95,18 @@ function ReadyClientRoot({ children }: { children: ReactNode }) {
             {preferenceSaveError ? <Alert type="error" showIcon message={t("config.personalPreferences.saveFailed")} description={preferenceSaveError} action={<Button size="small" onClick={retryUserPreferencesSave}>{t("common.retry")}</Button>} /> : null}
             {workspaceError ? <Alert type="error" showIcon message={workspaceError.mode === "conflict" ? t("conflict.dataConflict") : t("conflict.dataUnsaved")} description={workspaceError.message} action={<Button size="small" onClick={retryWorkspaceData}>{workspaceError.mode === "conflict" ? t("conflict.refresh") : t("common.retry")}</Button>} /> : null}
         </div> : null}
-        <Modal open={Boolean(conflict)} title={t("conflict.title")} okText={t("conflict.refreshAndLoad")} cancelText={t("conflict.keepLocal")} onOk={() => window.location.reload()} onCancel={() => setConflict("")}>{t("conflict.description", { name: conflict })}</Modal>
+        <Modal
+            open={Boolean(conflict)}
+            title={t("conflict.title")}
+            okText={t("conflict.refreshAndLoad")}
+            cancelText={t("conflict.keepLocal")}
+            closable={!conflict?.forceRefresh}
+            maskClosable={!conflict?.forceRefresh}
+            keyboard={!conflict?.forceRefresh}
+            cancelButtonProps={conflict?.forceRefresh ? { style: { display: "none" } } : undefined}
+            onOk={() => window.location.reload()}
+            onCancel={() => setConflict(null)}
+        >{conflict ? t("conflict.description", { name: conflict.label }) : null}</Modal>
     </>;
 }
 

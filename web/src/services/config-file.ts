@@ -31,12 +31,12 @@ export function createAppConfigSnapshot(): AppConfigFile {
 }
 
 export function applyAppConfig(data: AppConfigFile) {
-    useConfigStore.setState({ config: { ...defaultConfig, ...data.config, proxyEnabled: false }, webdav: { ...defaultWebdavSyncConfig, ...data.webdav, autoSyncEnabled: false } });
+    useConfigStore.setState({ config: { ...defaultConfig, ...data.config, proxyEnabled: false }, webdav: { ...defaultWebdavSyncConfig, ...data.webdav } });
     usePromptSourceStore.setState({ ...data.promptSources, sources: data.promptSources.sources.filter((source) => !source.builtIn) });
 }
 
 export function applyServerConfig(data: AppConfigFile) {
-    useConfigStore.setState({ config: redactAiConfigSecrets({ ...defaultConfig, ...data.config, proxyEnabled: false }), webdav: { ...defaultWebdavSyncConfig, ...data.webdav, autoSyncEnabled: false, password: "" } });
+    useConfigStore.setState({ config: redactAiConfigSecrets({ ...defaultConfig, ...data.config, proxyEnabled: false }), webdav: { ...defaultWebdavSyncConfig, ...data.webdav, password: "" } });
     usePromptSourceStore.setState({ ...data.promptSources, sources: data.promptSources.sources.filter((source) => !source.builtIn) });
 }
 
