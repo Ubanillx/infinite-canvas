@@ -96,7 +96,7 @@ pipeline {
             sh 'rm -f .ci/image.tar .ci/release.tar.gz'
             script {
                 if (currentBuild.currentResult != 'ABORTED' && env.RELEASE_SHA && fileExists('deploy/cleanup-docker.sh')) {
-                    sh 'bash deploy/cleanup-docker.sh .ci/retained-images --build-cache || echo "Warning: build-node Docker cleanup failed" >&2'
+                    sh 'bash deploy/cleanup-docker.sh .ci/retained-images --dangling-images || echo "Warning: build-node Docker cleanup failed" >&2'
                 }
                 if (env.PACKAGE_READY == 'true') {
                     archiveArtifacts artifacts: '.ci/revision,.ci/image-ref,.ci/image-id,.ci/SHA256SUMS', allowEmptyArchive: true

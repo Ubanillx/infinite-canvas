@@ -5,6 +5,13 @@ description: Implemented changes that still need manual verification
 
 # Pending Tests
 
+## Build cache and runtime layer reuse
+
+- Normal CI preserves BuildKit cache while retaining unused application-image cleanup, dangling-image cleanup, and current/previous healthy-image and container-reference protection. Capacity management uses the existing daemon GC policies; no new retention, size or free-space thresholds are introduced. Operators must check both guest disk and PVE thin-pool capacity.
+- Runtime dependencies use independent `COPY --link` layers. Agent production-dependency pruning depends only on dependency manifests; source, build output, Vite Preview, plugins, version/changelog display and Office tools remain available. Consecutive same-commit Jenkins builds are used to compare initial layer creation with warm-cache reuse; results are recorded separately from simulated rollback tests.
+- Both TODO files were checked; no matching item needs migration.
+- Linux regressions passed: 12 cleanup/retention tests, 50 deployment and rollback tests, and 7 health-check tests. Runtime layer reuse and the actual copied files still require validation against the built production image.
+
 ## Application-only deployment with external RustFS
 
 - Normal deployment and automatic image rollback target only `app` with `--no-deps`; PostgreSQL, legacy RustFS containers and their volumes are preserved. Infrastructure image discovery and transfer were removed.

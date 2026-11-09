@@ -48,14 +48,15 @@ sudo apt-get install -y docker-buildx-plugin
 
 ### 构建缓存
 
-Jenkins 显式启用 BuildKit，Dockerfile 按下述结构复用尚未被清理的层缓存和下载缓存，不需要新增镜像仓库或部署凭据。构建前不再清理构建缓存；任务结束后只清理悬空构建缓存，取消任务时跳过 Docker 清理：
+Jenkins 显式启用 BuildKit，Dockerfile 按下述结构复用层缓存和下载缓存，不需要新增镜像仓库或部署凭据。正常任务保留构建缓存，结束后只清理无标签镜像及不受保护的旧应用镜像，取消任务时跳过 Docker 清理：
 
 - 前端与 Agent 各有独立的依赖层和编译层，依赖安装仅依赖各自的 `package.json` / `package-lock.json`。修改源码不重装依赖；只修改一端不会因共用构建链而重编译另一端。前端使用根目录的 `VERSION` / `CHANGELOG.md`，这些文件变化仍会正常触发前端编译。
 - npm 通过 BuildKit 挂载缓存下载包，继续执行 `npm ci` 并校验锁文件，不共享或复用宿主机的 `node_modules`。Python 依赖按固定版本清单安装，pip 下载缓存不再被禁用；清单变化时可复用未变化的包。
+- 运行镜像把 Web 和 Agent 的 `node_modules` 与源码、编译产物分成独立的 `COPY --link` 层。Agent 生产依赖裁剪只依赖清单，不因源码变化重复执行；保留 Vite Preview 所需的源码、配置、插件及版本/变更记录。Office 工具和应用权限不变。
 - 系统软件包与索引使用带锁的 APT 缓存，关闭镜像内自动删除下载包的配置。Office、OCR、Python 等运行环境独立于应用源码，未变化时直接复用完整安装层；APT/npm/pip 下载缓存不打进最终运行镜像。
 - `.local` 调试产物与本地数据不再进入构建上下文。Jenkins 分别显示 `Build image`、`Package release` 和 `SSH deploy`，构建日志中的 `CACHED` 表示层缓存命中。构建缓存与下节的传输缓存相互独立，不省略本地镜像导出或远端加载。
 
-首次使用新结构仍需完整下载和安装。清理 Jenkins 工作区不会清理 Docker builder 缓存；CI 通过独立的 `docker builder prune --force` 回收悬空构建缓存，再用 `docker image prune --force` 回收无标签且未被容器引用的镜像，不使用 `--all`。这不保证所有下载缓存都能保留，也不保证磁盘不会耗尽。若 `docker-linux` 标签对应多台主机，各自清理本机默认 Docker daemon 的构建缓存，不跨节点同步缓存，不额外设置过期天数、磁盘水位或大小限额。构建节点应保持专用，清理仍可能影响同一 daemon 下其他任务的缓存命中率。
+首次使用新结构仍需建立新层。CI 正常调用 `cleanup-docker.sh RETAINED_IMAGES --dangling-images`，不再逐次执行 `docker builder prune`；仍用 `docker image prune --force` 回收无标签且未被容器引用的镜像，不使用 `--all`。容量治理沿用 Docker daemon 已启用的 BuildKit 自动 GC（用 `docker buildx inspect` 核对实际策略），不新增保留时长、磁盘水位或大小限额，也不保证缓存永久保留或磁盘不会耗尽。部署前后应同时核对 Jenkins 根盘和 PVE thin pool，客机空闲不能代替底层容量；GC 不认识宿主机共享池的其他虚拟机占用。需要人工回收构建缓存时仍可显式执行 `bash deploy/cleanup-docker.sh --build-cache`，这会降低后续构建命中率，但不删除数据卷。若 `docker-linux` 标签对应多台主机，各自使用本机 daemon 的策略，不跨节点同步缓存。
 
 验收时对比缓存仍存在和已被回收时的构建日志、依赖下载与磁盘占用；缓存存在时应只重跑受影响的步骤，不以此承诺每次发布的提速比例。原来已取消的 CI 测试与冒烟阶段不恢复，手动测试目标仍可使用。
 
@@ -64,10 +65,10 @@ Jenkins 显式启用 BuildKit，Dockerfile 按下述结构复用尚未被清理�
 ### 镜像保留与自动清理
 
 - `Cleanup build node` 阶段通过已固定主机公钥的 SSH 读取部署机 `shared/retained-images`；读取期间复用部署锁，并核对清单包含实际 current。Jenkins 在构建前只按这份记录清理旧应用镜像，不清理构建缓存。连接失败或记录损坏时停止镜像删除及本次构建，不使用过期的本地清单猜测版本。
-- 健康检查、Magpie 同步及 current 切换完成后，部署机原子写入当前镜像与切换前的健康镜像，并在部署锁内执行镜像清理。首次发布只有当前镜像；没有成功发布记录时保留已有镜像，只清理 Jenkins 构建缓存。版本按实际健康发布记录识别，不按创建时间或构建号排序。
+- 健康检查、Magpie 同步及 current 切换完成后，部署机原子写入当前镜像与切换前的健康镜像，并在部署锁内执行镜像清理。首次发布只有当前镜像；没有成功发布记录时保留已有带标签镜像，正常结束清理仅回收无标签镜像。版本按实际健康发布记录识别，不按创建时间或构建号排序。
 - 按保留清单删除时只处理本项目 `infinite-canvas:<40位SHA>-<构建号>` 标签；保留清单中的镜像、相同内容的其他标签，以及所有运行或停止的容器引用的镜像。按标签执行不带 force 的 `docker image rm`，不删除容器、网络、数据卷、基础服务镜像、手工调试标签、历史发布配置或差量传输基线。构建节点结束时另用不带 `--all` 的 `docker image prune --force` 清理无标签残留，由 Docker 保护容器引用和带标签镜像。
 - SSH 激活前先使 Jenkins 本地保留记录失效，成功后再下载新的清单；连接中断或下载失败时保留本地镜像，下一次构建前重新向部署机查询。发布失败不更新部署机清单。健康切换后的清理失败只告警，不回滚健康应用；无法发布新清单时废弃旧清单并跳过镜像删除。
-- Jenkins 的 `post always` 先删除本次临时镜像归档，再清理旧应用镜像和悬空构建缓存，最后归档小型元数据；成功与失败任务均执行，已取消任务跳过 Docker 清理，避免取消后继续启动耗时的镜像删除或缓存回收。构建前镜像清理失败会停止构建，结束后的清理失败保留原结果并告警。首次启用时若 Jenkins 已完全无法写状态，仍需先释放空间让流水线能够启动；构建和打包期间仍须容纳当前、上一版、新构建及完整镜像归档的峰值空间。
+- Jenkins 的 `post always` 先删除本次临时镜像归档，再清理旧应用镜像和无标签镜像，最后归档小型元数据；成功与失败任务均执行，已取消任务跳过 Docker 清理。构建缓存由现有自动 GC 管理，当前与上一健康镜像、容器引用保护不变。构建前镜像清理失败会停止构建，结束后的清理失败保留原结果并告警。首次启用时若 Jenkins 已完全无法写状态，仍需先释放空间让流水线能够启动；构建和打包期间仍须容纳当前、上一版、新构建及完整镜像归档的峰值空间。
 
 参考：[Docker 镜像删除](https://docs.docker.com/reference/cli/docker/image/rm/)、[Docker 构建缓存清理](https://docs.docker.com/reference/cli/docker/builder/prune/)。
 
