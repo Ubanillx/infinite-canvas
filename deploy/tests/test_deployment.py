@@ -434,9 +434,9 @@ if os.path.basename(sys.argv[0]) == "scp" and sys.argv[-2].endswith("/shared/ret
         result = self.ssh_transport()
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls()
-        self.assertEqual(len(calls), 6)
+        self.assertEqual(len(calls), 5)
         hops = [call for call in calls if Path(call[0]).name in ["ssh", "scp"]]
-        self.assertEqual(len(hops), 5)
+        self.assertEqual(len(hops), 4)
         for call in hops:
             self.assertIn("StrictHostKeyChecking=yes", call)
             self.assertIn("UserKnownHostsFile=/secret/hosts", call)
@@ -444,6 +444,8 @@ if os.path.basename(sys.argv[0]) == "scp" and sys.argv[-2].endswith("/shared/ret
         self.assertNotIn("/secret/key", result.stdout + result.stderr)
         sync = next(call for call in calls if Path(call[0]).name == "rsync")
         self.assertIn("--copy-dest=" + str(self.root / "shared/image-transfer"), sync)
+        self.assertIn(".ci/image.tar", sync)
+        self.assertIn(".ci/release.tar.gz", sync)
         for option in ["--checksum", "--compress", "--no-whole-file", "--stats"]:
             self.assertIn(option, sync)
         self.assertNotIn("--inplace", sync)
@@ -541,9 +543,10 @@ os.execv("/usr/bin/rsync", args)
         image = original + b"new image config"
         (self.transport / ".ci").mkdir()
         (self.transport / ".ci/image.tar").write_bytes(image)
+        (self.transport / ".ci/release.tar.gz").write_bytes(b"metadata")
         incoming = self.root / "incoming" / RELEASE / "image.tar"
         incoming.unlink()
-        delta = (REPO / "deploy/ssh-deploy.sh").read_text().split("stage='image delta upload'", 1)[1].split("stage='release upload'", 1)[0]
+        delta = (REPO / "deploy/ssh-deploy.sh").read_text().split("stage='image delta upload'", 1)[1].split("stage='remote activation'", 1)[0]
         result = subprocess.run(["bash", "-ec", delta], cwd=self.transport,
                                 env=dict(self.env, DEPLOY_HOST="deploy.example.com", DEPLOY_USER="deploy", DEPLOY_KEY="/secret/key with spaces'quote",
                                          KNOWN_HOSTS="/secret/hosts", DEPLOY_DIR=str(self.root), COMPOSE_PROJECT="test", RELEASE_SHA=SHA, BUILD_NUMBER="7",
@@ -582,7 +585,7 @@ os.execv("/usr/bin/rsync", args)
         shutil.rmtree(self.root / "incoming")
         result = self.ssh_transport(preflight=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(self.calls()), 6)
+        self.assertEqual(len(self.calls()), 5)
         self.assertTrue((self.root / "incoming" / RELEASE).is_dir())
         self.assertNotIn("must-not-be-logged", result.stdout + result.stderr)
 

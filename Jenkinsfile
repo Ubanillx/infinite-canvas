@@ -67,14 +67,19 @@ pipeline {
                     umask 077
                     mkdir -p .ci
                     docker image inspect --format '{{.Id}}' "$APP_IMAGE" > .ci/image-id
-                    docker save "$APP_IMAGE" > .ci/image.tar
+                    # Hash the Docker archive while it is being written so the
+                    # package stage never scans the 1 GB tar a second time.
+                    docker save "$APP_IMAGE" | tee .ci/image.tar | sha256sum > .ci/image.tar.sha256
                     cp docker-compose.yml .ci/compose.yml
                     cp deploy/remote-deploy.sh .ci/remote-deploy.sh
                     cp deploy/import-codex-config.sh .ci/import-codex-config.sh
                     cp deploy/cleanup-docker.sh .ci/cleanup-docker.sh
                     printf '%s\n' "$APP_IMAGE" > .ci/image-ref
                     printf '%s\n' "$RELEASE_SHA" > .ci/revision
-                    (cd .ci && sha256sum image.tar compose.yml remote-deploy.sh import-codex-config.sh cleanup-docker.sh image-ref image-id revision > SHA256SUMS)
+                    image_sha256="$(awk '{print $1}' .ci/image.tar.sha256)"
+                    [[ "$image_sha256" =~ ^[a-f0-9]{64}$ ]] || { echo 'Invalid streamed image checksum' >&2; exit 1; }
+                    printf '%s  %s\n' "$image_sha256" image.tar > .ci/SHA256SUMS
+                    (cd .ci && sha256sum compose.yml remote-deploy.sh import-codex-config.sh cleanup-docker.sh image-ref image-id revision >> SHA256SUMS)
                     tar -C .ci -czf .ci/release.tar.gz compose.yml remote-deploy.sh import-codex-config.sh cleanup-docker.sh image-ref image-id revision SHA256SUMS
                 '''
                 script { env.PACKAGE_READY = 'true' }
@@ -93,7 +98,7 @@ pipeline {
     }
     post {
         always {
-            sh 'rm -f .ci/image.tar .ci/release.tar.gz'
+            sh 'rm -f .ci/image.tar .ci/image.tar.sha256 .ci/release.tar.gz'
             script {
                 if (currentBuild.currentResult != 'ABORTED' && env.RELEASE_SHA && fileExists('deploy/cleanup-docker.sh')) {
                     sh 'bash deploy/cleanup-docker.sh .ci/retained-images --dangling-images || echo "Warning: build-node Docker cleanup failed" >&2'

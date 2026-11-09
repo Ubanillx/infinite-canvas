@@ -267,15 +267,27 @@ try:
             # Prove the allowlist is enforced before exposing any LAN-facing listener.
             tx["service_changed"] = True
             write(backup / "transaction.json", json.dumps(tx))
-            configure(tx["network"]["gateway"] + ":3425", "127.0.0.1")
-            probe(403, True)
-            configure(tx["network"]["gateway"] + ":3425", tx["network"]["client"] + "/32")
-            probe(401, False)
-            probe(200, True)
-            configure("0.0.0.0:3425", tx["network"]["client"] + "/32")
-            probe(401, False)
-            probe(200, True)
-            print("Magpie checks passed: excluded IP denied, missing key denied, application key accepted.")
+            desired_allow = tx["network"]["client"] + "/32"
+            if tx["service_env"].get("MAGPIE_ADDR") == "0.0.0.0:3425" and tx["service_env"].get("MAGPIE_ALLOW_IPS") == desired_allow:
+                # A recreated app can keep the same bridge IP. The listener
+                # and allowlist are already in the final secure state. Verify
+                # the systemd environment and final authorization probes
+                # without three restarts; the 403 transition probe remains in
+                # the full reconfiguration path below.
+                verify_unit("0.0.0.0:3425", desired_allow)
+                probe(401, False)
+                probe(200, True)
+                print("Magpie checks passed: existing listener and allowlist verified without restart.")
+            else:
+                configure(tx["network"]["gateway"] + ":3425", "127.0.0.1")
+                probe(403, True)
+                configure(tx["network"]["gateway"] + ":3425", desired_allow)
+                probe(401, False)
+                probe(200, True)
+                configure("0.0.0.0:3425", desired_allow)
+                probe(401, False)
+                probe(200, True)
+                print("Magpie checks passed: excluded IP denied, missing key denied, application key accepted.")
         elif action == "commit":
             require(network() == tx["network"], "The application IP changed during setup; retry with the current container.")
             write(state_file, json.dumps(tx["identity"]))

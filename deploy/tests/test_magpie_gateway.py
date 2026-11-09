@@ -174,6 +174,22 @@ class MagpieGatewayTests(unittest.TestCase):
         self.assertEqual(self.service_env["MAGPIE_ALLOW_IPS"], "172.18.0.5/32")
         self.assert_private_output()
 
+    def test_sync_with_same_container_ip_probes_without_restarting_service(self):
+        self.begin()
+        self.invoke("activate")
+        self.invoke("commit")
+        restarts = list(self.restarts)
+        probes = list(self.probes)
+        self.invoke("begin-sync")
+        self.invoke("prepare")
+        self.invoke("activate")
+        self.invoke("commit")
+        self.assertEqual(self.restarts, restarts)
+        self.assertEqual(self.probes, probes + [401, 200])
+        self.assertEqual(self.service_env["MAGPIE_ADDR"], "0.0.0.0:3425")
+        self.assertEqual(self.service_env["MAGPIE_ALLOW_IPS"], "172.18.0.42/32")
+        self.assert_private_output()
+
     def test_sync_uses_running_service_binary_without_noninteractive_path(self):
         self.begin()
         self.invoke("activate")
