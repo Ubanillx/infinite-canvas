@@ -76,12 +76,13 @@ FROM office-tools AS runtime
 WORKDIR /app
 ENV NODE_ENV=production HOME=/home/node PORT=3000 \
     INFINITE_CANVAS_DATA_DIR=/data CODEX_HOME=/home/node/.codex
-COPY --link --from=web-deps --chown=node:node /app/web/node_modules ./web/node_modules
-COPY --link --from=agent-runtime-deps --chown=node:node /app/canvas-agent/node_modules ./canvas-agent/node_modules
-COPY --link --chown=node:node web ./web
-COPY --link --chown=node:node canvas-agent ./canvas-agent
-COPY --link --from=web-build --chown=node:node /app/web/dist ./web/dist
-COPY --link --from=agent-build --chown=node:node /app/canvas-agent/dist ./canvas-agent/dist
+# --link 构造独立层，使用运行用户既有的 UID/GID，避免依赖目标层的 passwd 查询。
+COPY --link --from=web-deps --chown=1000:1000 /app/web/node_modules ./web/node_modules
+COPY --link --from=agent-runtime-deps --chown=1000:1000 /app/canvas-agent/node_modules ./canvas-agent/node_modules
+COPY --link --chown=1000:1000 web ./web
+COPY --link --chown=1000:1000 canvas-agent ./canvas-agent
+COPY --link --from=web-build --chown=1000:1000 /app/web/dist ./web/dist
+COPY --link --from=agent-build --chown=1000:1000 /app/canvas-agent/dist ./canvas-agent/dist
 COPY --link VERSION CHANGELOG.md ./
 COPY docker-entrypoint.sh /usr/local/bin/infinite-canvas-entrypoint
 COPY deploy/healthcheck.mjs deploy/configure-runtime.mjs /usr/local/lib/infinite-canvas/
