@@ -8,9 +8,10 @@ description: Implemented changes that still need manual verification
 ## Package and deployment transport reuse
 
 - Docker archive SHA-256 is computed in the same streaming pipeline that writes `image.tar`; remote full-file SHA-256, Docker image ID/revision checks, and activation ordering remain required.
-- rsync sends `image.tar` and the metadata archive in one pinned SSH session; SSH connection reuse must be measured against the previous separate-transfer flow without weakening host-key checks.
-- Magpie sync retains the 403/401/200 transition probes and the original restart/rollback path when the app IP changes; with an unchanged final listener and `/32` allowlist it verifies the systemd environment and runs the final 401/200 probes without restarting the service.
-- Consecutive Jenkins builds and production image/storage checks still need to be recorded after this transport optimization.
+- rsync sends `image.tar` and the metadata archive in one pinned SSH session; other SSH/SCP calls remain independently authenticated, without background connections or new timeout settings.
+- Magpie sync retains the original restart/rollback path when the app IP changes; with an unchanged final listener and `/32` allowlist it verifies systemd and process environments, proves HTTP 403 from an isolated temporary client, then 401/200 from the app, without restarting the service. The probe uses the local app image and no credentials or persistent mounts, and removes itself and its anonymous volumes on exit.
+- Logs separate export/hash, transfer, verification, load, app health, gateway checks, and promotion/cleanup. Same-commit consecutive Jenkins builds, capacity snapshots, and production storage acceptance are recorded separately; rollback failures use isolated regression fixtures, not production fault injection. Both TODO files were checked; no corresponding item needs migration.
+- Linux checks passed: 12 cleanup, 51 deployment/rollback, 16 gateway, and 7 health-check cases, including partial-export rejection, unchanged-IP ACL/auth checks, and changed-IP rollback. The real local app image also returned 403 from the excluded temporary client; final pipeline timing and production acceptance follow from consecutive builds.
 
 ## Build cache and runtime layer reuse
 
@@ -152,7 +153,7 @@ description: Implemented changes that still need manual verification
 
 - Jenkins 将网关脚本纳入发布包与 SHA256 校验；应用启动且健康检查通过后、切换 current 前，按实际容器执行 `--sync-magpie-gateway`，更新单个 IPv4 `/32` 白名单并验证拒绝策略与 Key 认证。发布失败恢复上一镜像后，重新查询回滚容器并再次同步，失败明确报告，不扩大网段放行。
 - 同步仅处理已初始化的 `infinite_canvas_magpie` 供应商，复用已有 Key 并核对容器当前地址和 Key；不读取宿主机 Codex 配置、不覆盖容器配置、不创建替代 Key、不额外重启应用。其他供应商明确跳过；受管配置缺少主机状态、服务未运行、Key 已失效或不匹配时，中止发布并尝试回滚。
-- Jenkins SSH 凭据用户须为原 Magpie 服务所属的非 root 用户，沿用相同 HOME/XDG 配置与状态目录；非交互 SSH 需有 `python3`、`flock`、`systemctl`、`readlink` 并能访问该用户正在运行的 `magpie.service`。若 PATH 缺少 `magpie`，从该服务进程定位可执行文件，仍核验进程归属和文件一致性；需在真实 Jenkins 确认 SSH 用户和服务运行环境。首次初始化仍显式执行 `--magpie-gateway`。应用 IP 或最终监听状态变化时沿用现有三次 Magpie 重启及只读模型列表探测；状态不变时核对 systemd 环境并只执行最终授权探针，跳过重启。
+- Jenkins SSH 凭据用户须为原 Magpie 服务所属的非 root 用户，沿用相同 HOME/XDG 配置与状态目录；非交互 SSH 需有 `python3`、`flock`、`systemctl`、`readlink` 并能访问该用户正在运行的 `magpie.service`。若 PATH 缺少 `magpie`，从该服务进程定位可执行文件，仍核验进程归属和文件一致性；需在真实 Jenkins 确认 SSH 用户和服务运行环境。首次初始化仍显式执行 `--magpie-gateway`。应用 IP 或最终监听状态变化时沿用现有三次 Magpie 重启及只读模型列表探测；状态不变时核对 systemd 与实际进程环境，通过独立临时客户端及应用分别验证 403/401/200，跳过重启。
 - 47 项 Linux 部署/网关事务测试与 14 项 Bun 1.3.13 导入/探测测试通过，覆盖发布包、健康检查后同步、IP 更换、Key 复用、配置保留、失败回滚和回滚同步失败；Docker、SSH、systemd 与 Magpie 服务使用替身，嵌入 HTTP 探针访问真实回环测试服务。记录：`.local/magpie-cicd-2026-10-29T06-27-20-027Z/deployment-green.log`、`.local/magpie-cicd-2026-10-29T06-27-20-027Z/import-green.log`。未构建镜像、执行语法检查、连接生产服务或触发真实 Jenkins 发布。
 - 非交互 PATH 缺少 Magpie 的回归用例先复现 `magpie must be available on the host PATH`，修复后 Linux 部署、清理与网关事务合计 67 项通过。真实 Jenkins #28 的 SSH 发布环境已成功执行网关同步。
 - #28 日志确认未放行 IP 返回 403、无 Key 返回 401、应用 Key 返回 200；服务白名单为当前容器 `172.18.0.5/32`，生产 current 已切换。独立容器模型列表探测再次得到无 Key 401、应用 Key 200，Magpie 服务 active；未发送模型生成请求。后续仍需连续发布时 IP 变化、真实回滚及新建 Codex 对话验收。已检查中英文 TODO，无对应条目需迁移。

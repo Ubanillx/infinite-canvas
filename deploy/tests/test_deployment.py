@@ -42,7 +42,7 @@ if a[:2] == ["image", "inspect"]:
     print(os.environ["IMAGE_ID"] if a[3] == "{{.Id}}" else os.environ["SHA"])
     sys.exit(0)
 if a[0] == "save":
-    print("fake-infra-images"); sys.exit(0)
+    print("fake-infra-images"); sys.exit(17 if os.getenv("SCENARIO") == "save-fails" else 0)
 if a[0] == "inspect":
     print("wrong" if os.getenv("SCENARIO") == "wrong-image" else os.environ["IMAGE_ID"] if a[2] == "{{.Image}}" else "healthy")
     sys.exit(0)
@@ -381,6 +381,15 @@ class DeploymentTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Another deployment", result.stderr)
         self.assertFalse(self.calls())
+
+    def test_streamed_archive_rejects_failed_export_even_when_hash_succeeds(self):
+        package = (REPO / "Jenkinsfile").read_text().split("stage('Package release')", 1)[1].split("sh '''", 1)[1].split("'''", 1)[0]
+        result = subprocess.run(["bash", "-c", package], cwd=self.root,
+                                env=dict(self.env, SCENARIO="save-fails", APP_IMAGE=f"infinite-canvas:{RELEASE}", RELEASE_SHA=SHA),
+                                text=True, capture_output=True)
+        self.assertEqual(result.returncode, 17, result.stderr)
+        self.assertTrue((self.root / ".ci/image.tar.sha256").is_file())
+        self.assertFalse((self.root / ".ci/release.tar.gz").exists())
 
     def test_ssh_validation_refuses_shell_input(self):
         env = dict(self.env, DEPLOY_HOST="host;touch /tmp/injected", DEPLOY_USER="deploy",

@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 umask 077
+timing_start=$SECONDS
+timing() {
+    printf 'Deployment timing: %s=%ss\n' "$1" "$((SECONDS-timing_start))"
+    timing_start=$SECONDS
+}
 root="${1:?deployment directory}"
 release="${2:?release id}"
 project="${3:?compose project}"
@@ -30,6 +35,7 @@ mv "$incoming/image.tar" "$destination/image.tar"
 chmod 600 "$destination/image.tar"
 cd "$destination"
 sha256sum -c SHA256SUMS
+timing verify_release
 image="$(cat image-ref)"
 image_id="$(cat image-id)"
 revision="$(cat revision)"
@@ -41,6 +47,7 @@ revision="$(cat revision)"
 docker load < image.tar
 [[ "$(docker image inspect --format '{{.Id}}' "$image")" == "$image_id" ]] || { echo 'Loaded image does not match build' >&2; exit 1; }
 [[ "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" == "$revision" ]] || exit 1
+timing load_image
 printf 'APP_IMAGE=%s\n' "$image" > image.env
 chmod 600 "$root/shared/production.env"
 install -m 600 "$root/shared/production.env" runtime.env
@@ -103,11 +110,14 @@ rollback() {
 trap rollback EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+timing prepare_activation
 compose "$destination" up -d --no-deps --no-build --pull never --wait --wait-timeout 120 app
 container="$(compose "$destination" ps -q app)"
 [[ -n "$container" && "$(docker inspect --format '{{.Image}}' "$container")" == "$image_id" ]]
 [[ "$(docker inspect --format '{{.State.Health.Status}}' "$container")" == healthy ]]
+timing app_health
 sync_magpie_gateway "$destination"
+timing gateway_checks
 ln -s "releases/$release" "$root/.current-$release"
 mv -Tf "$root/.current-$release" "$root/current"
 trap - EXIT INT TERM
@@ -124,4 +134,5 @@ mv -fT "$destination/image.tar" "$cache/.image-$release.tar" \
     && mv -fT "$cache/.image-$release.tar" "$cache/image.tar" \
     || echo 'Warning: could not update image transfer cache' >&2
 rm -f "$incoming/release.tar.gz" || echo 'Warning: could not remove release archive' >&2
+timing promote_cleanup
 echo "Deployment is healthy: $release ($image_id)"

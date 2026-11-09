@@ -86,14 +86,14 @@ Jenkins 运行在 PVE LVM-thin 虚拟机中时，还必须检查 PVE 的 `pvesm 
 
 Jenkins 保留未压缩的 `.ci/image.tar`，不再先 gzip 完整镜像、再把它放入第二层压缩包。`.ci/release.tar.gz` 只包含 Compose、部署/网关/镜像清理脚本、镜像标识、版本和 SHA256SUMS；校验清单包含所有脚本及独立传输的完整 `image.tar`，不包含宿主机配置、Key 或备份。
 
-应用镜像通过 rsync 的数据块匹配复用部署主机 `shared/image-transfer/image.tar`，只压缩和发送缺失的数据块；发布元数据归档与镜像使用同一次 rsync/SSH 传输，避免为一个小归档再建立连接。不是自制 Docker 层协议，也不需要 rsync daemon、镜像仓库、新端口或额外凭据。发布脚本为 rsync、SSH、SCP 复用同一条经过 known_hosts 校验的短期 ControlMaster 连接；连接关闭和临时 socket 清理失败不会改变校验或回滚逻辑。rsync 复用同一脚本内的 SSH 参数，继续校验私钥、known_hosts、主机公钥和端口。双方均需安装带安全更新的 rsync，Ubuntu/Debian 可由管理员执行 `sudo apt-get update && sudo apt-get install -y rsync`；缺少时预检明确失败，不在发布中自动安装或降低鉴权。
+应用镜像通过 rsync 的数据块匹配复用部署主机 `shared/image-transfer/image.tar`，只压缩和发送缺失的数据块；发布元数据归档与镜像使用同一次 rsync/SSH 传输，避免为一个小归档再建立连接。不是自制 Docker 层协议，也不需要 rsync daemon、镜像仓库、新端口或额外凭据。各次 SSH/SCP 仍独立固定主机公钥，不保留后台认证连接或新增连接超时。rsync 复用同一脚本内的 SSH 参数，继续校验私钥、known_hosts、主机公钥和端口。双方均需安装带安全更新的 rsync，Ubuntu/Debian 可由管理员执行 `sudo apt-get update && sudo apt-get install -y rsync`；缺少时预检明确失败，不在发布中自动安装或降低鉴权。
 
 - 首次发布、传输基线缺失或镜像整体变化时，可能仍传完整镜像；后续未变化的系统、依赖和应用内容可按块复用。日志 `Literal data` 是新传数据量，`Matched data` 是复用数据量，并非保证某个固定提速比例。
 - rsync 用 `--copy-dest` 只读比对旧基线，在本次 `incoming/<SHA>-<BUILD>/` 内生成新归档，不使用 `--inplace`、硬链接或删除同步。启用内容校验，接收后仍执行原 SHA256、image ID、revision 和容器健康校验；传输失败不会进入发布激活，不自动重试或自动降级成其他传输方式。
 - 只有健康发布完成后，才将新归档先移入缓存临时文件，再在缓存目录内原子替换基线。失败发布保留原基线和 current；缓存替换失败仅告警，不回滚已健康的新版本。发布配置继续保留，应用镜像按上述策略保留当前及上一健康版，回滚不依赖传输缓存。
 - 代价是 Jenkins 打包时需要保存完整未压缩归档，部署主机稳态额外保留一份未压缩归档，更新期间还需容纳新归档。缓存为私有目录、归档权限 600，不属于业务数据卷，不自动调整磁盘限额或回收策略；更新失败遗留文件由管理员确认后处理。删除传输缓存不会删除聊天/画布，但会使下一次传输变为全量。
 
-基础服务镜像仍仅在远端缺失时按原方式导出、压缩和传输。本地 `docker save` 与远端 `docker load` 仍处理完整归档；Jenkins 在 `docker save` 输出流写入 `image.tar` 的同时计算 SHA-256，避免为生成 `SHA256SUMS` 再完整读取一次归档，远端仍先执行完整 SHA-256 校验，再执行 `docker load`、image ID、revision 和健康检查。真实耗时与传输量应在连续 Jenkins 发布中确认。
+本地 `docker save` 与远端 `docker load` 仍处理完整应用归档；Jenkins 在 `docker save` 输出流写入 `image.tar` 的同时计算 SHA-256，避免为生成 `SHA256SUMS` 再完整读取一次归档，流水线 `pipefail` 拒绝导出、写入或散列失败的部分归档。远端仍先执行完整 SHA-256 校验，再执行 `docker load`、image ID、revision 和健康检查；基础服务镜像不在本流水线传输。日志分别记录导出与散列、传输、远端校验、加载、健康等待、网关检查和切换清理的用时，未新增等待或重试策略。
 
 参考：[rsync 官方手册](https://github.com/rsyncproject/rsync/blob/master/rsync.1.md)。
 
@@ -257,7 +257,7 @@ bash import-codex-config.sh --container 应用容器名 --magpie-gateway --resta
 - 网关拒绝策略、认证检查、容器 CLI 校验或文件安装失败时，尝试恢复本次服务覆盖、旧 Key 状态及容器文件，仅撤销本次新建的 Key，不恢复整个 Magpie Key 仓库覆盖其他客户端。恢复失败会保留私有备份并明确提示人工处理。应用配置成功提交后，若最后的应用重启失败，保留已提交配置与 Key，待手动重启，不撤销正在使用的凭证。
 - 检查仅使用读取模型列表的请求，不发送生成请求；脚本成功不代表真实模型对话已验收。完成后刷新网页并新建 Codex 对话，历史会话可能仍保留原供应商。
 
-首次初始化后，Jenkins 无需额外开关：`remote-deploy.sh` 在应用健康检查通过、切换 current 前，调用发布包中的 `import-codex-config.sh --sync-magpie-gateway`。同步读取容器实际网络和现有私有 Key，将白名单替换为当前容器 IPv4 `/32`，在需要重配时验证未放行 IP 返回 403、无 Key 返回 401、有效 Key 返回 200；不重新导入 Codex 配置或额外重启应用。其他供应商输出明确跳过日志。若应用重建后仍使用同一容器 IPv4 且服务已处于最终监听/白名单状态，先核对 systemd 最终环境，再执行无 Key/有效 Key 两项授权探针并跳过三次 Magpie 重启；地址变化或状态不一致时沿用原三次受控重启流程，本机 CLI 仍可能在重启期间短暂不可用。
+首次初始化后，Jenkins 无需额外开关：`remote-deploy.sh` 在应用健康检查通过、切换 current 前，调用发布包中的 `import-codex-config.sh --sync-magpie-gateway`。同步读取容器实际网络和现有私有 Key，将白名单替换为当前容器 IPv4 `/32`，验证未放行 IP 返回 403、无 Key 返回 401、有效 Key 返回 200；不重新导入 Codex 配置或额外重启应用。其他供应商输出明确跳过日志。若应用重建后仍使用同一容器 IPv4 且服务已处于最终监听/白名单状态，先核对 systemd 与实际进程环境，再使用已加载应用镜像在同一 bridge 的独立临时容器验证 403，并由应用验证 401/200，跳过三次 Magpie 重启。临时探针不挂载持久卷、不传密钥、不拉取镜像，`--rm` 清除其容器与匿名卷；任一检查失败即中止发布。地址变化或状态不一致时沿用原三次受控重启流程，本机 CLI 仍可能在重启期间短暂不可用。
 
 Jenkins SSH 凭据的用户必须是原 Magpie 服务所属的非 root 用户，HOME/XDG 配置和状态目录须与首次初始化一致；非交互 SSH 需能找到 `python3`、`flock`、`systemctl` 和 `readlink`，并能访问当前用户运行中的 `magpie.service`。如果 SSH 的 PATH 中没有 `magpie`（例如命令只在交互 shell 中配置），脚本从该服务的运行进程取得 CLI 的绝对路径，仍核验进程归属与可执行文件一致。已有受管供应商但找不到原 Key 状态、Key 失效或容器配置不匹配时，发布会失败并尝试恢复上一镜像，再同步回滚容器的新 IP；回滚同步失败也明确报告。同步不新建替代 Key、不覆盖容器配置；Docker 网关地址或 Key 不匹配时，需以原服务用户重新执行显式初始化。
 

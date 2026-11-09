@@ -67,9 +67,11 @@ pipeline {
                     umask 077
                     mkdir -p .ci
                     docker image inspect --format '{{.Id}}' "$APP_IMAGE" > .ci/image-id
+                    package_started=$SECONDS
                     # Hash the Docker archive while it is being written so the
                     # package stage never scans the 1 GB tar a second time.
                     docker save "$APP_IMAGE" | tee .ci/image.tar | sha256sum > .ci/image.tar.sha256
+                    printf 'Package timing: export_and_sha256=%ss\n' "$((SECONDS-package_started))"
                     cp docker-compose.yml .ci/compose.yml
                     cp deploy/remote-deploy.sh .ci/remote-deploy.sh
                     cp deploy/import-codex-config.sh .ci/import-codex-config.sh

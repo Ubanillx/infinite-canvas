@@ -13,27 +13,7 @@ DEPLOY_PORT="${DEPLOY_PORT:-22}"
 [[ "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ && "$BUILD_NUMBER" =~ ^[0-9]+$ ]] || exit 2
 release="$RELEASE_SHA-$BUILD_NUMBER"
 target="$DEPLOY_USER@$DEPLOY_HOST"
-# Keep one authenticated SSH connection for the image transfer, metadata
-# transfer, activation, and retention readback. The socket lives in a private
-# short path so OpenSSH's Unix-socket length limit cannot truncate it.
-control_dir="${SSH_CONTROL_DIR:-}"
-control_owner=false
-if [[ -z "$control_dir" ]]; then
-    control_dir="$(mktemp -d /tmp/icv-ssh.XXXXXX)"
-    chmod 700 "$control_dir"
-    control_owner=true
-    export SSH_CONTROL_DIR="$control_dir"
-fi
-ssh_opts=(-i "$DEPLOY_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$KNOWN_HOSTS" -o GlobalKnownHostsFile=/dev/null -o ControlMaster=auto -o ControlPersist=60 -o "ControlPath=$control_dir/c")
-cleanup_control() {
-    local status=$?
-    if "$control_owner" && [[ -S "$control_dir/c" ]]; then
-        ssh "${ssh_opts[@]}" -p "$DEPLOY_PORT" -O exit "$target" >/dev/null 2>&1 || true
-    fi
-    if "$control_owner"; then rm -rf -- "$control_dir"; fi
-    exit "$status"
-}
-trap cleanup_control EXIT
+ssh_opts=(-i "$DEPLOY_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$KNOWN_HOSTS" -o GlobalKnownHostsFile=/dev/null)
 # rsync invokes this fixed adapter so SSH credential paths never need shell-string quoting.
 if [[ "${1:-}" == --rsync-ssh ]]; then
     shift
@@ -79,10 +59,12 @@ mkdir -p '$DEPLOY_DIR/shared/image-transfer'
 mkdir -p '$DEPLOY_DIR/incoming'
 mkdir '$DEPLOY_DIR/incoming/$release'"
 stage='image delta upload'
+transfer_started=$SECONDS
 rsync --times --perms --chmod=F600 --checksum --compress --no-whole-file --stats \
     --copy-dest="$DEPLOY_DIR/shared/image-transfer" \
     --rsh='bash deploy/ssh-deploy.sh --rsync-ssh' \
     .ci/image.tar .ci/release.tar.gz "$target:$DEPLOY_DIR/incoming/$release/"
+printf 'Transfer timing: image_and_metadata=%ss\n' "$((SECONDS-transfer_started))"
 stage='remote activation'
 # The script itself is sent over the authenticated channel, not executed from an unchecked archive.
 mkdir -p .ci
