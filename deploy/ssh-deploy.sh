@@ -46,7 +46,7 @@ fi
     echo "Release metadata does not match build $BUILD_NUMBER. Start a new build from Checkout deploy; restarting from a later stage is unsupported." >&2
     exit 2
 }
-preflight_output="$(ssh "${ssh_opts[@]}" -p "$DEPLOY_PORT" "$target" "set -eu
+ssh "${ssh_opts[@]}" -p "$DEPLOY_PORT" "$target" "set -eu
 umask 077
 test -d '$DEPLOY_DIR/shared' || { echo 'Missing deployment directory: $DEPLOY_DIR/shared' >&2; exit 1; }
 test -f '$DEPLOY_DIR/shared/production.env' && test -r '$DEPLOY_DIR/shared/production.env' || { echo 'Initialize readable $DEPLOY_DIR/shared/production.env first (see deploy/README.md)' >&2; exit 1; }
@@ -57,21 +57,7 @@ test ! -L '$DEPLOY_DIR/shared/image-transfer' && test ! -L '$DEPLOY_DIR/shared/i
 test ! -e '$DEPLOY_DIR/shared/image-transfer/image.tar' || test -f '$DEPLOY_DIR/shared/image-transfer/image.tar' || { echo 'Image transfer cache must be a regular file' >&2; exit 1; }
 mkdir -p '$DEPLOY_DIR/shared/image-transfer'
 mkdir -p '$DEPLOY_DIR/incoming'
-mkdir '$DEPLOY_DIR/incoming/$release'
-for image in postgres:17-alpine rustfs/rustfs:latest amazon/aws-cli:latest; do
-    docker image inspect --format '{{.Id}}' \"\$image\" >/dev/null 2>&1 || printf 'MISSING_IMAGE=%s\n' \"\$image\"
-done")"
-missing_images="$(printf '%s\n' "$preflight_output" | sed -n 's/^MISSING_IMAGE=//p')"
-if [[ -n "$missing_images" ]]; then
-    # 部署主机不访问镜像仓库，缺失的数据服务镜像由构建节点导出后经 SSH 传输。
-    printf 'Transferring missing infrastructure images: %s\n' "$(printf '%s' "$missing_images" | tr '\n' ' ')" >&2
-    stage='infrastructure image upload'
-    mapfile -t images <<< "$missing_images"
-    mkdir -p .ci
-    docker save "${images[@]}" | gzip > .ci/infra-images.tar.gz
-    scp "${ssh_opts[@]}" -P "$DEPLOY_PORT" .ci/infra-images.tar.gz "$target:$DEPLOY_DIR/incoming/$release/infra-images.tar.gz"
-    ssh "${ssh_opts[@]}" -p "$DEPLOY_PORT" "$target" "gzip -dc '$DEPLOY_DIR/incoming/$release/infra-images.tar.gz' | docker load && rm -f '$DEPLOY_DIR/incoming/$release/infra-images.tar.gz'"
-fi
+mkdir '$DEPLOY_DIR/incoming/$release'"
 stage='image delta upload'
 rsync --times --perms --chmod=F600 --checksum --compress --no-whole-file --stats \
     --copy-dest="$DEPLOY_DIR/shared/image-transfer" \

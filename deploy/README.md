@@ -137,7 +137,7 @@ GitHub 插件收到事件后让 Git 插件检查 SCM 是否变化，不是把每
 
 安装 Docker Engine 与 Compose v2（需支持 `up --wait --wait-timeout`）、Bash、rsync、GNU coreutils/tar、gzip 和 util-linux（flock）。这里不自动安装或修改防火墙。
 
-数据服务镜像由发布流水线在部署主机缺失时从 Jenkins 构建节点导出并通过 SSH 传输加载（部署主机不访问镜像仓库）；也可提前预加载以缩短首次发布：
+数据库和对象存储由管理员单独维护；发布流水线只传输和更新 `app`，不检查、传输、启动或重建数据服务镜像。首次安装数据服务时，按实际需要预加载镜像：
 
 ```bash
 docker pull postgres:17-alpine rustfs/rustfs:latest amazon/aws-cli:latest
@@ -152,7 +152,17 @@ sudo install -d -m 700 -o canvas-deploy -g canvas-deploy /opt/infinite-canvas/sh
 sudo install -m 600 -o canvas-deploy -g canvas-deploy deploy/production.env.example /opt/infinite-canvas/shared/production.env
 ```
 
-把模板从仓库安全复制到主机后再执行最后一条，编辑其中站点域名、监听地址、端口和允许网段，并替换 `POSTGRES_PASSWORD`、`S3_ACCESS_KEY`、`S3_SECRET_KEY` 的 `CHANGE_ME` 默认值。部署用户须能无交互执行 Docker（加入 docker 组需重新登录，等效 root 权限），并可写部署目录。无需 sudo，也无需目标主机持有 GitHub 或镜像仓库凭据。
+把模板从仓库安全复制到主机后再执行最后一条，编辑其中站点域名、监听地址、端口和允许网段，并替换数据库密码和 S3 专用密钥的占位值。部署用户须能无交互执行 Docker（加入 docker 组需重新登录，等效 root 权限），并可写部署目录。无需 sudo，也无需目标主机持有 GitHub 或镜像仓库凭据。
+
+### 外部 RustFS 与只更新应用
+
+生产对象存储由 `shared/production.env` 的 `S3_ENDPOINT`、`S3_REGION`、`S3_BUCKET`、`S3_ACCESS_KEY`、`S3_SECRET_KEY` 配置。当前生产地址为 `http://192.168.3.246:9000`，桶为 `infinite-canvas`。桶和仅允许该桶读写的专用密钥提前创建，密钥只保存在主机的权限 `600` 文件中，不写入 Git 或 Jenkins 构建产物。应用不再等待旧 `rustfs` 服务启动。
+
+正常发布和失败自动回滚都只执行 `up -d --no-deps --no-build --pull never --wait --wait-timeout 120 app`。数据库、旧 RustFS 容器、卷和网络均保留；不会自动创建桶或运行 `rustfs-init`。首次部署前须由管理员准备健康的数据库和外部存储；已有 PostgreSQL 容器继续使用原 Compose 项目和网络，不重新初始化。
+
+历史 release 的配置快照优先级低于 `shared/production.env`，所以回滚应用镜像仍使用当前存储地址和密钥。`rustfs` / `rustfs-init` 定义仅供明确的手动操作，其凭据通过 `LEGACY_S3_ACCESS_KEY` / `LEGACY_S3_SECRET_KEY` 单独设置，不使用应用的新密钥；原卷名不变。不要在生产执行未限定服务的 `docker compose up`、`down` 或删除旧存储。
+
+切回旧存储与应用镜像回滚是两个操作：需要先停止写入，将切换后的新增和更新对象同步回旧存储并校验，再更改持久化 S3 配置。旧数据和新数据都先保留，不通过流水线自动回切存储。
 
 数据服务容器监听容器内端口，不经 Compose 发布到宿主机；默认只有 `app` 绑定 `127.0.0.1:3000`。PostgreSQL 与 RustFS 控制台不对公网开放，需要运维访问时使用 SSH 隧道，不要直接添加 `ports` 映射。
 
@@ -170,13 +180,13 @@ sudo install -m 600 -o canvas-deploy -g canvas-deploy deploy/production.env.exam
 - Web 仍包含原有服务端认证、工作区数据、媒体、只写配置、WebDAV/AI/Agent 代理，不能换成纯 nginx 静态目录。
 - 同一 Compose 项目还运行两个有状态服务：`postgres`（账号、工作区数据、媒体索引）与 `rustfs`（S3 兼容对象存储，保存媒体对象），外加一次性的 `rustfs-init` 建桶任务。应用通过 `DATABASE_URL` 与 `S3_*` 连接，浏览器不直连桶。
 - Docker healthcheck 验证首页、构建 JS 资源、未登录会话的认证响应（`/api/auth/me` 返回 200、`user` 为空且 `workspaces` 为数组，同时确认 PostgreSQL 可用）和同源 Agent 健康响应；不要求真实 AI Key，不代表供应商生成或 Codex 账号已验收。
-- 仅 `app` 的 healthcheck 参与容器健康判定。发布只重建 `app`，数据服务容器保持运行；`compose up --wait` 会等待依赖就绪（含必须成功退出的一次性 `rustfs-init`），但不重建未变化的服务。
+- 仅 `app` 的 healthcheck 参与容器健康判定。发布只更新 `app`，数据服务容器保持运行；`--no-deps` 不会启动或等待 PostgreSQL、旧 RustFS 和 `rustfs-init`。数据库及对象存储必须事先可用。
 - 任一主进程退出会停止另一个并退出容器，由 restart 策略重启；SIGTERM 同时转发到两个进程。仅健康状态变为 unhealthy 但进程未退出时，Docker 的 restart 策略不会自动重启，应另行监控告警。
 - 数据卷：`<project>_infinite-canvas-data` → `/data`（服务端配置等）；`<project>_infinite-canvas-agent` → `/home/node/.infinite-canvas`（Agent 配置/会话/工作区）；`<project>_infinite-canvas-codex` → `/home/node/.codex`（Codex 登录/状态）；`<project>_infinite-canvas-postgres` → PostgreSQL 数据目录；`<project>_infinite-canvas-rustfs` / `...-rustfs-logs` → 对象数据与日志。
 - 容器用户 UID/GID 为 1000，空命名卷按镜像目录权限初始化。首次 Codex 登录需由管理员在运行容器内执行 `docker compose ... exec app codex login --device-auth`，具体账号/API key 方式按组织规范操作，不把登录凭据打进镜像。
 - 旧容器若使用 root 和 `/root/.infinite-canvas`，不能直接假定已有卷可被 UID 1000 读取。先停旧服务并完整备份，在离线副本上校验权限、配置中的绝对工作区路径和 Codex 状态，再制定迁移；本次不自动 chown 或迁移未知卷。
 - 更新前备份数据：PostgreSQL 使用 `pg_dump` 逻辑备份（或停服冷备），对象存储备份 bucket；只备份其中一方会导致数据与媒体不一致。禁止 `docker compose down -v` 或 volume prune。
-- 部署主机默认不访问镜像仓库（`--pull never`）。`ssh-deploy.sh` 会在远程预检时检查 `postgres:17-alpine`、`rustfs/rustfs:latest` 与 `amazon/aws-cli:latest`，缺失的镜像从 Jenkins 构建节点 `docker save` 后经 SSH 传到主机 `docker load`；也可按上一节提前 `docker pull` 或离线导入以减少首次发布传输。
+- 部署主机不访问镜像仓库（`--pull never`）；流水线只传输应用镜像，数据库和旧存储的镜像与数据由管理员保留。
 
 首次部署遇到同名但不受 current 管理的已有容器会拒绝接管，防止误覆盖旧部署。Compose 项目名、数据卷身份和部署目录应长期稳定。
 
@@ -262,7 +272,7 @@ bash import-codex-config.sh --project infinite-canvas --sync-magpie-gateway
 
 目录：`incoming/<SHA>-<BUILD>/` 为本次镜像归档与元数据包，`releases/<SHA>-<BUILD>/` 为 Compose/镜像元数据，`current` 为最后一个健康版本的原子软链接，`shared/production.env` 为下一次部署输入，`shared/image-transfer/image.tar` 为可丢弃的传输比对基线。
 
-镜像标签为 `infinite-canvas:<完整Git SHA>-<BUILD_NUMBER>`，不使用 latest。传输在严格校验的 SSH 通道内完成，远端还核对 SHA256SUMS、加载后的 Docker image ID、OCI revision 标签与实际运行容器 image ID。每个版本复制自己的 runtime.env，回滚恢复原版本运行参数；当前 shared 文件留给后续更新。
+镜像标签为 `infinite-canvas:<完整Git SHA>-<BUILD_NUMBER>`，不使用 latest。传输在严格校验的 SSH 通道内完成，远端还核对 SHA256SUMS、加载后的 Docker image ID、OCI revision 标签与实际运行容器 image ID。每个版本保存自己的 runtime.env 快照，发布和镜像回滚均让当前 shared/production.env 优先，避免恢复历史存储地址或密钥。
 
 默认部署与回滚各使用 `--wait-timeout 120`（已确认）；构建后的隔离容器冒烟检查也最多等待 120 秒。不做无条件重试。容器健康探针不另设自定义阈值，沿用 Docker 默认的 30 秒检查间隔、30 秒检查超时和 3 次失败阈值；只影响容器健康状态，不改变 AI 业务超时。
 

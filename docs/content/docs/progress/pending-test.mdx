@@ -5,6 +5,12 @@ description: Implemented changes that still need manual verification
 
 # Pending Tests
 
+## Application-only deployment with external RustFS
+
+- Normal deployment and automatic image rollback target only `app` with `--no-deps`; PostgreSQL, legacy RustFS containers and their volumes are preserved. Infrastructure image discovery and transfer were removed.
+- Persistent `shared/production.env` overrides historical release snapshots, including during image rollback. Required S3 settings must be configured before application activation; application keys are separate from legacy RustFS bootstrap credentials.
+- All 50 Linux deployment regressions passed, including app-only activation, rollback retaining the new storage endpoint and missing infrastructure images. The production Compose dry run selected only `app`; its external endpoint, legacy credentials and volume names were checked. Both TODO files were checked; no matching item needs migration. Live pipeline and media verification results are recorded separately from simulated failure tests; image rollback does not switch object storage back.
+
 ## WebDAV system backup
 
 - After an administrator saves the WebDAV URL, root directory, username and password, the server can back up every workspace manually or on a configurable schedule. The browser may be closed; on restart, stale running records are marked failed.

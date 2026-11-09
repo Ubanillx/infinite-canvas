@@ -23,8 +23,13 @@ FAKE_DOCKER = r'''#!/usr/bin/env python3
 import json, os, sys
 from pathlib import Path
 a = sys.argv[1:]
+endpoint = None
+for i, arg in enumerate(a):
+    if arg == "--env-file":
+        for line in Path(a[i + 1]).read_text().splitlines():
+            if line.startswith("S3_ENDPOINT="): endpoint = line.split("=", 1)[1]
 with open(os.environ["CALL_LOG"], "a") as f:
-    f.write(json.dumps({"args": a, "image": os.getenv("APP_IMAGE")}) + "\n")
+    f.write(json.dumps({"args": a, "image": os.getenv("APP_IMAGE"), "endpoint": endpoint}) + "\n")
 if a == ["info"]: sys.exit(0)
 if a == ["compose", "version"]: print("Docker Compose v2.30.0"); sys.exit(0)
 if a == ["compose", "up", "--help"]: print("--wait-timeout"); sys.exit(0)
@@ -74,7 +79,10 @@ class DeploymentTests(unittest.TestCase):
         self.root = Path(tempfile.mkdtemp(prefix="canvas-ci-test-", dir="/opt"))
         self.addCleanup(shutil.rmtree, self.root)
         (self.root / "shared").mkdir()
-        (self.root / "shared/production.env").write_text("APP_PORT=3000\n")
+        (self.root / "shared/production.env").write_text("\n".join([
+            "APP_PORT=3000", "S3_ENDPOINT=http://192.168.3.246:9000",
+            "S3_BUCKET=infinite-canvas", "S3_ACCESS_KEY=test-access", "S3_SECRET_KEY=test-secret", "",
+        ]))
         self.bin = self.root / "bin"
         self.bin.mkdir()
         docker = self.bin / "docker"
@@ -131,7 +139,8 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual((self.root / "current").resolve(), self.root / "releases" / RELEASE)
         up = [c for c in self.calls() if "up" in c["args"] and "--wait" in c["args"]]
-        self.assertEqual(up[0]["args"][-2:], ["--wait-timeout", "120"])
+        self.assertEqual(up[0]["args"][-3:], ["--wait-timeout", "120", "app"])
+        self.assertIn("--no-deps", up[0]["args"])
         self.assertFalse((self.root / "releases" / RELEASE / "image.tar").exists())
         cache = self.root / "shared/image-transfer/image.tar"
         self.assertEqual(cache.read_bytes(), b"image")
@@ -139,6 +148,7 @@ class DeploymentTests(unittest.TestCase):
 
     def test_unhealthy_update_restores_previous_and_still_fails(self):
         previous = self.previous()
+        (previous / "runtime.env").write_text("S3_ENDPOINT=http://rustfs:9000\n")
         cache = self.root / "shared/image-transfer/image.tar"
         cache.parent.mkdir()
         cache.write_bytes(b"previous healthy image")
@@ -149,9 +159,25 @@ class DeploymentTests(unittest.TestCase):
         up = [c for c in self.calls() if "--wait" in c["args"]]
         self.assertEqual(len(up), 2)
         self.assertEqual(up[-1]["image"], PREVIOUS_IMAGE)
+        for call in up:
+            self.assertIn("--no-deps", call["args"])
+            self.assertEqual(call["args"][-1], "app")
+            self.assertEqual(call["endpoint"], "http://192.168.3.246:9000")
         self.assertFalse(any("down" in c["args"] or "prune" in c["args"] for c in self.calls()))
         self.assertEqual(cache.read_bytes(), b"previous healthy image")
         self.assertEqual((self.root / "releases" / RELEASE / "image.tar").read_bytes(), b"image")
+
+    def test_storage_settings_are_required_before_recreating_app(self):
+        (self.root / "shared/production.env").write_text("APP_PORT=3000\n")
+        result = self.run_deploy()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Configure S3_ENDPOINT", result.stderr)
+        self.assertFalse(any("--wait" in call["args"] for call in self.calls()))
+
+    def test_app_deploy_does_not_require_infrastructure_images(self):
+        result = self.run_deploy("missing-infra")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(any(call["args"][-1] in ("postgres:17-alpine", "rustfs/rustfs:latest", "amazon/aws-cli:latest") for call in self.calls()))
 
     def test_magpie_sync_runs_after_health_and_before_promoting_current(self):
         result = self.run_deploy()
@@ -556,18 +582,18 @@ os.execv("/usr/bin/rsync", args)
         shutil.rmtree(self.root / "incoming")
         result = self.ssh_transport(preflight=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(self.calls()), 9)
+        self.assertEqual(len(self.calls()), 6)
         self.assertTrue((self.root / "incoming" / RELEASE).is_dir())
         self.assertNotIn("must-not-be-logged", result.stdout + result.stderr)
 
-    def test_missing_infrastructure_images_are_transferred(self):
+    def test_missing_infrastructure_images_are_not_transferred(self):
         infra_file = self.transport / ".ci" / "infra-images.tar.gz"
         shutil.rmtree(self.root / "incoming")
         result = self.ssh_transport(preflight=True, scenario="missing-infra")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(infra_file.exists())
+        self.assertFalse(infra_file.exists())
         calls = self.calls()
-        self.assertTrue(any(isinstance(call, dict) and call["args"][:1] == ["save"] for call in calls))
+        self.assertFalse(any(isinstance(call, dict) for call in calls))
 
     def supervisor(self, exit_role):
         app = self.root / "app"
