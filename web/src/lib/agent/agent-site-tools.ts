@@ -1,30 +1,42 @@
 import type { NavigateFunction } from "react-router-dom";
+import localforage from "localforage";
 
 import i18n from "@/i18n";
 import { fetchPrompts } from "@/services/api/prompts";
-import { uploadImage } from "@/services/image-storage";
 import { imageAspectOptions, imageQualityOptions, imageScaleOptions } from "@/components/image-settings-panel";
 import { videoResolutionOptions, videoSecondsRange, videoSizeOptions } from "@/components/video-settings-panel";
 import type { CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import { clampVideoSeconds } from "@/lib/media-size";
 import { isSeedanceVideoConfig, normalizeSeedanceDuration, seedanceDurationOptions, seedanceRatioOptions, seedanceResolutionOptions } from "@/lib/seedance-video";
-import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
-import { useAssetStore } from "@/stores/use-asset-store";
-import { modelOptionLabel, modelOptionName, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore } from "@/stores/use-config-store";
+import { getActiveWorkspace } from "@/lib/workspace";
+import { requireAgentWorkspace } from "@/lib/agent/agent-tool-context";
+import { getGenerationTask, listGenerationTasks, resumeGenerationTask, submitGenerationTask } from "@/services/api/generation-tasks";
+import type { GenerationTaskReference } from "@/types/generation-task";
+import { PROMPT_TOOL_NAMES, isPromptTool, runPromptTool } from "@/lib/agent/agent-prompt-tools";
+import { RESOURCE_TOOL_NAMES, isResourceTool, runResourceTool } from "@/lib/agent/agent-resource-tools";
+import { TEMPLATE_TOOL_NAMES, isTemplateTool, runTemplateTool, type TemplateCanvasContext } from "@/lib/agent/agent-template-tools";
+import { MEDIA_TOOL_NAMES, isMediaTool, runMediaTool } from "@/lib/agent/agent-media-tools";
+import { GENERATION_RESULT_TOOL_NAMES, isGenerationResultTool, runGenerationResultTool } from "@/lib/agent/agent-generation-results";
+import { modelOptionLabel, modelOptionName, normalizeModelOptionValue, resolveModelScript, selectableModelsByCapability, useConfigStore } from "@/stores/use-config-store";
 import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
+import { reserveWorkbenchExecution } from "@/services/workbench-execution";
 
-// Execute site-level Agent tools in the browser, including canvas lists, workbench generation, prompt search, and asset operations.
-// Their data lives locally in the browser through localforage and Zustand, so this module accesses the relevant stores directly.
+// 平台工具复用工作区服务和 store；资源写入等待服务端确认，工作台生成提交服务端持久任务。
 
 export const SITE_TOOL_NAMES = [
-    "canvas_list_projects",
+    "platform_get_context",
+    ...RESOURCE_TOOL_NAMES,
+    ...PROMPT_TOOL_NAMES,
+    ...TEMPLATE_TOOL_NAMES,
+    ...MEDIA_TOOL_NAMES,
+    ...GENERATION_RESULT_TOOL_NAMES,
     "generation_get_status",
+    "generation_resume_task",
     "workbench_image_get_config",
     "workbench_image_generate",
     "workbench_video_get_config",
     "workbench_video_generate",
     "prompts_search",
-    "assets_list",
     "assets_add",
 ] as const;
 
@@ -39,28 +51,79 @@ function siteText(key: string, options?: Record<string, unknown>) {
 }
 
 export const SITE_TOOL_LABELS: Record<SiteToolName, string> = {
+    get platform_get_context() { return siteText("platformContext"); },
     get canvas_list_projects() { return siteText("canvasList"); },
+    get canvas_get_project() { return siteText("canvasGet"); },
+    get canvas_create_project() { return siteText("canvasCreate"); },
+    get canvas_update_project() { return siteText("canvasUpdate"); },
+    get canvas_delete_project() { return siteText("canvasDelete"); },
+    get canvas_list_folders() { return siteText("folderList"); },
+    get canvas_create_folder() { return siteText("folderCreate"); },
+    get canvas_update_folder() { return siteText("folderUpdate"); },
+    get canvas_delete_folder() { return siteText("folderDelete"); },
     get generation_get_status() { return siteText("generationStatus"); },
+    get generation_resume_task() { return siteText("generationResume"); },
     get workbench_image_get_config() { return siteText("imageConfig"); },
     get workbench_image_generate() { return siteText("imageGenerate"); },
     get workbench_video_get_config() { return siteText("videoConfig"); },
     get workbench_video_generate() { return siteText("videoGenerate"); },
     get prompts_search() { return siteText("promptSearch"); },
+    get prompts_list() { return siteText("promptList"); },
+    get prompts_get() { return siteText("promptGet"); },
+    get prompts_create() { return siteText("promptCreate"); },
+    get prompts_update() { return siteText("promptUpdate"); },
+    get prompts_delete() { return siteText("promptDelete"); },
     get assets_list() { return siteText("assetList"); },
     get assets_add() { return siteText("assetAdd"); },
+    get assets_get() { return siteText("assetGet"); },
+    get assets_create() { return siteText("assetAdd"); },
+    get assets_update() { return siteText("assetUpdate"); },
+    get assets_delete() { return siteText("assetDelete"); },
+    get templates_list() { return siteText("templateList"); },
+    get templates_get() { return siteText("templateGet"); },
+    get templates_create() { return siteText("templateCreate"); },
+    get templates_update() { return siteText("templateUpdate"); },
+    get templates_delete() { return siteText("templateDelete"); },
+    get templates_instantiate() { return siteText("templateInstantiate"); },
+    get templates_insert() { return siteText("templateInsert"); },
+    get templates_export() { return siteText("templateExport"); },
+    get templates_import() { return siteText("templateImport"); },
+    get media_get() { return siteText("mediaGet"); },
+    get media_import() { return siteText("mediaImport"); },
+    get generation_list_results() { return siteText("generationListResults"); },
+    get generation_get_result() { return siteText("generationGetResult"); },
 };
 
 type SiteToolInput = Record<string, unknown>;
-type SiteToolContext = { canvasSnapshot?: CanvasAgentSnapshot | null };
-type GenerationStatus = "idle" | "queued" | "running" | "succeeded" | "failed";
+type SiteToolContext = { canvasSnapshot?: CanvasAgentSnapshot | null; templateCanvas?: TemplateCanvasContext };
+type GenerationStatus = "idle" | "queued" | "submitting" | "running" | "archiving" | "succeeded" | "partial" | "failed" | "needs_attention";
 type GenerationStatusItem = { id: string; source: "canvas" | "image" | "video"; status: GenerationStatus; kind?: string; title?: string; prompt?: string; projectId?: string; createdAt?: string; updatedAt?: string; successCount?: number; failCount?: number; error?: string };
+type ScriptIntent = { fingerprint: string; taskId?: string };
+const scriptIntents = localforage.createInstance({ name: "infinite-canvas", storeName: "workbench_script_intents" });
+const scriptDispatches = new Map<string, { fingerprint: string; operation: Promise<unknown> }>();
 
 export async function runSiteTool(name: SiteToolName, input: SiteToolInput, navigate: NavigateFunction, context: SiteToolContext = {}): Promise<unknown> {
+    if (isResourceTool(name)) return runResourceTool(name, input);
+    if (isPromptTool(name)) return runPromptTool(name, input);
+    if (isTemplateTool(name)) return runTemplateTool(name, input, context.templateCanvas);
+    if (isMediaTool(name)) return runMediaTool(name, input);
+    if (isGenerationResultTool(name)) return runGenerationResultTool(name, input);
     switch (name) {
-        case "canvas_list_projects":
-            return listCanvasProjects(input);
+        case "platform_get_context": {
+            const workspace = getActiveWorkspace();
+            if (!workspace) throw new Error("请先选择工作区");
+            return { workspace, route: window.location.pathname, siteTools: SITE_TOOL_NAMES, requiresConnectedBrowser: true };
+        }
         case "generation_get_status":
             return getGenerationStatus(input, context.canvasSnapshot);
+        case "generation_resume_task": {
+            const workspaceId = requireAgentWorkspace(input, true).id;
+            if (typeof input.taskId !== "string" || !input.taskId) throw new Error("请提供 taskId");
+            let scriptTask = useWorkbenchAgentStore.getState().tasks.some((item) => item.id === input.taskId && item.workspaceId === workspaceId);
+            if (!scriptTask) await scriptIntents.iterate<ScriptIntent, void>((intent, key) => { if (intent.taskId === input.taskId && key.startsWith(`${workspaceId}:`)) scriptTask = true; });
+            if (scriptTask) throw new Error("浏览器脚本任务不支持服务端恢复；请查询状态并核对供应商");
+            return { task: await resumeGenerationTask(workspaceId, input.taskId) };
+        }
         case "workbench_image_get_config":
             return getImageConfig();
         case "workbench_image_generate":
@@ -71,50 +134,77 @@ export async function runSiteTool(name: SiteToolName, input: SiteToolInput, navi
             return runVideoWorkbench(input, navigate);
         case "prompts_search":
             return searchPrompts(input);
-        case "assets_list":
-            return listAssets(input);
         case "assets_add":
-            return addAsset(input);
+            return runResourceTool("assets_create", input);
         default:
             throw new Error(siteText("unknownTool", { name }));
     }
 }
 
-function getGenerationStatus(input: SiteToolInput, canvasSnapshot?: CanvasAgentSnapshot | null) {
+async function getGenerationStatus(input: SiteToolInput, canvasSnapshot?: CanvasAgentSnapshot | null) {
+    const workspaceId = requireAgentWorkspace(input).id;
     const scope = input.scope === "canvas" || input.scope === "image" || input.scope === "video" ? input.scope : "all";
     const taskId = typeof input.taskId === "string" ? input.taskId : "";
     const nodeIds = new Set(Array.isArray(input.nodeIds) ? input.nodeIds.filter((id): id is string => typeof id === "string") : []);
     const limit = Math.max(1, Math.min(100, Math.floor(Number(input.limit)) || 20));
     const tasks: GenerationStatusItem[] = [];
-    const includeCanvas = (scope === "all" || scope === "canvas") && (!taskId || nodeIds.size > 0);
-    const includeWorkbench = !nodeIds.size || Boolean(taskId);
+    const requestId = typeof input.requestId === "string" ? input.requestId : "";
+    const projectId = typeof input.projectId === "string" ? input.projectId : "";
+    const canvasOnly = scope === "canvas" || Boolean(projectId) || nodeIds.size > 0;
+    const browserTask = useWorkbenchAgentStore.getState().tasks.find((item) => item.id === taskId && item.workspaceId === workspaceId);
+    let browserIntentKind: "image" | "video" | undefined;
+    if (taskId && !browserTask) await scriptIntents.iterate<ScriptIntent, void>((intent, key) => {
+        if (intent.taskId === taskId && (key.startsWith(`${workspaceId}:image:`) || key.startsWith(`${workspaceId}:video:`))) browserIntentKind = key.startsWith(`${workspaceId}:image:`) ? "image" : "video";
+    });
+    const kinds = scope === "image" || scope === "video" ? [scope] : ["image", "video"] as const;
+    const saved = taskId ? browserTask || browserIntentKind ? [] : [await getGenerationTask(workspaceId, taskId)] : (await Promise.all(kinds.map((kind) => listGenerationTasks(workspaceId, kind, { source: canvasOnly ? "canvas" : "all", projectId, requestId })))).flat();
+    const matches = (task: (typeof saved)[number]) => (!taskId || task.id === taskId) && (!requestId || task.requestId === requestId)
+        && (!(scope === "image" || scope === "video") || task.kind === scope)
+        && (!canvasOnly || Boolean(task.canvasTarget)) && (!projectId || task.canvasTarget?.projectId === projectId)
+        && (!nodeIds.size || Boolean(task.canvasTarget && nodeIds.has(task.canvasTarget.nodeId)));
+    saved.filter(matches).forEach((task) => {
+        tasks.push({ ...task, source: task.canvasTarget ? "canvas" : task.kind, projectId: task.canvasTarget?.projectId, prompt: compactPrompt(task.prompt), durable: true } as GenerationStatusItem);
+    });
 
-    if (includeCanvas && canvasSnapshot) {
+    if (canvasSnapshot && (!projectId || canvasSnapshot.projectId === projectId)) {
         canvasSnapshot.nodes.forEach((node) => {
-            const status = normalizeCanvasGenerationStatus(node.metadata?.status);
-            if (!status || (nodeIds.size && !nodeIds.has(node.id))) return;
+            if (nodeIds.size && !nodeIds.has(node.id)) return;
             const metadata = node.metadata || {};
+            const binding = metadata.generationTask;
+            if (binding) {
+                if ((scope === "image" || scope === "video") && binding.kind !== scope) return;
+                if (binding.workspaceId !== workspaceId || binding.projectId !== canvasSnapshot.projectId || binding.nodeId !== node.id || taskId && binding.taskId !== taskId || requestId && binding.requestId !== requestId) return;
+                if (saved.some((task) => matches(task) && task.requestId === binding.requestId)) return;
+                tasks.push({ id: binding.taskId || binding.requestId, requestId: binding.requestId, source: "canvas", kind: binding.kind, projectId: binding.projectId, canvasTarget: { projectId: binding.projectId, nodeId: node.id }, status: binding.submissionState === "not_submitted" ? "failed" : "needs_attention", submissionState: binding.submissionState, title: node.title, error: binding.submissionState === "not_submitted" ? "请求确定未受理，可明确发起新生成" : "节点已保存请求绑定，尚未读取到任务；请用原requestId核对，未重新生成", durable: false } as GenerationStatusItem);
+                return;
+            }
+            if (taskId || requestId || scope === "image" || scope === "video") return;
+            const status = normalizeCanvasGenerationStatus(metadata.status);
+            if (!status) return;
             if (!nodeIds.size && node.type !== "config" && status !== "running" && status !== "failed" && !metadata.generationMode && !metadata.generationType && !metadata.model) return;
-            tasks.push({ id: node.id, source: "canvas", status, kind: metadata.generationMode || node.type, title: node.title, prompt: compactPrompt(metadata.prompt || metadata.composerContent), projectId: canvasSnapshot.projectId, error: metadata.errorDetails });
+            tasks.push({ id: node.id, source: "canvas", status, kind: metadata.generationMode || node.type, title: node.title, prompt: compactPrompt(metadata.prompt || metadata.composerContent), projectId: canvasSnapshot.projectId, error: metadata.errorDetails, durable: false } as GenerationStatusItem);
         });
     }
-
-    if (includeWorkbench) {
+    if (!canvasOnly && !requestId) {
         useWorkbenchAgentStore.getState().tasks.forEach((task) => {
-            if ((scope === "image" || scope === "video") && task.kind !== scope) return;
-            if (scope === "canvas" || (taskId && task.id !== taskId)) return;
-            tasks.push({ ...task, source: task.kind, prompt: compactPrompt(task.prompt) });
+            if (task.workspaceId !== workspaceId || taskId && task.id !== taskId || scope !== "all" && scope !== task.kind) return;
+            tasks.push({ ...task, source: task.kind });
         });
+        if (browserIntentKind && (scope === "all" || scope === browserIntentKind)) tasks.push({ id: taskId, source: browserIntentKind, status: "needs_attention", error: "浏览器会话已结束；请核对供应商，不自动重试", execution: "browser", durable: false } as GenerationStatusItem);
     }
 
     tasks.sort((a, b) => generationStatusOrder(a.status) - generationStatusOrder(b.status) || (b.updatedAt || "").localeCompare(a.updatedAt || ""));
-    const summary: Record<GenerationStatus, number> = { idle: 0, queued: 0, running: 0, succeeded: 0, failed: 0 };
+    const summary: Record<GenerationStatus, number> = { idle: 0, queued: 0, submitting: 0, running: 0, archiving: 0, succeeded: 0, partial: 0, failed: 0, needs_attention: 0 };
     tasks.forEach((task) => (summary[task.status] += 1));
-    return { total: tasks.length, summary, tasks: tasks.slice(0, limit) };
+    const dispatchErrors = !taskId && canvasSnapshot && (!projectId || canvasSnapshot.projectId === projectId) ? canvasSnapshot.nodes.flatMap((node) => {
+        const error = node.metadata?.generationDispatchError;
+        return error && (scope === "all" || scope === "canvas" || scope === error.kind) && (!nodeIds.size || nodeIds.has(node.id)) && (!requestId || error.requestId === requestId) ? [{ ...error, projectId: canvasSnapshot.projectId, nodeId: node.id }] : [];
+    }) : [];
+    return { workspaceId, total: tasks.length, summary, tasks: tasks.slice(0, limit), dispatchErrors };
 }
 
 function generationStatusOrder(status: GenerationStatus) {
-    return status === "running" ? 0 : status === "queued" ? 1 : 2;
+    return ["submitting", "running", "archiving"].includes(status) ? 0 : status === "queued" ? 1 : 2;
 }
 
 function normalizeCanvasGenerationStatus(status: unknown): GenerationStatus | null {
@@ -130,30 +220,12 @@ function compactPrompt(prompt: unknown) {
     return value ? `${value.slice(0, 200)}${value.length > 200 ? "..." : ""}` : undefined;
 }
 
-function listCanvasProjects(input: SiteToolInput) {
-    const { projects, hydrated } = useCanvasStore.getState();
-    if (!hydrated) throw new Error(siteText("canvasLoading"));
-    const keyword = String(input.keyword || "").trim().toLowerCase();
-    const filtered = keyword ? projects.filter((project) => project.title.toLowerCase().includes(keyword)) : projects;
-    const { page, pageSize, start, end } = paginate(input, filtered.length, 20);
-    const items = filtered.slice(start, end).map((project) => ({
-        id: project.id,
-        title: project.title,
-        folderId: project.folderId,
-        createdAt: project.createdAt,
-        updatedAt: project.updatedAt,
-        nodeCount: project.nodes.length,
-        connectionCount: project.connections.length,
-    }));
-    return { total: filtered.length, page, pageSize, items, hint: siteText("canvasHint") };
-}
-
 function getImageConfig() {
     const { config } = useConfigStore.getState();
     const model = config.imageModel || config.model;
     return {
-        current: { model, modelName: modelOptionName(model), quality: config.quality || "auto", size: config.size || "1:1", count: config.count || "1" },
-        models: selectableModelsByCapability(config, "image").map((value) => ({ value, label: modelOptionLabel(config, value) })),
+        current: { model, modelName: modelOptionName(model), execution: resolveModelScript(config, model) ? "browser" : "server", durable: !resolveModelScript(config, model), quality: config.quality || "auto", size: config.size || "1:1", count: config.count || "1" },
+        models: selectableModelsByCapability(config, "image").map((value) => ({ value, label: modelOptionLabel(config, value), execution: resolveModelScript(config, value) ? "browser" : "server", durable: !resolveModelScript(config, value) })),
         qualityOptions: imageQualityOptions,
         scaleOptions: imageScaleOptions,
         sizeOptions: imageAspectOptions,
@@ -161,7 +233,8 @@ function getImageConfig() {
     };
 }
 
-function runImageWorkbench(input: SiteToolInput, navigate: NavigateFunction) {
+async function runImageWorkbench(input: SiteToolInput, navigate: NavigateFunction) {
+    const workspaceId = requireAgentWorkspace(input, true).id;
     const configStore = useConfigStore.getState();
     const applied: Record<string, unknown> = {};
     if (typeof input.model === "string" && input.model.trim()) {
@@ -184,9 +257,16 @@ function runImageWorkbench(input: SiteToolInput, navigate: NavigateFunction) {
     }
     const prompt = typeof input.prompt === "string" ? input.prompt : undefined;
     const run = input.run !== false;
+    if (!run) { navigate("/image"); useWorkbenchAgentStore.getState().dispatchImage({ prompt, run: false, references: Array.isArray(input.references) ? input.references as GenerationTaskReference[] : undefined }); return { ok: true, navigated: "/image", applied, note: siteText("imageConfigApplied") }; }
+    if (typeof input.requestId !== "string" || !input.requestId.trim()) throw new Error("持久化生成必须提供 requestId；未知响应后复用原 ID 核对，不能另建请求");
+    const config = useConfigStore.getState().config;
+    const selectedModel = config.imageModel || config.model;
+    if (!configStore.isAiConfigReady(config, selectedModel)) throw new Error("模型配置尚未就绪或不可用，请读取工作台配置后重试");
+    await reserveWorkbenchExecution(workspaceId, "image", input.requestId, resolveModelScript(config, selectedModel) ? "browser" : "server");
+    if (resolveModelScript(config, selectedModel)) return dispatchScriptWorkbench("image", workspaceId, input, prompt || "", selectedModel, { quality: config.quality, size: config.size, count: config.count, background: config.background, systemPrompt: config.systemPrompt, script: resolveModelScript(config, selectedModel) }, navigate);
+    const task = await submitGenerationTask(workspaceId, { requestId: input.requestId, kind: "image", prompt: prompt || "", model: config.imageModel || config.model, settings: { quality: config.quality, size: config.size, count: config.count, background: config.background, systemPrompt: config.systemPrompt }, references: Array.isArray(input.references) ? input.references as GenerationTaskReference[] : [] });
     navigate("/image");
-    const taskId = useWorkbenchAgentStore.getState().dispatchImage({ prompt, run });
-    return { ok: true, navigated: "/image", prompt, run, taskId, applied, note: siteText(run ? "imageGenerationStarted" : "imageConfigApplied") };
+    return { status: "accepted", workspaceId, taskId: task.id, task, note: "任务已持久化，可断线后按 taskId 继续读取；尚不表示结果已生成" };
 }
 
 function getVideoConfig() {
@@ -197,6 +277,8 @@ function getVideoConfig() {
         current: {
             model,
             modelName: modelOptionName(model),
+            execution: resolveModelScript(config, model) ? "browser" : "server",
+            durable: !resolveModelScript(config, model),
             size: config.size || "1280x720",
             seconds: config.videoSeconds || "6",
             resolution: config.vquality || "720",
@@ -204,7 +286,7 @@ function getVideoConfig() {
             watermark: config.videoWatermark === "true",
             mode: config.videoMode === "reference" ? "reference" : "frames",
         },
-        models: selectableModelsByCapability(config, "video").map((value) => ({ value, label: modelOptionLabel(config, value) })),
+        models: selectableModelsByCapability(config, "video").map((value) => ({ value, label: modelOptionLabel(config, value), execution: resolveModelScript(config, value) ? "browser" : "server", durable: !resolveModelScript(config, value) })),
         sizeOptions: seedance ? seedanceRatioOptions : videoSizeOptions,
         secondsRange: seedance ? { min: 4, max: 15, automatic: -1, options: seedanceDurationOptions } : videoSecondsRange,
         resolutionOptions: seedance ? seedanceResolutionOptions : videoResolutionOptions,
@@ -215,7 +297,8 @@ function getVideoConfig() {
     };
 }
 
-function runVideoWorkbench(input: SiteToolInput, navigate: NavigateFunction) {
+async function runVideoWorkbench(input: SiteToolInput, navigate: NavigateFunction) {
+    const workspaceId = requireAgentWorkspace(input, true).id;
     const configStore = useConfigStore.getState();
     const applied: Record<string, unknown> = {};
     if (typeof input.model === "string" && input.model.trim()) {
@@ -252,9 +335,46 @@ function runVideoWorkbench(input: SiteToolInput, navigate: NavigateFunction) {
     }
     const prompt = typeof input.prompt === "string" ? input.prompt : undefined;
     const run = input.run !== false;
+    if (!run) { navigate("/video"); useWorkbenchAgentStore.getState().dispatchVideo({ prompt, run: false, references: Array.isArray(input.references) ? input.references as GenerationTaskReference[] : undefined }); return { ok: true, navigated: "/video", applied, note: siteText("videoConfigApplied") }; }
+    if (typeof input.requestId !== "string" || !input.requestId.trim()) throw new Error("持久化生成必须提供 requestId；未知响应后复用原 ID 核对，不能另建请求");
+    const config = useConfigStore.getState().config;
+    const selectedModel = config.videoModel || config.model;
+    if (!configStore.isAiConfigReady(config, selectedModel)) throw new Error("模型配置尚未就绪或不可用，请读取工作台配置后重试");
+    await reserveWorkbenchExecution(workspaceId, "video", input.requestId, resolveModelScript(config, selectedModel) ? "browser" : "server");
+    if (resolveModelScript(config, selectedModel)) return dispatchScriptWorkbench("video", workspaceId, input, prompt || "", selectedModel, { size: config.size, seconds: config.videoSeconds, resolution: config.vquality, generateAudio: config.videoGenerateAudio, watermark: config.videoWatermark, mode: config.videoMode, systemPrompt: config.systemPrompt, script: resolveModelScript(config, selectedModel) }, navigate);
+    const task = await submitGenerationTask(workspaceId, { requestId: input.requestId, kind: "video", prompt: prompt || "", model: config.videoModel || config.model, settings: { size: config.size, seconds: config.videoSeconds, resolution: config.vquality, generateAudio: config.videoGenerateAudio !== "false", watermark: config.videoWatermark === "true", mode: config.videoMode, systemPrompt: config.systemPrompt }, references: Array.isArray(input.references) ? input.references as GenerationTaskReference[] : [] });
     navigate("/video");
-    const taskId = useWorkbenchAgentStore.getState().dispatchVideo({ prompt, run });
-    return { ok: true, navigated: "/video", prompt, run, taskId, applied, note: siteText(run ? "videoGenerationStarted" : "videoConfigApplied") };
+    return { status: "accepted", workspaceId, taskId: task.id, task, note: "任务已持久化，可断线后按 taskId 继续读取；尚不表示结果已生成" };
+}
+
+function dispatchScriptWorkbench(kind: "image" | "video", workspaceId: string, input: SiteToolInput, prompt: string, model: string, settings: Record<string, unknown>, navigate: NavigateFunction) {
+    const requestId = String(input.requestId);
+    const references = Array.isArray(input.references) ? input.references as GenerationTaskReference[] : [];
+    const fingerprint = JSON.stringify({ prompt, model, settings, references });
+    const key = `${workspaceId}:${kind}:${requestId}`;
+    const pending = scriptDispatches.get(key);
+    if (pending) {
+        if (pending.fingerprint !== fingerprint) throw new Error("同一 requestId 的脚本生成参数已变化，未再次执行");
+        return pending.operation;
+    }
+    const operation = (async () => {
+        const existing = await scriptIntents.getItem<ScriptIntent>(key);
+        if (existing) {
+            if (existing.fingerprint !== fingerprint) throw new Error("同一 requestId 的脚本生成参数已变化，未再次执行");
+            const task = useWorkbenchAgentStore.getState().tasks.find((item) => item.id === existing.taskId && item.workspaceId === workspaceId);
+            return { status: task?.status || "needs_attention", execution: "browser", durable: false, workspaceId, requestId, taskId: existing.taskId, note: task ? "浏览器脚本任务已受理；状态仅在当前网页会话可查询" : "浏览器会话已结束，脚本提交状态不明；请核对供应商，不能自动重试" };
+        }
+        await scriptIntents.setItem(key, { fingerprint });
+        navigate(kind === "image" ? "/image" : "/video");
+        const store = useWorkbenchAgentStore.getState();
+        const command = { prompt, run: true, workspaceId, requestId, references };
+        const taskId = kind === "image" ? store.dispatchImage(command) : store.dispatchVideo(command);
+        await scriptIntents.setItem(key, { fingerprint, taskId });
+        return { status: "accepted", execution: "browser", durable: false, workspaceId, requestId, taskId, note: "脚本生成已交给当前浏览器工作台；关闭页面后不自动恢复或再次计费" };
+    })();
+    scriptDispatches.set(key, { fingerprint, operation });
+    void operation.finally(() => { if (scriptDispatches.get(key)?.operation === operation) scriptDispatches.delete(key); }).catch(() => undefined);
+    return operation;
 }
 
 async function searchPrompts(input: SiteToolInput) {
@@ -270,67 +390,4 @@ async function searchPrompts(input: SiteToolInput) {
         tags: result.tags.slice(0, 60),
         items: result.items.map((prompt) => ({ id: prompt.id, title: prompt.title, prompt: prompt.prompt, category: prompt.category, tags: prompt.tags, coverUrl: prompt.coverUrl, githubUrl: prompt.githubUrl })),
     };
-}
-
-function listAssets(input: SiteToolInput) {
-    const { assets, hydrated } = useAssetStore.getState();
-    if (!hydrated) throw new Error(siteText("assetsLoading"));
-    const kind = input.kind === "text" || input.kind === "image" || input.kind === "video" ? input.kind : "all";
-    const keyword = String(input.keyword || "").trim().toLowerCase();
-    const filtered = assets.filter((asset) => {
-        if (kind !== "all" && asset.kind !== kind) return false;
-        if (!keyword) return true;
-        return [asset.title, asset.note, asset.source, ...asset.tags].filter(Boolean).join(" ").toLowerCase().includes(keyword);
-    });
-    const { page, pageSize, start, end } = paginate(input, filtered.length, 20);
-    const items = filtered.slice(start, end).map((asset) => ({
-        id: asset.id,
-        kind: asset.kind,
-        title: asset.title,
-        tags: asset.tags,
-        source: asset.source,
-        note: asset.note,
-        createdAt: asset.createdAt,
-        updatedAt: asset.updatedAt,
-        coverUrl: asset.coverUrl || undefined,
-        content: asset.kind === "text" ? asset.data.content : undefined,
-    }));
-    return { total: filtered.length, page, pageSize, items };
-}
-
-async function addAsset(input: SiteToolInput) {
-    const kind = input.kind;
-    const title = String(input.title || "").trim();
-    if (!title) throw new Error(siteText("assetTitleRequired"));
-    const tags = Array.isArray(input.tags) ? input.tags.filter((tag): tag is string => typeof tag === "string") : [];
-    const source = typeof input.source === "string" ? input.source : "Agent";
-    const note = typeof input.note === "string" ? input.note : undefined;
-    const store = useAssetStore.getState();
-    if (kind === "text") {
-        const content = String(input.content || "").trim();
-        if (!content) throw new Error(siteText("textContentRequired"));
-        const id = store.addAsset({ kind: "text", title, coverUrl: "", tags, source, note, data: { content } });
-        return { ok: true, id, kind: "text" };
-    }
-    if (kind === "image") {
-        const imageUrl = String(input.imageUrl || "").trim();
-        if (!imageUrl) throw new Error(siteText("imageUrlRequired"));
-        let stored;
-        try {
-            stored = await uploadImage(imageUrl);
-        } catch {
-            throw new Error(siteText("imageReadFailed"));
-        }
-        const id = store.addAsset({ kind: "image", title, coverUrl: stored.url, tags, source, note, data: { dataUrl: stored.url, storageKey: stored.storageKey, width: stored.width, height: stored.height, bytes: stored.bytes, mimeType: stored.mimeType } });
-        return { ok: true, id, kind: "image" };
-    }
-    throw new Error(siteText("assetKindUnsupported"));
-}
-
-function paginate(input: SiteToolInput, total: number, defaultSize: number) {
-    const pageSize = Math.max(1, Math.min(100, Math.floor(Number(input.pageSize)) || defaultSize));
-    const maxPage = Math.max(1, Math.ceil(total / pageSize));
-    const page = Math.min(maxPage, Math.max(1, Math.floor(Number(input.page)) || 1));
-    const start = (page - 1) * pageSize;
-    return { page, pageSize, start, end: start + pageSize };
 }

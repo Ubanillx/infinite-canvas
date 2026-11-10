@@ -64,8 +64,8 @@ export function buildCanvasToolRequest(name: ToolName, input: Record<string, unk
     if (name === "canvas_select_nodes") return applyOps([{ type: "select_nodes", ids: (input as { ids: string[] }).ids }]);
     if (name === "canvas_set_viewport") return applyOps([{ type: "set_viewport", viewport: (input as { viewport: unknown }).viewport }]);
     if (name === "canvas_run_generation") {
-        const data = input as { nodeId: string; mode?: string; prompt?: string };
-        return applyOps([runGenerationOp(data.nodeId, generationMode(data.mode), data.prompt)]);
+        const data = input as { nodeId: string; mode?: string; prompt?: string; requestId?: string };
+        return applyOps([runGenerationOp(data.nodeId, generationMode(data.mode), data.prompt, data.requestId)]);
     }
     throw new Error(`未知工具：${name}`);
 }
@@ -147,8 +147,8 @@ function generationFlowOps(input: Record<string, unknown>, state: CanvasSnapshot
 }
 
 /** 创建触发节点生成的画布操作。 */
-function runGenerationOp(nodeId: string, mode: "text" | "image" | "video" | "audio", prompt?: string) {
-    return { type: "run_generation", nodeId, mode, prompt };
+function runGenerationOp(nodeId: string, mode: "text" | "image" | "video" | "audio", prompt?: string, requestId?: string) {
+    return { type: "run_generation", nodeId, mode, prompt, ...(requestId ? { requestId } : {}) };
 }
 
 /** 将未知生成模式归一为画布支持的模式。 */

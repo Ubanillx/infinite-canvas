@@ -9,18 +9,24 @@ type CanvasAgentToolResponse = { ok?: boolean; result?: unknown; error?: string 
 
 /** 启动通过标准输入输出通信的 MCP 服务。 */
 export async function startMcpServer() {
-    const config = loadConfig(true);
+    const server = createMcpServer(loadConfig(true));
+    await server.connect(new StdioServerTransport());
+}
+
+/** 注册同一份工具契约，传输连接由启动入口提供。 */
+export function createMcpServer(config: CanvasAgentConfig) {
     const server = new McpServer({ name: "canvas-agent", version: VERSION }, { instructions: AGENT_PROMPT });
     toolNames.forEach((name) => registerCanvasTool(server, config, name));
-    await server.connect(new StdioServerTransport());
+    return server;
 }
 
 /** 向 MCP Server 注册单个 Canvas Agent 工具。 */
 function registerCanvasTool(server: McpServer, config: CanvasAgentConfig, name: ToolName) {
     const schema = toolInputSchemas[name];
-    server.registerTool(name, { description: toolDescriptions[name], inputSchema: schema.shape }, async (input: unknown) => {
+    const readOnlyHint = /^(platform_get_context|canvas_(list_projects|get_project|list_folders|get_state|get_selection|export_snapshot)|prompts_(search|list|get)|assets_(list|get)|templates_(list|get|export)|media_get|generation_(get_status|list_results|get_result)|workbench_(image|video)_get_config)$/.test(name);
+    server.registerTool(name, { description: toolDescriptions[name], inputSchema: schema.shape, annotations: { readOnlyHint, ...(name.includes("delete") ? { destructiveHint: true } : {}) } }, async (input: unknown) => {
         const result = await postCanvasAgentTool(config, name, schema.parse(input));
-        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }], ...(result && typeof result === "object" && !Array.isArray(result) ? { structuredContent: result as Record<string, unknown> } : {}) };
     });
 }
 
@@ -34,7 +40,7 @@ async function postCanvasAgentTool(config: CanvasAgentConfig, name: ToolName, in
     if (/^[0-9a-f-]{36}$/i.test(workspaceId)) headers["x-infinite-canvas-workspace"] = workspaceId;
     const res = await fetch(`${config.url}/api/tools`, { method: "POST", headers, body: JSON.stringify({ name, input }) });
     const body = (await res.json()) as CanvasAgentToolResponse;
-    if (!body.ok) throw new Error(body.error || "tool call failed");
+    if (!res.ok || !body.ok) throw new Error(body.error || "tool call failed");
     return body.result;
 }
 

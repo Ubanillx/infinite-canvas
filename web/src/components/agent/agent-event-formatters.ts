@@ -358,10 +358,12 @@ function siteToolSummary(name: string, result: unknown, input: unknown) {
     if (name === "assets_add") return tr("assetAdded");
     if (name === "generation_get_status") {
         const summary = data.summary && typeof data.summary === "object" ? (data.summary as Record<string, unknown>) : {};
-        return tr("generationStatus", { total: numberField(data, "total"), queued: numberField(summary, "queued"), running: numberField(summary, "running"), succeeded: numberField(summary, "succeeded"), failed: numberField(summary, "failed") });
+        return tr("generationStatus", { total: numberField(data, "total"), queued: numberField(summary, "queued"), running: numberField(summary, "running") + numberField(summary, "submitting") + numberField(summary, "archiving"), succeeded: numberField(summary, "succeeded"), failed: numberField(summary, "failed"), partial: numberField(summary, "partial"), attention: numberField(summary, "needs_attention") });
     }
     if (name === "workbench_image_generate" || name === "workbench_video_generate") return typeof data.note === "string" ? data.note : tr("workbenchExecuted");
     if (name === "workbench_image_get_config" || name === "workbench_video_get_config") return tr("workbenchConfigRead");
+    if (data.status === "committed") return `${toolName(name)} · ${typeof data.revision === "number" ? `revision ${data.revision}` : "✓"}`;
+    if (isSiteTool(name)) return SITE_TOOL_LABELS[name];
     return "";
 }
 
@@ -390,6 +392,28 @@ export function toolCallDetail(name: string, input: unknown, status: string, err
 
 function toolInputRows(name: string, input: unknown) {
     input = parseToolArguments(input);
+    if (/^workbench_(image|video)_generate$/.test(name) || name === "generation_resume_task") {
+        return [
+            detailRow(tr("workspaceId"), objectField(input, "workspaceId")),
+            detailRow(tr("taskId"), objectField(input, "taskId")),
+            detailRow(tr("requestId"), objectField(input, "requestId")),
+            detailRow(tr("textContent"), objectField(input, "prompt")),
+        ].flatMap((row) => row ? [row] : []);
+    }
+    if (/^(canvas_(get|create|update|delete)_(project|folder)|prompts_(get|create|update|delete)|assets_(add|get|create|update|delete)|templates_(get|create|update|delete|instantiate|insert|export|import)|media_(get|import))$/.test(name)) {
+        return [
+            detailRow(tr("workspaceId"), objectField(input, "workspaceId")),
+            detailRow(tr("resourceId"), objectField(input, "projectId") || objectField(input, "folderId") || objectField(input, "assetId") || objectField(input, "id")),
+            detailRow(tr("templateId"), objectField(input, "templateId")),
+            detailRow(tr("sourceProjectId"), objectField(input, "sourceProjectId")),
+            detailRow(tr("mediaStorageKey"), objectField(input, "storageKey")),
+            detailRow(tr("selectionNodeIds"), objectField(input, "selectionNodeIds")),
+            detailRow(tr("resourceTitle"), objectField(input, "title") || objectField(objectField(objectField(input, "package"), "template"), "title")),
+            detailRow(tr("parentFolderId"), objectField(input, "folderId") ?? objectField(input, "parentId")),
+            detailRow(tr("textContent"), objectField(input, "prompt") || objectField(input, "content")),
+            detailRow(tr("shared"), objectField(input, "shared")),
+        ].flatMap((row) => row ? [row] : []);
+    }
     if (name === "canvas_export_image") return [detailRow(tr("nodeId"), objectField(input, "nodeId")), detailRow(tr("imageId"), objectField(input, "imageId"))].flatMap((row) => row ? [row] : []);
     if (name === "site_navigate") return [detailRow(tr("targetPage"), routeName(stringText(objectField(input, "path")) || "/"))].flatMap((row) => (row ? [row] : []));
     if (name === "prompts_search") return [detailRow(tr("searchContent"), objectField(input, "query"))].flatMap((row) => (row ? [row] : []));
@@ -535,7 +559,13 @@ export function formatBytes(bytes: number) {
 }
 
 export function isCanvasWriteTool(name: string) {
-    return name === "canvas_apply_ops" || name === "canvas_create_attachment_nodes" || name === "canvas_import_artifact";
+    return name === "canvas_apply_ops" || name === "canvas_create_attachment_nodes" || name === "canvas_import_artifact"
+        || /^canvas_(create|update|delete)_(project|folder)$/.test(name)
+        || /^prompts_(create|update|delete)$/.test(name)
+        || /^assets_(add|create|update|delete)$/.test(name)
+        || /^templates_(create|update|delete|instantiate|insert|import)$/.test(name)
+        || /^workbench_(image|video)_generate$/.test(name) || name === "generation_resume_task"
+        || name === "media_import";
 }
 
 function parseToolArguments(value: unknown) {

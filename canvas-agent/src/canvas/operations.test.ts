@@ -8,6 +8,12 @@ function opsOf(name: Parameters<typeof buildCanvasToolRequest>[0], input: Record
     return (request.input as { ops: Array<Record<string, any>> }).ops;
 }
 
+test("canvas generation forwards the original request ID for receipt reconciliation", () => {
+    assert.deepEqual(opsOf("canvas_run_generation", { nodeId: "canvas-node", mode: "image", prompt: "one attempt", requestId: "original-request" }), [
+        { type: "run_generation", nodeId: "canvas-node", mode: "image", prompt: "one attempt", requestId: "original-request" },
+    ]);
+});
+
 test("generation flow forwards explicit transparency without changing its default", () => {
     const config = opsOf("canvas_generate_image", { prompt: "isolated umbrella", background: "transparent" }).find((op) => op.nodeType === "config");
     assert.equal(config?.metadata.background, "transparent");

@@ -5,7 +5,7 @@ import { fileCenterFor } from "../agent/file-center.js";
 import type { AgentAttachment } from "../agent/types.js";
 import { logger } from "../utils/logger.js";
 import { buildCanvasToolRequest, fitAttachmentNodeSize } from "./operations.js";
-import type { ToolName } from "./schemas.js";
+import { siteToolNames, type ToolName } from "./schemas.js";
 import { compactCanvasState, compactNode, isToolName, nextCanvasX, parseToolInput } from "./tools.js";
 import type { CanvasSnapshot } from "./types.js";
 
@@ -27,18 +27,7 @@ export type ConversationState = {
 type McpInventoryItem = { name: string; authStatus?: string };
 export const AGENT_PROTOCOL_VERSION = 10;
 
-const SITE_TOOLS = new Set<ToolName>([
-    "site_navigate",
-    "canvas_list_projects",
-    "workbench_image_get_config",
-    "workbench_image_generate",
-    "workbench_video_get_config",
-    "workbench_video_generate",
-    "prompts_search",
-    "assets_list",
-    "assets_add",
-    "generation_get_status",
-]);
+const SITE_TOOLS = new Set<ToolName>(siteToolNames);
 
 /** 管理网页画布连接、状态、附件和工具请求。 */
 export class CanvasSession {

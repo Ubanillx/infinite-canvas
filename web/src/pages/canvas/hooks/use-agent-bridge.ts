@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useMemo, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 
 import i18n from "@/i18n";
+import { getActiveWorkspace } from "@/lib/workspace";
 import { useAgentStore } from "@/stores/use-agent-store";
 import { applyCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import type { CanvasConnection, CanvasNodeData, ContextMenuState, ViewportTransform } from "@/types/canvas";
+import type { TemplateCanvasContext } from "@/lib/agent/agent-template-tools";
 
-type GenerateNodeRef = MutableRefObject<((nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => Promise<void>) | null>;
+type GenerateNodeRef = MutableRefObject<((nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, requestId?: string) => Promise<void>) | null>;
 
 type AgentBridgeParams = {
+    templateCanvasRef: MutableRefObject<TemplateCanvasContext | null>;
     projectId: string;
     title: string | undefined;
     nodes: CanvasNodeData[];
@@ -61,11 +64,19 @@ export function useAgentBridge(params: AgentBridgeParams) {
             setViewport(next.viewport);
             setContextMenu(null);
             if (generationOps.length) {
+                const workspaceId = getActiveWorkspace()?.id;
                 queueMicrotask(() =>
                     generationOps.forEach((op) => {
                         const target = nodesRef.current.find((node) => node.id === op.nodeId);
                         const prompt = op.prompt?.trim() ? op.prompt : (target?.metadata?.composerContent ?? target?.metadata?.prompt ?? "");
-                        void generateNodeRef.current?.(op.nodeId, op.mode || target?.metadata?.generationMode || "image", prompt);
+                        setNodes((items) => items.map((node) => node.id === op.nodeId ? { ...node, metadata: { ...node.metadata, generationDispatchError: undefined } } : node));
+                        void generateNodeRef.current?.(op.nodeId, op.mode || target?.metadata?.generationMode || "image", prompt, op.requestId).catch((error) => {
+                            if (getActiveWorkspace()?.id !== workspaceId || useAgentStore.getState().canvasContext?.snapshot.projectId !== projectId) return;
+                            const message = error instanceof Error ? error.message : String(error);
+                            const createdAt = new Date().toISOString();
+                            setNodes((items) => items.map((node) => node.id === op.nodeId ? { ...node, metadata: { ...node.metadata, generationDispatchError: { requestId: op.requestId, kind: op.mode || target?.metadata?.generationMode || "image", message, createdAt } } } : node));
+                            useAgentStore.getState().addEventLog({ id: crypto.randomUUID(), time: createdAt, title: "画布生成派发失败", text: message, raw: { projectId, nodeId: op.nodeId, requestId: op.requestId } });
+                        });
                     }),
                 );
             }
@@ -90,8 +101,8 @@ export function useAgentBridge(params: AgentBridgeParams) {
     }, [agentUndoSnapshot, projectTitle, projectId]);
 
     useEffect(() => {
-        setAgentCanvasContext({ snapshot: agentSnapshot, applyOps: applyAgentOps, undoOps: undoAgentOps, canUndo: Boolean(agentUndoSnapshot) });
-    }, [agentSnapshot, applyAgentOps, agentUndoSnapshot, setAgentCanvasContext, undoAgentOps]);
+        setAgentCanvasContext({ snapshot: agentSnapshot, applyOps: applyAgentOps, undoOps: undoAgentOps, canUndo: Boolean(agentUndoSnapshot), get templateCanvas() { return params.templateCanvasRef.current || undefined; } });
+    }, [agentSnapshot, applyAgentOps, agentUndoSnapshot, setAgentCanvasContext, undoAgentOps, params.templateCanvasRef]);
     useEffect(() => () => setAgentCanvasContext(null), [setAgentCanvasContext]);
 
     return { applyAgentOps };

@@ -9,6 +9,73 @@ import test from "node:test";
 
 import { fileCenterFor } from "../agent/file-center.js";
 import { CanvasSession } from "./session.js";
+import { siteToolNames, toolDescriptions, toolInputSchemas, toolNames } from "./schemas.js";
+
+test("平台管理工具在画布库也可分发，并原样返回服务端提交回执", async (t) => {
+    const session = new CanvasSession();
+    const client = connect(session, "library");
+    t.after(() => client.close());
+    const target = { workspaceId: "workspace-a" };
+    const cases = [
+        ["platform_get_context", {}],
+        ["canvas_list_projects", target],
+        ["canvas_get_project", { ...target, projectId: "p" }],
+        ["canvas_create_project", { ...target, title: "New" }],
+        ["canvas_update_project", { ...target, projectId: "p", title: "Updated" }],
+        ["canvas_delete_project", { ...target, projectId: "p" }],
+        ["canvas_list_folders", target],
+        ["canvas_create_folder", { ...target, title: "Folder" }],
+        ["canvas_update_folder", { ...target, folderId: "f", parentId: null }],
+        ["canvas_delete_folder", { ...target, folderId: "f" }],
+        ["prompts_list", target],
+        ["prompts_get", { ...target, id: "prompt" }],
+        ["prompts_create", { ...target, title: "Title", prompt: "Text" }],
+        ["prompts_update", { ...target, id: "prompt", shared: false }],
+        ["prompts_delete", { ...target, id: "prompt" }],
+        ["assets_list", target],
+        ["assets_add", { ...target, kind: "text", title: "Text", content: "Content" }],
+        ["assets_get", { ...target, assetId: "asset" }],
+        ["assets_create", { ...target, kind: "image", title: "Image", imageUrl: "https://example.com/image.png" }],
+        ["assets_update", { ...target, assetId: "asset", note: "Updated" }],
+        ["assets_delete", { ...target, assetId: "asset" }],
+        ["templates_list", target],
+        ["templates_get", { ...target, templateId: "template" }],
+        ["templates_create", { ...target, projectId: "p", title: "Template" }],
+        ["templates_update", { ...target, templateId: "template", title: "Updated" }],
+        ["templates_delete", { ...target, templateId: "template" }],
+        ["templates_instantiate", { ...target, templateId: "template" }],
+        ["templates_insert", { ...target, templateId: "template", projectId: "p" }],
+        ["templates_export", { ...target, templateId: "template" }],
+        ["templates_import", { ...target, package: { version: 1 } }],
+        ["media_get", { ...target, storageKey: "image:one" }],
+        ["media_import", { ...target, kind: "image", dataUrl: "data:image/png;base64,aQ==" }],
+        ["generation_list_results", { ...target, source: "all" }],
+        ["generation_get_result", { ...target, source: "image", id: "result" }],
+        ["generation_resume_task", { ...target, taskId: "task" }],
+    ] as const;
+    for (const [name, input] of cases) {
+        const pending = session.callTool(name, input);
+        const event = client.events("tool_call").at(-1);
+        assert.equal(field(event, "name"), name);
+        assert.deepEqual(field(event, "input"), input);
+        const receipt = { status: "committed", workspaceId: "workspace-a", revision: 7, id: "saved" };
+        session.resolveResult("library", { requestId: String(field(event, "requestId")), result: receipt });
+        assert.deepEqual(await pending, receipt);
+    }
+});
+
+test("管理工具必须显式指定目标工作区，且注册清单没有重复或缺失 schema", async () => {
+    assert.equal(new Set(toolNames).size, toolNames.length);
+    for (const name of toolNames) {
+        assert.ok(toolInputSchemas[name]);
+        assert.ok(toolDescriptions[name]);
+    }
+    const session = new CanvasSession();
+    for (const name of ["canvas_create_project", "canvas_list_projects", "prompts_delete", "assets_add", "templates_create", "templates_insert", "templates_import", "media_get", "media_import", "generation_list_results", "generation_get_result", "generation_resume_task", "generation_get_status", "workbench_image_generate", "workbench_video_generate"] as const) {
+        await assert.rejects(session.callTool(name, {}), /workspaceId/);
+    }
+    assert.ok(siteToolNames.includes("platform_get_context"));
+});
 
 test("图片导出只从当前 turn 的画布读取并绑定工作区文件，不改变画布", async (t) => {
     const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "canvas-image-export-"));
@@ -230,10 +297,11 @@ test("生成状态查询由当前激活网页返回", async (t) => {
     });
     session.activateClient("second");
 
-    const result = session.callTool("generation_get_status", { scope: "all" });
+    const result = session.callTool("generation_get_status", { workspaceId: "workspace-a", scope: "all" });
     const call = second.event("tool_call");
     assert.equal(first.event("tool_call"), undefined);
     assert.equal(field(call, "name"), "generation_get_status");
+    assert.deepEqual(field(call, "input"), { workspaceId: "workspace-a", scope: "all" });
     session.resolveResult("second", { requestId: String(field(call, "requestId")), result: { total: 1, tasks: [{ id: "image-1", status: "running" }] } });
     assert.deepEqual(await result, { total: 1, tasks: [{ id: "image-1", status: "running" }] });
 });

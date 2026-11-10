@@ -4,6 +4,7 @@ import { App, Button, Tooltip } from "antd";
 import dayjs from "dayjs";
 import { FileText, History, LayoutGrid, MessageSquare, PanelRightClose, Settings2, SquarePen } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useQueryClient } from "@tanstack/react-query";
 
 import i18n from "@/i18n";
 import { readAgentUrlBootstrap } from "@/lib/agent/agent-url-bootstrap";
@@ -139,6 +140,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     const { hash } = useLocation();
     const [searchParams] = useSearchParams();
     const navigate = useNavigate();
+    const queryClient = useQueryClient();
     // Field-level selectors with useShallow rerender only when these fields change.
     // canvasContext is intentionally excluded because project updates it every frame during dragging and resizing.
     // The panel uses it only for ref synchronization and debounced postState calls, never during rendering.
@@ -1023,7 +1025,12 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         if (isSiteTool(payload.name)) {
             try {
                 addEventLog(toolName(payload.name), payload, payload);
-                const result = await runSiteTool(payload.name, payload.input || {}, navigate, { canvasSnapshot: canvasContextRef.current?.snapshot || null });
+                const result = await runSiteTool(payload.name, payload.input || {}, navigate, { canvasSnapshot: canvasContextRef.current?.snapshot || null, templateCanvas: canvasContextRef.current?.templateCanvas });
+                if (/^prompts_(create|update|delete)$/.test(payload.name)) {
+                    // 保存回执不依赖页面重读是否成功；让已打开的提示词列表失效并按需刷新。
+                    void queryClient.invalidateQueries({ queryKey: ["prompts"] });
+                    void queryClient.invalidateQueries({ queryKey: ["side-panel-prompts"] });
+                }
                 await postToolResult(endpoint, token, clientIdRef.current, { requestId: payload.requestId, result });
                 addEventLog(rt("toolCompleted", { tool: toolName(payload.name) }), result, result);
             } catch (error) {
