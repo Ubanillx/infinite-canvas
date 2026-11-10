@@ -10,9 +10,9 @@
 - 管理工具返回 `status: committed` 才表示服务端已保存；失败或版本冲突时先重新读取原目标核对，不能盲目重建。画布和文件夹删除不可恢复，文件夹删除会级联删除子文件夹及画布；当前打开的画布先回到画布库再删除。
 - 模板使用 `templates_list/get/create/update/delete/instantiate/insert`；按 projectId 保存整图或选区，实例化前读取模板输入和模型依赖，必填项需显式提供。模板和实例各自复制媒体及图ID，不自动触发生成。便携导入导出使用 `templates_export` 返回的 `package` 和 `templates_import`，不要把裸存储key当作跨工作区媒体。
 - `media_get` 检查稳定引用及实际字节，`media_import` 接收完整 base64 dataURL，返回 `stored` 仅说明媒体已存储；随后必须保存素材、画布或模板业务引用才算完成流程。导入失败报告的临时媒体需保留追踪，不擅自删除；原图处理仍使用 `canvas_export_image` 取得已鉴权的本地文件。
-- 生图/视频任务及旧历史用 `generation_list_results/get_result` 读取；`durableTask: true` 表示服务端持久任务，运行中也能读取已归档的部分结果。返回的图片 `storageKey` 可直接用于 `assets_create`，需要时用 `media_get` 核验实际字节；精确状态用 `generation_get_status`。
+- 图片/视频/文本/音频任务及旧生图视频历史用 `generation_list_results/get_result` 读取；`durableTask: true` 表示服务端持久任务，运行中也能读取已归档媒体和已保存的文本候选进度。文本 textOutputs 的 running/needs_attention 表示片段，只有 succeeded 表示该候选完整完成。返回的图片 `storageKey` 可直接用于 `assets_create`，需要时用 `media_get` 核验实际字节；精确状态用 `generation_get_status`。
 - 工作台生成须明确 `workspaceId` 和唯一 `requestId`。无脚本模型返回 `accepted` 只说明服务端持久化受理；网页断线不取消任务，可用 `generation_get_status`、`generation_resume_task` 查询或恢复。带脚本模型返回 `execution: browser`、`durable: false`，需保持当前浏览器连接，关闭网页后不会后台恢复；当前会话可按原 taskId 查询状态。响应丢失时复用同一 ID 和原参数核对，不能换 ID 再次生成；浏览器状态不明或 `submission_uncertain` 必须先核对供应商。`run=false` 只填参数，不生成任务。
-- 画布内置图片/视频生成先保存节点和请求绑定，再交给持久任务；关闭页面后服务端继续执行，重开只查询原任务并回填匹配的节点。`canvas_run_generation` 及 `run_generation` 操作建议显式传入 `requestId`；工具快照只说明已派发，用 `generation_get_status` 的 `scope: canvas`、`projectId/nodeIds` 或原 `requestId/taskId` 核对受理和完成。重复调用复用同一请求 ID；停止画布等待不会取消服务端任务。文本、音频和脚本模型仍沿用浏览器执行。
+- 画布内置图片/视频/文本/音频生成先保存节点和请求绑定，再交给持久任务；关闭页面后服务端继续执行，重开只查询原任务并回填匹配的节点。`canvas_run_generation` 及 `run_generation` 操作建议显式传入 `requestId`；工具快照只说明已派发，用 `generation_get_status` 的 `scope: canvas`、`projectId/nodeIds` 或原 `requestId/taskId` 核对受理和完成。重复调用复用同一请求 ID；停止画布等待不会取消服务端任务。脚本模型仍沿用浏览器执行，关闭网页后不保证恢复；内置文本中断保留已保存片段，不自动重新发起计费请求。
 - 画布任务结果可从任何已连接页面用 `generation_list_results` 的 `origin: canvas`、`projectId/nodeId` 查询，再按任务 ID 用 `generation_get_result` 读取稳定 `storageKey`。节点删除、撤销或改绑不会删除已计费任务；旧结果不会回写新节点，仍可读取原任务并按需另存素材。
 - 用户要求把上传附件放入画布或作为生成参考图时，必须先用 `canvas_create_attachment_nodes` 创建真实图片节点，再把节点 ID 传给生成流程，不要创建空图片占位节点。
 - 需要读取、检查透明度或处理画布中已有/生成的图片时，调用 `canvas_export_image`，使用返回的 `file.path` 读取原始字节；多图节点可传 `imageId`。不要猜测媒体接口、下载前端代码反查路由、获取登录 Cookie 或绕过鉴权。导出只复制到当前工作区，不改变画布和原图。

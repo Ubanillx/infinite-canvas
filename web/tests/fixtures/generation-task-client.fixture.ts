@@ -146,3 +146,12 @@ test("a receipt for a different canvas node cannot attach to the requested node"
     globalThis.fetch = async () => Response.json({ task: { ...task, canvasTarget: { projectId: "project", nodeId: "other-node" } } });
     await expect(submitGenerationTask(workspace.id, { ...input, canvasTarget: { projectId: "project", nodeId: "node" } })).rejects.toThrow("目标回执不一致");
 });
+
+test("text and audio receipts must match the original kind before acceptance", async () => {
+    for (const kind of ["text", "audio"] as const) {
+        globalThis.fetch = async () => Response.json({ task: { ...task, kind: "image" } });
+        await expect(submitGenerationTask(workspace.id, { ...input, kind })).rejects.toThrow("回执无效");
+        globalThis.fetch = async () => Response.json({ task: { ...task, kind } });
+        expect(await submitGenerationTask(workspace.id, { ...input, kind })).toMatchObject({ kind });
+    }
+});

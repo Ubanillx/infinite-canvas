@@ -44,7 +44,7 @@ test("saved result exposes stable references and omits config, temporary URLs an
 test("summary reads both saved domains, sorts and pages without original media data", async () => {
     const listed = await runGenerationResultTool("generation_list_results", { workspaceId: workspace.id, pageSize: 1 });
     expect(listed).toMatchObject({ total: 2, items: [{ id: "video-log", source: "video" }], persistedHistoryOnly: false });
-    expect(requests).toHaveLength(4);
+    expect(requests).toHaveLength(6);
     expect(JSON.stringify(listed)).not.toMatch(/storageKey|apiKey|dataUrl/);
 });
 
@@ -88,6 +88,38 @@ test("canvas results use persisted target filters and retain stable references a
 test("unfiltered result lookup includes canvas and workbench task sources", async () => {
     await runGenerationResultTool("generation_list_results", { workspaceId: workspace.id });
     const queries = requests.filter((request) => request.url.startsWith("/api/generation-tasks?"));
-    expect(queries).toHaveLength(2);
+    expect(queries).toHaveLength(4);
     expect(queries.every((request) => new URL(request.url, "http://test").searchParams.get("source") === "all")).toBe(true);
+});
+
+test("persisted text candidates retain partial and final states without leaking provider fields", async () => {
+    globalThis.fetch = async () => Response.json({ task: {
+        id: "text-task", requestId: "text-request", kind: "text", prompt: "Saved text", model: "text-model", status: "needs_attention", createdAt: "2026-01-01T00:00:00Z", outputs: [],
+        textOutputs: [{ id: "candidate-0", slotIndex: 0, content: "完整候选", status: "succeeded", upstream: "private-upstream" }, { id: "candidate-1", slotIndex: 1, content: "已保存片段", status: "needs_attention", apiKey: "must-not-leak" }],
+    } });
+    const value = await runGenerationResultTool("generation_get_result", { workspaceId: workspace.id, source: "text", id: "text-task" });
+    expect(value).toMatchObject({ persistedHistoryOnly: false, result: { source: "text", status: "needs_attention", outputCount: 2, storedOutputCount: 2, outputs: [], textOutputs: [{ slotIndex: 0, content: "完整候选", status: "succeeded" }, { slotIndex: 1, content: "已保存片段", status: "needs_attention" }] } });
+    expect(JSON.stringify(value)).not.toMatch(/private-upstream|must-not-leak/);
+    await expect(runGenerationResultTool("generation_get_result", { workspaceId: workspace.id, source: "audio", id: "text-task" })).rejects.toThrow("来源不符");
+});
+
+test("text and audio lists only read durable tasks and summaries omit content", async () => {
+    globalThis.fetch = async (url) => {
+        const query = new URL(String(url), "http://test").searchParams;
+        requests.push({ url: String(url), workspaceId: workspace.id });
+        expect(String(url)).toStartWith("/api/generation-tasks?");
+        const kind = query.get("kind");
+        return Response.json({ items: [{ id: `${kind}-task`, kind, prompt: "Saved prompt", model: "model", status: "succeeded", createdAt: "2026-01-01T00:00:00Z", outputs: kind === "audio" ? [{ id: "audio-0", storageKey: "audio:stable", mimeType: "audio/wav", bytes: 48 }] : [], textOutputs: kind === "text" ? [{ id: "text-0", slotIndex: 0, content: "saved-private-content", status: "succeeded" }] : [] }] });
+    };
+    for (const source of ["text", "audio"]) {
+        const value = await runGenerationResultTool("generation_list_results", { workspaceId: workspace.id, source });
+        expect(value).toMatchObject({ total: 1, items: [{ source, storedOutputCount: 1 }] });
+        expect(JSON.stringify(value)).not.toMatch(/saved-private-content|audio:stable/);
+    }
+    expect(requests).toHaveLength(2);
+});
+
+test("missing text or audio result cannot fall back to unrelated legacy history", async () => {
+    for (const source of ["text", "audio"]) await expect(runGenerationResultTool("generation_get_result", { workspaceId: workspace.id, source, id: "missing" })).rejects.toThrow("不存在");
+    expect(requests.every((request) => request.url.startsWith("/api/generation-tasks/"))).toBe(true);
 });

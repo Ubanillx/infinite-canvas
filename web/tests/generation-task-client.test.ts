@@ -8,5 +8,5 @@ test("generation task client preserves idempotency and workspace scope", async (
     });
     const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
     expect(exitCode, `${stdout}\n${stderr}`).toBe(0);
-    expect(`${stdout}\n${stderr}`).toMatch(/\b13 pass\b/);
+    expect(`${stdout}\n${stderr}`).toMatch(/\b14 pass\b/);
 });

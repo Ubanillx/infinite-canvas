@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { buildCanvasToolRequest } from "./operations.js";
+import { toolSchemas } from "./schemas.js";
 
 function opsOf(name: Parameters<typeof buildCanvasToolRequest>[0], input: Record<string, unknown>) {
     const request = buildCanvasToolRequest(name, input, null);
@@ -12,6 +13,15 @@ test("canvas generation forwards the original request ID for receipt reconciliat
     assert.deepEqual(opsOf("canvas_run_generation", { nodeId: "canvas-node", mode: "image", prompt: "one attempt", requestId: "original-request" }), [
         { type: "run_generation", nodeId: "canvas-node", mode: "image", prompt: "one attempt", requestId: "original-request" },
     ]);
+});
+
+test("text and audio generation preserve request IDs and accept durable result queries", () => {
+    for (const kind of ["text", "audio"] as const) {
+        assert.deepEqual(opsOf("canvas_run_generation", { nodeId: "node", mode: kind, requestId: `request-${kind}` }), [{ type: "run_generation", nodeId: "node", mode: kind, prompt: undefined, requestId: `request-${kind}` }]);
+        assert.equal(toolSchemas.generation_get_status.safeParse({ workspaceId: "workspace", scope: kind, requestId: `request-${kind}` }).success, true);
+        assert.equal(toolSchemas.generation_list_results.safeParse({ workspaceId: "workspace", source: kind, origin: "canvas" }).success, true);
+        assert.equal(toolSchemas.generation_get_result.safeParse({ workspaceId: "workspace", source: kind, id: "task" }).success, true);
+    }
 });
 
 test("generation flow forwards explicit transparency without changing its default", () => {
