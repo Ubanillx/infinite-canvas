@@ -630,9 +630,21 @@ function workspaceDataAccess(): Plugin {
     return { name: "workspace-data", configureServer: (server) => { server.middlewares.use(middleware); }, configurePreviewServer: (server) => { server.middlewares.use(middleware); } };
 }
 
-type WorkspacePromptRow = { id: string; workspace_id: string; workspace_name: string; title: string; prompt: string; description: string; tags: string; shared: boolean; created_at: Date; updated_at: Date; has_image: string };
+type WorkspacePromptRow = { id: string; workspace_id: string; workspace_name: string; title: string; prompt: string; description: string; tags: string; shared: boolean; created_at: Date; updated_at: Date; revision: string; has_image: string };
 type PromptImageRow = { mime_type: string; image: Uint8Array };
-const promptRowSql = "SELECT p.*, w.name AS workspace_name, CASE WHEN i.prompt_id IS NULL THEN 0 ELSE 1 END AS has_image FROM workspace_prompts p JOIN workspaces w ON w.id = p.workspace_id LEFT JOIN workspace_prompt_images i ON i.prompt_id = p.id";
+const promptRowSql = "SELECT p.*, p.updated_at::text AS revision, w.name AS workspace_name, CASE WHEN i.prompt_id IS NULL THEN 0 ELSE 1 END AS has_image FROM workspace_prompts p JOIN workspaces w ON w.id = p.workspace_id LEFT JOIN workspace_prompt_images i ON i.prompt_id = p.id";
+
+function promptExpectedRevision(value: unknown) {
+    if (value === undefined) return null;
+    if (typeof value !== "string" || !value) throw new RequestBodyError(400, "提示词版本无效");
+    return value;
+}
+
+async function lockPromptForWrite(tx: SqlExecutor, workspaceId: string, id: string, expectedRevision: string | null) {
+    const row = await queryOne<{ revision: string }>(tx, "SELECT updated_at::text AS revision FROM workspace_prompts WHERE id = $1 AND workspace_id = $2 FOR UPDATE", id, workspaceId);
+    if (!row) throw new RequestBodyError(404, "提示词不存在或无权修改");
+    if (expectedRevision !== null && row.revision !== expectedRevision) throw new RequestBodyError(409, "提示词已被修改，请重新读取后再试");
+}
 
 function promptImageData(value: unknown) {
     if (value === undefined || value === null || value === "") return null;
@@ -665,7 +677,7 @@ async function savePromptImage(db: SqlExecutor, id: string, image: ReturnType<ty
 
 function publicPrompt(row: WorkspacePromptRow) {
     return {
-        id: row.id, workspaceId: row.workspace_id, workspaceName: row.workspace_name,
+        id: row.id, workspaceId: row.workspace_id, workspaceName: row.workspace_name, revision: row.revision,
         title: row.title, prompt: row.prompt, description: row.description,
         tags: JSON.parse(row.tags) as string[], shared: row.shared,
         coverUrl: Number(row.has_image) ? `/api/prompts/image/${encodeURIComponent(row.id)}?workspaceId=${encodeURIComponent(row.workspace_id)}` : "",
@@ -736,32 +748,37 @@ function workspacePromptsAccess(): Plugin {
                 if (typeof body?.shared !== "boolean") return sendJson(res, 400, { error: "共享状态无效" });
                 const id = newId();
                 const now = isoNow();
-                await withWorkspaceWrite(workspace, async (tx) => {
+                const row = await withWorkspaceWrite(workspace, async (tx) => {
                     await execute(tx, "INSERT INTO workspace_prompts (id, workspace_id, title, prompt, description, tags, shared, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)", id, workspace.id, title, prompt, description, JSON.stringify(tags), body.shared, now, now);
                     await savePromptImage(tx, id, image);
+                    return queryOne<WorkspacePromptRow>(tx, `${promptRowSql} WHERE p.id = $1`, id);
                 });
-                const row = await queryOne<WorkspacePromptRow>(db, `${promptRowSql} WHERE p.id = $1`, id);
                 return sendJson(res, 201, { item: publicPrompt(row!) });
             }
             if (!match[1]) return sendJson(res, 405, { error: "Method not allowed" });
             const id = match[1];
-            const existing = await queryOne<WorkspacePromptRow>(db, `${promptRowSql} WHERE p.id = $1 AND p.workspace_id = $2`, id, workspace.id);
-            if (!existing) return sendJson(res, 404, { error: "提示词不存在或无权修改" });
             if (role === "viewer") return sendJson(res, 403, { error: "当前工作区为只读权限" });
             if (req.method === "DELETE") {
-                await withWorkspaceWrite(workspace, (tx) => execute(tx, "DELETE FROM workspace_prompts WHERE id = $1 AND workspace_id = $2", id, workspace.id));
+                const requestUrl = new URL(req.url || "/", "http://localhost");
+                const expectedRevision = requestUrl.searchParams.has("expectedRevision") ? promptExpectedRevision(requestUrl.searchParams.get("expectedRevision")) : null;
+                await withWorkspaceWrite(workspace, async (tx) => {
+                    await lockPromptForWrite(tx, workspace.id, id, expectedRevision);
+                    await execute(tx, "DELETE FROM workspace_prompts WHERE id = $1 AND workspace_id = $2", id, workspace.id);
+                });
                 return sendJson(res, 200, { ok: true });
             }
             if (req.method !== "PUT") return sendJson(res, 405, { error: "Method not allowed" });
             const body = asRecord(await readPromptsBody(req));
             const { title, prompt, description, tags, image, removeImage } = promptFields(body);
             if (typeof body?.shared !== "boolean") return sendJson(res, 400, { error: "共享状态无效" });
-            await withWorkspaceWrite(workspace, async (tx) => {
-                await execute(tx, "UPDATE workspace_prompts SET title = $1, prompt = $2, description = $3, tags = $4, shared = $5, updated_at = $6 WHERE id = $7 AND workspace_id = $8", title, prompt, description, JSON.stringify(tags), body.shared, isoNow(), id, workspace.id);
+            const expectedRevision = promptExpectedRevision(body?.expectedRevision);
+            const updated = await withWorkspaceWrite(workspace, async (tx) => {
+                await lockPromptForWrite(tx, workspace.id, id, expectedRevision);
+                await execute(tx, "UPDATE workspace_prompts SET title = $1, prompt = $2, description = $3, tags = $4, shared = $5, updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond') WHERE id = $6 AND workspace_id = $7", title, prompt, description, JSON.stringify(tags), body.shared, id, workspace.id);
                 if (removeImage) await execute(tx, "DELETE FROM workspace_prompt_images WHERE prompt_id = $1", id);
                 await savePromptImage(tx, id, image);
+                return queryOne<WorkspacePromptRow>(tx, `${promptRowSql} WHERE p.id = $1`, id);
             });
-            const updated = await queryOne<WorkspacePromptRow>(db, `${promptRowSql} WHERE p.id = $1`, id);
             return sendJson(res, 200, { item: publicPrompt(updated!) });
         } catch (error) {
             if (error instanceof RequestBodyError) return sendJson(res, error.status, { error: error.message });
