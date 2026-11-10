@@ -216,6 +216,19 @@ try {
     status = run(["docker", "exec", container, "bun", "-e", code, stage, str(expected), "yes" if authenticated else "no"])
     require(status == str(expected), f"Magpie container probe expected HTTP {expected}, got {status if status.isdigit() else 'unreachable'}. Check Magpie version, firewall and gateway authentication; rollback follows.")
 
+def probe_excluded_client():
+    # Use the already loaded app image on the same bridge with a separate IP,
+    # no credentials or persistent mounts, to prove the /32 restriction works.
+    image = run(["docker", "inspect", "--format", "{{.Image}}", container])
+    code = '''try {
+  const response = await fetch(process.argv[1], { redirect: "manual" });
+  await response.body?.cancel();
+  process.stdout.write(String(response.status));
+} catch { process.stdout.write("unreachable"); }'''
+    status = run(["docker", "run", "--rm", "--pull", "never", "--network", tx["network"]["network"], "--entrypoint", "bun", image,
+                  "-e", code, "http://" + tx["network"]["gateway"] + ":3425/v1/models"])
+    require(status == "403", "Magpie excluded-client probe must return HTTP 403; deployment stopped without changing the service.")
+
 try:
     require(sys.platform == "linux" and os.getuid() != 0, "Run Magpie setup on Linux as its non-root host user, not with sudo.")
     magpie_executable = shutil.which("magpie") or os.environ.get("MAGPIE_EXECUTABLE")
@@ -244,7 +257,7 @@ try:
             require(all(isinstance(identity.get(k), str) and identity[k] for k in ("id", "name", "key")), "Invalid managed Magpie key state; restore its private backup before retrying.")
             require(any(row[:3] == [identity["id"], identity["name"], "enabled"] for row in key_rows()), "The managed gateway key was revoked, renamed or disabled; refusing to recreate it silently.")
         backup = Path(tempfile.mkdtemp(prefix="magpie-backup-", dir=state_dir))
-        tx = {"network": network(), "previous_drop": previous_drop, "previous_state": previous_state, "identity": identity, "new_key": identity is None, "service_changed": False, "service_env": {k: env.get(k) for k in ("MAGPIE_ADDR", "MAGPIE_ALLOW_IPS")}}
+        tx = {"network": network(), "sync": action == "begin-sync", "previous_drop": previous_drop, "previous_state": previous_state, "identity": identity, "new_key": identity is None, "service_changed": False, "service_env": {k: env.get(k) for k in ("MAGPIE_ADDR", "MAGPIE_ALLOW_IPS")}}
         write(backup / "transaction.json", json.dumps(tx))
         print(backup)
     else:
@@ -264,18 +277,31 @@ try:
             payload = {"base_url": "http://" + tx["network"]["gateway"] + ":3425/v1", "key": tx["identity"]["key"]}
             run(["docker", "exec", "-i", container, "sh", "-eu", "-c", 'umask 077; cat > "$1/magpie-gateway.json"', "sh", stage], data=json.dumps(payload))
         elif action == "activate":
-            # Prove the allowlist is enforced before exposing any LAN-facing listener.
-            tx["service_changed"] = True
-            write(backup / "transaction.json", json.dumps(tx))
-            configure(tx["network"]["gateway"] + ":3425", "127.0.0.1")
-            probe(403, True)
-            configure(tx["network"]["gateway"] + ":3425", tx["network"]["client"] + "/32")
-            probe(401, False)
-            probe(200, True)
-            configure("0.0.0.0:3425", tx["network"]["client"] + "/32")
-            probe(401, False)
-            probe(200, True)
-            print("Magpie checks passed: excluded IP denied, missing key denied, application key accepted.")
+            require(network() == tx["network"], "The application IP changed during setup; retry with the current container.")
+            desired_allow = tx["network"]["client"] + "/32"
+            if tx["sync"] and tx["service_env"].get("MAGPIE_ADDR") == "0.0.0.0:3425" and tx["service_env"].get("MAGPIE_ALLOW_IPS") == desired_allow:
+                # Validate the live process and effective unit, then exercise
+                # denied and allowed clients without mutating the service.
+                verify_unit("0.0.0.0:3425", desired_allow)
+                env = process_env()
+                require(all(env.get(k) == v for k, v in tx["service_env"].items()), "Magpie process environment changed during synchronization.")
+                probe_excluded_client()
+                probe(401, False)
+                probe(200, True)
+                print("Magpie checks passed without restart: excluded client 403, missing key 401, application key 200.")
+            else:
+                # Prove enforcement before exposing a changed listener.
+                tx["service_changed"] = True
+                write(backup / "transaction.json", json.dumps(tx))
+                configure(tx["network"]["gateway"] + ":3425", "127.0.0.1")
+                probe(403, True)
+                configure(tx["network"]["gateway"] + ":3425", desired_allow)
+                probe(401, False)
+                probe(200, True)
+                configure("0.0.0.0:3425", desired_allow)
+                probe(401, False)
+                probe(200, True)
+                print("Magpie checks passed: excluded IP denied, missing key denied, application key accepted.")
         elif action == "commit":
             require(network() == tx["network"], "The application IP changed during setup; retry with the current container.")
             write(state_file, json.dumps(tx["identity"]))

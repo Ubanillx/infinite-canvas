@@ -7,10 +7,13 @@ if [[ $# == 1 && "$1" == --build-cache ]]; then
 fi
 state="${1:?retained image record}"
 cache=false
-if [[ "${2:-}" == --build-cache && $# == 2 ]]; then
+dangling_images=false
+if (( $# == 2 )) && [[ "$2" == --build-cache ]]; then
     cache=true
+elif (( $# == 2 )) && [[ "$2" == --dangling-images ]]; then
+    dangling_images=true
 elif (( $# != 1 )); then
-    echo 'Usage: cleanup-docker.sh RETAINED_IMAGES [--build-cache]' >&2
+    echo 'Usage: cleanup-docker.sh RETAINED_IMAGES [--dangling-images|--build-cache]' >&2
     exit 2
 fi
 declare -a retained=()
@@ -51,5 +54,7 @@ else
 fi
 if "$cache"; then
     docker builder prune --force
+fi
+if "$cache" || "$dangling_images"; then
     docker image prune --force
 fi

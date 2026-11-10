@@ -50,7 +50,11 @@ RUN --mount=type=cache,id=infinite-canvas-npm,target=/root/.npm \
 FROM agent-deps AS agent-build
 COPY canvas-agent ./
 RUN --mount=type=cache,id=infinite-canvas-npm,target=/root/.npm \
-    npm run build && npm prune --omit=dev --ignore-scripts --no-audit --no-fund
+    npm run build
+
+FROM agent-deps AS agent-runtime-deps
+RUN --mount=type=cache,id=infinite-canvas-npm,target=/root/.npm \
+    npm prune --omit=dev --ignore-scripts --no-audit --no-fund
 
 FROM base AS office-tools
 RUN --mount=type=cache,id=infinite-canvas-apt-cache,target=/var/cache/apt,sharing=locked \
@@ -72,9 +76,14 @@ FROM office-tools AS runtime
 WORKDIR /app
 ENV NODE_ENV=production HOME=/home/node PORT=3000 \
     INFINITE_CANVAS_DATA_DIR=/data CODEX_HOME=/home/node/.codex
-COPY --from=web-build --chown=node:node /app/web ./web
-COPY --from=agent-build --chown=node:node /app/canvas-agent ./canvas-agent
-COPY VERSION CHANGELOG.md ./
+# --link 构造独立层，使用运行用户既有的 UID/GID，避免依赖目标层的 passwd 查询。
+COPY --link --from=web-deps --chown=1000:1000 /app/web/node_modules ./web/node_modules
+COPY --link --from=agent-runtime-deps --chown=1000:1000 /app/canvas-agent/node_modules ./canvas-agent/node_modules
+COPY --link --chown=1000:1000 web ./web
+COPY --link --chown=1000:1000 canvas-agent ./canvas-agent
+COPY --link --from=web-build --chown=1000:1000 /app/web/dist ./web/dist
+COPY --link --from=agent-build --chown=1000:1000 /app/canvas-agent/dist ./canvas-agent/dist
+COPY --link VERSION CHANGELOG.md ./
 COPY docker-entrypoint.sh /usr/local/bin/infinite-canvas-entrypoint
 COPY deploy/healthcheck.mjs deploy/configure-runtime.mjs /usr/local/lib/infinite-canvas/
 RUN chmod +x /usr/local/bin/infinite-canvas-entrypoint \

@@ -92,11 +92,18 @@ class MagpieGatewayTests(unittest.TestCase):
             self.magpie_commands.append(args[0])
             self.keys.pop(args[3])
         elif args[:2] == ["docker", "inspect"]:
-            out = json.dumps({"app-network": {"IPAddress": self.client, "Gateway": self.gateway}})
+            out = "sha256:" + "a" * 64 if args[3] == "{{.Image}}" else json.dumps({"app-network": {"IPAddress": self.client, "Gateway": self.gateway}})
         elif args[:3] == ["docker", "network", "inspect"]:
             out = "bridge"
         elif args[:3] == ["docker", "exec", "-i"]:
             (self.stage / "magpie-gateway.json").write_text(input)
+        elif args[:2] == ["docker", "run"]:
+            self.assertEqual(args[2:9], ["--rm", "--pull", "never", "--network", "app-network", "--entrypoint", "bun"])
+            self.assertNotIn("-v", args)
+            self.assertNotIn("--mount", args)
+            self.assertNotIn("sk-", " ".join(args))
+            out = "200" if self.ignore_acl else "403"
+            self.probes.append(int(out))
         elif args[:3] == ["docker", "exec", "app-id"]:
             allowed = self.service_env.get("MAGPIE_ALLOW_IPS", "")
             payload = json.loads((self.stage / "magpie-gateway.json").read_text())
@@ -173,6 +180,60 @@ class MagpieGatewayTests(unittest.TestCase):
         self.assertEqual(self.created, 1)
         self.assertEqual(self.service_env["MAGPIE_ALLOW_IPS"], "172.18.0.5/32")
         self.assert_private_output()
+
+    def test_sync_with_same_container_ip_probes_without_restarting_service(self):
+        self.begin()
+        self.invoke("activate")
+        self.invoke("commit")
+        restarts = list(self.restarts)
+        probes = list(self.probes)
+        self.invoke("begin-sync")
+        self.invoke("prepare")
+        self.invoke("activate")
+        self.invoke("commit")
+        self.assertEqual(self.restarts, restarts)
+        self.assertEqual(self.probes, probes + [403, 401, 200])
+        self.assertEqual(self.service_env["MAGPIE_ADDR"], "0.0.0.0:3425")
+        self.assertEqual(self.service_env["MAGPIE_ALLOW_IPS"], "172.18.0.42/32")
+        self.assert_private_output()
+
+    def test_unchanged_sync_rejects_broken_acl_without_restarting_service(self):
+        self.begin()
+        self.invoke("activate")
+        self.invoke("commit")
+        restarts = list(self.restarts)
+        self.invoke("begin-sync")
+        self.invoke("prepare")
+        self.ignore_acl = True
+        self.invoke("activate", success=False)
+        self.invoke("rollback")
+        self.assertEqual(self.restarts, restarts)
+        self.assertIn("excluded-client probe", self.output)
+
+    def test_unchanged_sync_rejects_broken_auth_without_restarting_service(self):
+        self.begin()
+        self.invoke("activate")
+        self.invoke("commit")
+        restarts = list(self.restarts)
+        self.invoke("begin-sync")
+        self.invoke("prepare")
+        self.ignore_auth = True
+        self.invoke("activate", success=False)
+        self.invoke("rollback")
+        self.assertEqual(self.restarts, restarts)
+        self.assertIn("expected HTTP 401", self.output)
+
+    def test_unchanged_sync_rejects_unit_override_before_probes(self):
+        self.begin()
+        self.invoke("activate")
+        self.invoke("commit")
+        restarts, probes = list(self.restarts), list(self.probes)
+        self.invoke("begin-sync")
+        self.invoke("prepare")
+        self.ns["drop_file"].write_text(self.ns["marker"] + '[Service]\nEnvironment="MAGPIE_ALLOW_IPS=0.0.0.0/0"\n')
+        self.invoke("activate", success=False)
+        self.assertEqual(self.restarts, restarts)
+        self.assertEqual(self.probes, probes)
 
     def test_sync_uses_running_service_binary_without_noninteractive_path(self):
         self.begin()

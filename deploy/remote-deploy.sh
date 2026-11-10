@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 umask 077
+timing_start=$SECONDS
+timing() {
+    printf 'Deployment timing: %s=%ss\n' "$1" "$((SECONDS-timing_start))"
+    timing_start=$SECONDS
+}
 root="${1:?deployment directory}"
 release="${2:?release id}"
 project="${3:?compose project}"
@@ -30,6 +35,7 @@ mv "$incoming/image.tar" "$destination/image.tar"
 chmod 600 "$destination/image.tar"
 cd "$destination"
 sha256sum -c SHA256SUMS
+timing verify_release
 image="$(cat image-ref)"
 image_id="$(cat image-id)"
 revision="$(cat revision)"
@@ -41,15 +47,20 @@ revision="$(cat revision)"
 docker load < image.tar
 [[ "$(docker image inspect --format '{{.Id}}' "$image")" == "$image_id" ]] || { echo 'Loaded image does not match build' >&2; exit 1; }
 [[ "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" == "$revision" ]] || exit 1
+timing load_image
 printf 'APP_IMAGE=%s\n' "$image" > image.env
 chmod 600 "$root/shared/production.env"
 install -m 600 "$root/shared/production.env" runtime.env
+for setting in S3_ENDPOINT S3_BUCKET S3_ACCESS_KEY S3_SECRET_KEY; do
+    grep -Eq "^${setting}=.+" runtime.env || { echo "Configure $setting in shared/production.env before deployment" >&2; exit 1; }
+done
 # 数据服务（PostgreSQL / RustFS）是长期有状态组件：
 #   - 只运行 deployment 的 app 服务，由 --no-deps 保证不会连带重置数据服务；
 #   - 镜像与配置回滚只回滚 app，数据库和对象存储不随发布回滚。
 compose() {
     local dir="$1"; shift
-    APP_IMAGE="$(cat "$dir/image-ref")" docker compose --project-name "$project" --env-file "$dir/runtime.env" --env-file "$dir/image.env" -f "$dir/compose.yml" "$@"
+    # 持久化配置优先于历史 release，镜像回滚不能把存储地址或密钥回滚。
+    APP_IMAGE="$(cat "$dir/image-ref")" docker compose --project-name "$project" --env-file "$dir/runtime.env" --env-file "$root/shared/production.env" --env-file "$dir/image.env" -f "$dir/compose.yml" "$@"
 }
 sync_magpie_gateway() {
     local app
@@ -75,12 +86,6 @@ if [[ -f "$root/shared/project-name" ]]; then
 else
     printf '%s\n' "$project" > "$root/shared/project-name"
 fi
-# ssh-deploy.sh 会在激活前传输缺失的数据服务镜像；这里再次校验，避免直接运行本脚本时静默失败。
-# 缺少时给出明确提示，而不是让 compose 在此处静默拉取或长时间等待。
-for infrastructure_image in postgres:17-alpine rustfs/rustfs:latest amazon/aws-cli:latest; do
-    docker image inspect --format '{{.Id}}' "$infrastructure_image" >/dev/null 2>&1 \
-        || { echo "Missing infrastructure image $infrastructure_image; preload it on the deploy host first" >&2; exit 1; }
-done
 retention="$root/shared/.retained-images-$release"
 [[ ! -e "$retention" && ! -L "$retention" && ! -L "$root/shared/retained-images" ]] || { echo 'Unsafe image retention record path' >&2; exit 1; }
 printf '%s\n' "$image" > "$retention"
@@ -105,11 +110,14 @@ rollback() {
 trap rollback EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-compose "$destination" up -d --no-build --pull never --wait --wait-timeout 120
+timing prepare_activation
+compose "$destination" up -d --no-deps --no-build --pull never --wait --wait-timeout 120 app
 container="$(compose "$destination" ps -q app)"
 [[ -n "$container" && "$(docker inspect --format '{{.Image}}' "$container")" == "$image_id" ]]
 [[ "$(docker inspect --format '{{.State.Health.Status}}' "$container")" == healthy ]]
+timing app_health
 sync_magpie_gateway "$destination"
+timing gateway_checks
 ln -s "releases/$release" "$root/.current-$release"
 mv -Tf "$root/.current-$release" "$root/current"
 trap - EXIT INT TERM
@@ -126,4 +134,5 @@ mv -fT "$destination/image.tar" "$cache/.image-$release.tar" \
     && mv -fT "$cache/.image-$release.tar" "$cache/image.tar" \
     || echo 'Warning: could not update image transfer cache' >&2
 rm -f "$incoming/release.tar.gz" || echo 'Warning: could not remove release archive' >&2
+timing promote_cleanup
 echo "Deployment is healthy: $release ($image_id)"

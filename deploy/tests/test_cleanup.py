@@ -69,9 +69,9 @@ class CleanupTests(unittest.TestCase):
         self.retained.write_text(self.current["ref"] + "\n" + self.previous["ref"] + "\n")
         self.log = self.root / "calls"
 
-    def run_cleanup(self, cache=True, **env):
+    def run_cleanup(self, mode="--dangling-images", **env):
         return subprocess.run(["bash", str(REPO / "deploy/cleanup-docker.sh"), str(self.retained),
-                               *(["--build-cache"] if cache else [])], text=True, capture_output=True,
+                               *([mode] if mode else [])], text=True, capture_output=True,
                               env=dict(os.environ, PATH=f"{self.root}:{os.environ['PATH']}",
                                        DOCKER_STATE=str(self.state), CALL_LOG=str(self.log), **env))
 
@@ -86,9 +86,8 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.remaining(), {row["ref"] for row in [self.current, self.previous, self.running,
                                                                  self.stopped, self.alias, self.manual, self.infra]})
-        self.assertEqual([a for a in self.calls() if a[:2] == ["builder", "prune"]],
-                         [["builder", "prune", "--force"]])
-        self.assertTrue(json.loads(self.state.read_text())["cache_pruned"])
+        self.assertFalse(any(a[:2] == ["builder", "prune"] for a in self.calls()))
+        self.assertNotIn("cache_pruned", json.loads(self.state.read_text()))
         self.assertEqual([a for a in self.calls() if a[:2] == ["image", "prune"]],
                          [["image", "prune", "--force"]])
         self.assertTrue(all(a[:2] in [["image", "ls"], ["container", "ls"], ["container", "inspect"],
@@ -97,7 +96,7 @@ class CleanupTests(unittest.TestCase):
 
     def test_first_success_can_have_only_one_retained_image(self):
         self.retained.write_text(self.current["ref"] + "\n")
-        result = self.run_cleanup(cache=False)
+        result = self.run_cleanup(mode=None)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(self.current["ref"], self.remaining())
         self.assertNotIn(self.previous["ref"], self.remaining())
@@ -111,13 +110,26 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.calls(), [["builder", "prune", "--force"], ["image", "prune", "--force"]])
 
-    def test_unknown_history_prunes_only_build_cache_and_dangling_images(self):
+    def test_ci_uses_dangling_image_mode_without_pruning_build_cache(self):
+        post = (REPO / "Jenkinsfile").read_text().split("    post {", 1)[1]
+        self.assertIn("bash deploy/cleanup-docker.sh .ci/retained-images --dangling-images", post)
+        self.assertNotIn("--build-cache", post)
+
+    def test_explicit_full_cleanup_still_prunes_build_cache(self):
+        result = self.run_cleanup(mode="--build-cache")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([a for a in self.calls() if a[:2] == ["builder", "prune"]],
+                         [["builder", "prune", "--force"]])
+        self.assertEqual([a for a in self.calls() if a[:2] == ["image", "prune"]],
+                         [["image", "prune", "--force"]])
+
+    def test_unknown_history_prunes_only_dangling_images(self):
         self.retained.unlink()
         before = self.remaining()
         result = self.run_cleanup()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.remaining(), before)
-        self.assertEqual(self.calls(), [["builder", "prune", "--force"], ["image", "prune", "--force"]])
+        self.assertEqual(self.calls(), [["image", "prune", "--force"]])
         self.assertIn("no successful deployment record", result.stdout)
 
     def test_corrupt_or_ambiguous_history_stops_before_mutation(self):
@@ -149,7 +161,7 @@ class CleanupTests(unittest.TestCase):
         self.assertFalse(any("--force" in a or "-f" in a for a in self.calls()))
 
     def test_cache_cleanup_failure_remains_visible_and_retained_images_survive(self):
-        result = self.run_cleanup(PRUNE_FAIL="1")
+        result = self.run_cleanup(mode="--build-cache", PRUNE_FAIL="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(self.current["ref"], self.remaining())
         self.assertIn(self.previous["ref"], self.remaining())

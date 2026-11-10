@@ -37,8 +37,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      rustfs:
-        condition: service_healthy
     volumes:
       - infinite-canvas-data:/data
       - infinite-canvas-agent:/home/node/.infinite-canvas
@@ -65,11 +63,12 @@ services:
       - no-new-privileges:true
 
   rustfs:
+    # 仅供手动初始化/回退；发布脚本只更新 app，不启动或重建这些数据服务。
     image: rustfs/rustfs:latest
     command: ["/data"]
     environment:
-      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY:-infinite}
-      RUSTFS_SECRET_KEY: ${S3_SECRET_KEY:-infinite_canvas_dev}
+      RUSTFS_ACCESS_KEY: ${LEGACY_S3_ACCESS_KEY:-infinite}
+      RUSTFS_SECRET_KEY: ${LEGACY_S3_SECRET_KEY:-infinite_canvas_dev}
       RUSTFS_ADDRESS: ":9000"
       RUSTFS_CONSOLE_ADDRESS: ":9001"
       RUSTFS_CONSOLE_ENABLE: "true"
@@ -99,11 +98,11 @@ services:
         aws --endpoint-url "$$S3_ENDPOINT" s3api head-bucket --bucket "$$S3_BUCKET" 2>/dev/null \
           || aws --endpoint-url "$$S3_ENDPOINT" s3api create-bucket --bucket "$$S3_BUCKET"
     environment:
-      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-infinite}
-      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-infinite_canvas_dev}
-      AWS_DEFAULT_REGION: ${S3_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${LEGACY_S3_ACCESS_KEY:-infinite}
+      AWS_SECRET_ACCESS_KEY: ${LEGACY_S3_SECRET_KEY:-infinite_canvas_dev}
+      AWS_DEFAULT_REGION: ${LEGACY_S3_REGION:-us-east-1}
       S3_ENDPOINT: http://rustfs:9000
-      S3_BUCKET: ${S3_BUCKET:-infinite-canvas}
+      S3_BUCKET: ${LEGACY_S3_BUCKET:-infinite-canvas}
     restart: "no"
 
 volumes:
