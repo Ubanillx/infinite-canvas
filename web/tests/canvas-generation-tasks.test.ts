@@ -92,3 +92,43 @@ test("video recovery reuses archived media without retaining upstream identifier
     expect(projectCanvasTask(result, result.metadata!.generationTask!, completed)).toEqual(result);
     expect(JSON.stringify(result)).not.toMatch(/data:|upstream|apiKey/);
 });
+
+test("text streaming snapshots preserve candidate IDs and selected primary without treating uncertain partial text as success", () => {
+    const owner = { ...binding, kind: "text" as const };
+    const source: CanvasNodeData = { ...node(owner), type: CanvasNodeType.Text, metadata: { generationTask: owner, texts: owner.slotIds.map((id) => ({ id, status: "loading", content: "" })), primaryTextId: "slot-c" } };
+    const running = task({ kind: "text", status: "running", textOutputs: [{ id: "text-0", slotIndex: 0, content: "finished A", status: "succeeded" }, { id: "text-2", slotIndex: 2, content: "stream C", status: "running" }] });
+    const projected = projectCanvasTask(source, owner, running);
+    expect(projected.metadata).toMatchObject({ primaryTextId: "slot-c", content: "stream C", status: "loading" });
+    expect(projected.metadata!.texts!.map(({ id, status }) => ({ id, status }))).toEqual([{ id: "slot-a", status: "success" }, { id: "slot-b", status: "loading" }, { id: "slot-c", status: "loading" }]);
+    const uncertain = task({ ...running, status: "needs_attention", textOutputs: [{ id: "text-0", slotIndex: 0, content: "finished A", status: "succeeded" }, { id: "text-2", slotIndex: 2, content: "stream C", status: "needs_attention" }] });
+    const restored = projectCanvasTask(projected, owner, uncertain);
+    expect(restored.metadata!.texts![2]).toMatchObject({ content: "stream C", status: "error" });
+    expect(restored.metadata!.primaryTextId).toBe("slot-c");
+    expect(projectCanvasTask(restored, restored.metadata!.generationTask!, uncertain)).toEqual(restored);
+    const partialOnly = projectCanvasTask(source, owner, task({ kind: "text", status: "needs_attention", textOutputs: [{ id: "text-2", slotIndex: 2, content: "partial", status: "needs_attention" }] }));
+    expect(partialOnly.metadata!.status).toBe("error");
+    expect(partialOnly.metadata!.content).toBe("partial");
+});
+
+test("text recovery respects removed candidates and retries retain unrelated successful results", () => {
+    const owner = { ...binding, kind: "text" as const, slotIds: ["slot-b"], preservePrimary: true };
+    const primary = { id: "slot-a", status: "success" as const, content: "keep primary" };
+    const source: CanvasNodeData = { ...node(owner), type: CanvasNodeType.Text, metadata: { generationTask: owner, texts: [primary, { id: "slot-b", status: "loading", content: "" }], primaryTextId: primary.id, content: primary.content } };
+    const complete = task({ kind: "text", status: "succeeded", textOutputs: [{ id: "text-0", slotIndex: 0, content: "retried", status: "succeeded" }] });
+    const result = projectCanvasTask(source, owner, complete);
+    expect(result.metadata!.texts).toEqual([primary, { id: "slot-b", status: "success", content: "retried", errorDetails: undefined }]);
+    expect(result.metadata!.content).toBe(primary.content);
+    const deleted = { ...source, metadata: { ...source.metadata, texts: [primary] } };
+    expect(projectCanvasTask(deleted, owner, complete).metadata!.texts).toEqual([primary]);
+});
+
+test("audio projection uses stable authenticated media and duration without changing node geometry", () => {
+    const owner = { ...binding, kind: "audio" as const, slotIds: ["audio-slot"] };
+    const source: CanvasNodeData = { ...node(owner), type: CanvasNodeType.Audio };
+    const result = projectCanvasTask(source, owner, task({ kind: "audio", status: "succeeded", outputs: [{ id: "audio", storageKey: "audio:stable", mimeType: "audio/wav", bytes: 88, durationMs: 1500 }] }));
+    expect(result.metadata).toMatchObject({ status: "success", storageKey: "audio:stable", mimeType: "audio/wav", durationMs: 1500, bytes: 88 });
+    expect(result.metadata!.content).toContain("workspaceId=workspace-a");
+    expect(result.position).toEqual(source.position);
+    expect(result.width).toBe(source.width);
+    expect(projectCanvasTask(result, result.metadata!.generationTask!, task({ kind: "audio", status: "failed" })).metadata!.status).toBe("error");
+});

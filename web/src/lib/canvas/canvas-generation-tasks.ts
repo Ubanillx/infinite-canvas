@@ -30,7 +30,7 @@ export function readCanvasTaskOutputMeta(url: string, kind: "image" | "video" | 
                 cleanup();
                 return Number.isFinite(duration) && duration! >= 0 ? resolve({ durationMs: Math.round(duration! * 1000) }) : reject(new Error("归档音频时长暂不可读取"));
             }
-            if (!(width > 0 && height > 0)) return failed();
+            if (!(width && height && width > 0 && height > 0)) return failed();
             cleanup();
             resolve({ width, height, ...(duration && Number.isFinite(duration) ? { durationMs: Math.round(duration * 1000) } : {}) });
         };

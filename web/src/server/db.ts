@@ -167,7 +167,7 @@ async function ensureSchema(pool: Pool) {
             actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
             request_id TEXT NOT NULL,
             request_hash TEXT NOT NULL,
-            kind TEXT NOT NULL CHECK (kind IN ('image', 'video')),
+            kind TEXT NOT NULL CHECK (kind IN ('image', 'video', 'text', 'audio')),
             request_snapshot JSONB NOT NULL,
             provider_snapshot JSONB NOT NULL,
             status TEXT NOT NULL CHECK (status IN ('queued', 'submitting', 'running', 'archiving', 'succeeded', 'partial', 'failed', 'needs_attention')),
@@ -186,6 +186,8 @@ async function ensureSchema(pool: Pool) {
             UNIQUE (workspace_id, request_id)
         );
         CREATE INDEX IF NOT EXISTS idx_generation_tasks_work ON generation_tasks(status, next_poll_at);
+        ALTER TABLE generation_tasks DROP CONSTRAINT IF EXISTS generation_tasks_kind_check;
+        ALTER TABLE generation_tasks ADD CONSTRAINT generation_tasks_kind_check CHECK (kind IN ('image', 'video', 'text', 'audio'));
         ALTER TABLE media_files ADD COLUMN IF NOT EXISTS lifecycle_state TEXT NOT NULL DEFAULT 'staged' CHECK (lifecycle_state IN ('staged', 'ready'));
         ALTER TABLE media_files ADD COLUMN IF NOT EXISTS last_referenced_at TIMESTAMPTZ;
         ALTER TABLE media_files ADD COLUMN IF NOT EXISTS object_version TEXT NOT NULL DEFAULT '';

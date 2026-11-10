@@ -5,6 +5,7 @@ import { completeMediaIntent, createMediaIntent, failMediaIntent } from "./media
 import { getMediaObject, mediaObjectKey, putMediaBuffer } from "./object-storage";
 import { GENERATION_IMAGE_LIMIT, GENERATION_MEDIA_LIMIT_BYTES, readGenerationBytes } from "./generation-media";
 import { submitImage, submitVideo, pollVideo, downloadOutput, type ResolvedGenerationChannel, type OutputDescriptor, type UpstreamVideoTask, type GenerationRequest } from "./generation-provider";
+import { submitText, submitAudio } from "./generation-text-audio-provider";
 import type { CreateGenerationTask, GenerationTask, GenerationTaskCanvasTarget, GenerationTaskFilter, GenerationTaskKind, GenerationTaskOutput, GenerationTaskStatus } from "../types/generation-task";
 
 // Reuse the existing video polling cadence/window and existing media-upload size boundary.
@@ -16,7 +17,7 @@ type Context = { id: string; userId: string; role: "owner" | "editor" | "viewer"
 type ProviderSnapshot = Omit<ResolvedGenerationChannel, "apiKey" | "script">;
 type ReferenceSnapshot = CreateGenerationTask["references"][number] & { objectVersion: string; mimeType: string };
 type Snapshot = Omit<CreateGenerationTask, "requestId" | "references"> & { references: ReferenceSnapshot[] };
-type ImageSubmission = { status: "queued" | "submitting" | "completed" | "uncertain"; outputs?: OutputDescriptor[] };
+type ImageSubmission = { status: "queued" | "submitting" | "completed" | "uncertain"; outputs?: OutputDescriptor[]; content?: string };
 export type GenerationTaskRow = {
     id: string; workspace_id: string; actor_user_id: string; request_id: string; request_hash: string; kind: GenerationTaskKind;
     request_snapshot: Snapshot; provider_snapshot: ProviderSnapshot; status: GenerationTaskStatus; upstream: UpstreamVideoTask | null;
@@ -26,7 +27,7 @@ export type GenerationTaskRow = {
 };
 export type GenerationTaskOptions = {
     resolveChannel: (model: string, kind: GenerationTaskKind, snapshot?: ProviderSnapshot) => Promise<ResolvedGenerationChannel>;
-    provider?: { submitImage: typeof submitImage; submitVideo: typeof submitVideo; pollVideo: typeof pollVideo; downloadOutput: typeof downloadOutput };
+    provider?: { submitImage: typeof submitImage; submitVideo: typeof submitVideo; pollVideo: typeof pollVideo; downloadOutput: typeof downloadOutput; submitText?: typeof submitText; submitAudio?: typeof submitAudio };
 };
 export class GenerationTaskError extends Error {
     constructor(message: string, public status = 400) { super(message); }
@@ -43,12 +44,14 @@ const messages: Record<string, string> = {
 const activeStatuses = ["queued", "submitting", "running", "archiving"];
 export function publicGenerationTask(row: GenerationTaskRow): GenerationTask {
     const snapshot = row.request_snapshot;
-    const expected = row.kind === "image" ? Number(snapshot.settings.count || 1) : 1;
+    const expected = row.kind === "image" || row.kind === "text" ? Number(snapshot.settings.count || 1) : 1;
+    const textOutputs = row.kind === "text" ? row.submissions.map((slot, slotIndex) => ({ id: `${row.id}-${slotIndex}`, slotIndex, content: slot.content || "", status: slot.status === "completed" ? "succeeded" as const : slot.status === "uncertain" || row.status === "needs_attention" ? "needs_attention" as const : "running" as const })) : [];
+    const successes = row.kind === "text" ? textOutputs.filter((output) => output.status === "succeeded").length : row.outputs.length;
     return { id: row.id, workspaceId: row.workspace_id, requestId: row.request_id, kind: row.kind, prompt: snapshot.prompt, model: snapshot.model, settings: snapshot.settings,
         references: snapshot.references.map(({ kind, storageKey, name, mimeType, width, height, durationMs }) => ({ kind, storageKey, ...(name ? { name } : {}), mimeType, ...(width !== undefined ? { width } : {}), ...(height !== undefined ? { height } : {}), ...(durationMs !== undefined ? { durationMs } : {}) })),
         ...(snapshot.canvasTarget ? { canvasTarget: normalizeCanvasTarget(snapshot.canvasTarget) } : {}),
-        status: row.status, phase: row.status, outputs: row.outputs, successCount: row.outputs.length,
-        failCount: ["failed", "partial", "needs_attention"].includes(row.status) ? Math.max(0, expected - row.outputs.length) : 0,
+        status: row.status, phase: row.status, outputs: row.outputs, textOutputs, successCount: successes,
+        failCount: ["failed", "partial", "needs_attention"].includes(row.status) ? Math.max(0, expected - successes) : 0,
         ...(row.error_code ? { errorCode: row.error_code, error: messages[row.error_code] || "任务需要核对，可读取已保存结果" } : {}),
         revision: row.revision, createdAt: toIso(row.created_at), updatedAt: toIso(row.updated_at) };
 }
@@ -65,26 +68,28 @@ export function assertCanvasGenerationBinding(payload: unknown, target: Generati
     if (!object(node) || !object(node.metadata) || !object(node.metadata.generationTask) || node.metadata.generationTask.requestId !== requestId) throw new GenerationTaskError("画布目标或请求绑定已变化，请保存节点后核对原请求", 409);
 }
 export function normalizeGenerationRequest(value: unknown): CreateGenerationTask {
-    if (!object(value) || !["image", "video"].includes(String(value.kind))) throw new GenerationTaskError("生成类型无效");
+    if (!object(value) || !["image", "video", "text", "audio"].includes(String(value.kind))) throw new GenerationTaskError("生成类型无效");
     for (const key of ["requestId", "prompt", "model"]) if (typeof value[key] !== "string" || !value[key].trim()) throw new GenerationTaskError(`请提供 ${key}`);
     if (!object(value.settings) || !Array.isArray(value.references)) throw new GenerationTaskError("生成参数或参考媒体无效");
     const canvasTarget = value.canvasTarget !== undefined ? normalizeCanvasTarget(value.canvasTarget) : undefined;
-    const allowed = value.kind === "image" ? ["quality", "size", "count", "background", "systemPrompt"] : ["size", "resolution", "seconds", "generateAudio", "watermark", "mode", "systemPrompt"];
+    const allowed = value.kind === "image" ? ["quality", "size", "count", "background", "systemPrompt"] : value.kind === "text" ? ["count", "systemPrompt", "reasoningEffort"] : value.kind === "audio" ? ["voice", "format", "speed", "instructions"] : ["size", "resolution", "seconds", "generateAudio", "watermark", "mode", "systemPrompt"];
     const settings: Record<string, unknown> = {};
     for (const [key, field] of Object.entries(value.settings)) {
         if (!allowed.includes(key) || !["string", "number", "boolean"].includes(typeof field) || typeof field === "number" && !Number.isFinite(field)) throw new GenerationTaskError("生成参数包含不支持的字段");
         settings[key] = field;
     }
-    if (value.kind === "image") {
+    if (value.kind === "image" || value.kind === "text") {
         // Preserve the canvas's existing 15-image batches and the workbench's 10-image limit.
         const limit = canvasTarget ? 15 : GENERATION_IMAGE_LIMIT;
         const count = Math.max(1, Math.floor(Number(settings.count)) || 1);
-        if (count > limit) throw new GenerationTaskError(`图片生成数量不能超过 ${limit}`);
+        if (count > limit) throw new GenerationTaskError(`${value.kind === "text" ? "文本" : "图片"}生成数量不能超过 ${limit}`);
         settings.count = count;
     }
     const references = value.references.map((entry) => {
         if (!object(entry) || !["image", "video", "audio"].includes(String(entry.kind)) || typeof entry.storageKey !== "string" || !/^(image|video|audio|video-reference|audio-reference):[A-Za-z0-9_-]+$/.test(entry.storageKey)) throw new GenerationTaskError("请提供已保存的工作区参考媒体");
         if (value.kind === "image" && entry.kind !== "image") throw new GenerationTaskError("图片生成仅支持图片参考");
+        if (value.kind === "text" && entry.kind !== "image") throw new GenerationTaskError("文本生成仅支持图片参考");
+        if (value.kind === "audio") throw new GenerationTaskError("音频生成不支持参考媒体");
         const metadata: Record<string, number> = {};
         for (const field of ["width", "height", "durationMs"] as const) {
             if (entry[field] === undefined) continue;
@@ -131,6 +136,8 @@ export async function createGenerationTask(context: Context, body: unknown, opti
             assertCanvasGenerationBinding(payload, input.canvasTarget, input.requestId);
         }
         const channel = await options.resolveChannel(input.model, input.kind);
+        if (channel.script) throw new GenerationTaskError("脚本模型使用浏览器执行，不支持服务端持久生成");
+        if (input.kind === "audio" && channel.apiFormat === "gemini") throw new GenerationTaskError("Gemini 音频生成暂不支持，请使用现有脚本模型");
         const snapshot: ProviderSnapshot = { id: channel.id, baseUrl: channel.baseUrl, apiFormat: channel.apiFormat, model: channel.model };
         const references: ReferenceSnapshot[] = [];
         for (const reference of input.references) {
@@ -138,7 +145,7 @@ export async function createGenerationTask(context: Context, body: unknown, opti
             if (!media || media.remote_path || !media.mime_type.startsWith(`${reference.kind}/`)) throw new GenerationTaskError("参考媒体不存在、类型不符或尚未保存到服务器");
             references.push({ ...reference, objectVersion: media.object_version, mimeType: media.mime_type });
         }
-        const submissions = input.kind === "image" ? Array.from({ length: Number(input.settings.count) }, () => ({ status: "queued" })) : [];
+        const submissions = input.kind === "image" || input.kind === "text" ? Array.from({ length: Number(input.settings.count) }, () => ({ status: "queued" })) : [];
         const row = await queryOne<GenerationTaskRow>(tx, `INSERT INTO generation_tasks (id, workspace_id, actor_user_id, request_id, request_hash, kind, request_snapshot, provider_snapshot, status, submissions)
             VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, 'queued', $9::jsonb) RETURNING *`, randomUUID(), context.id, context.userId, input.requestId, hash, input.kind, JSON.stringify({ kind: input.kind, prompt: input.prompt, model: input.model, settings: input.settings, references, ...(input.canvasTarget ? { canvasTarget: input.canvasTarget } : {}) }), JSON.stringify(snapshot), JSON.stringify(submissions));
         await replaceTaskReferences(tx, row!);
@@ -146,7 +153,7 @@ export async function createGenerationTask(context: Context, body: unknown, opti
     });
 }
 export async function listGenerationTasks(workspaceId: string, kind?: string, filter: GenerationTaskFilter = {}) {
-    if (kind !== undefined && kind !== "image" && kind !== "video") throw new GenerationTaskError("生成类型无效");
+    if (kind !== undefined && !["image", "video", "text", "audio"].includes(kind)) throw new GenerationTaskError("生成类型无效");
     if (filter.source !== undefined && !["all", "canvas", "workbench"].includes(filter.source)) throw new GenerationTaskError("生成来源无效");
     for (const field of [filter.projectId, filter.nodeId, filter.requestId]) if (field !== undefined && (typeof field !== "string" || !field.trim())) throw new GenerationTaskError("生成任务筛选参数无效");
     const rows = await queryMany<GenerationTaskRow>(await getPool(), `SELECT * FROM generation_tasks WHERE workspace_id = $1 AND (NOT hidden OR $6::text IS NOT NULL)
@@ -192,7 +199,7 @@ async function replaceTaskReferences(tx: SqlExecutor, row: GenerationTaskRow) {
 /** A database session lock elects one scheduler; no time-based lease can resubmit an uncertain charge. */
 export function createGenerationWorker(options: GenerationTaskOptions) {
     const workerId = randomUUID();
-    const provider = options.provider || { submitImage, submitVideo, pollVideo, downloadOutput };
+    const provider = { submitImage, submitVideo, pollVideo, downloadOutput, submitText, submitAudio, ...options.provider };
     const active = new Map<string, Promise<void>>();
     let leader: Client | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -233,7 +240,7 @@ export function createGenerationWorker(options: GenerationTaskOptions) {
             try {
                 await putMediaBuffer(objectKey, media.bytes, media.mimeType);
                 const output: GenerationTaskOutput = { id, storageKey, mimeType: media.mimeType, bytes: media.bytes.length };
-                if (row.kind === "image") {
+                if (row.kind === "image" || row.kind === "text") {
                     const slot = id.slice(`${row.id}-`.length).split("-")[0];
                     if (id.startsWith(`${row.id}-`) && /^\d+$/.test(slot)) output.slotIndex = Number(slot);
                 }
@@ -283,6 +290,7 @@ export function createGenerationWorker(options: GenerationTaskOptions) {
                     const slots = row.submissions;
                     await Promise.allSettled(slots.map(async (slot, index) => {
                         if (slot.status !== "queued") return;
+                        let content = slot.content || "";
                         const setSlot = async (value: ImageSubmission) => {
                             if (!owned()) throw new Error("生成执行器已失去所有权");
                             const save = (tx: SqlExecutor) => queryOne(tx, "UPDATE generation_tasks SET submissions = jsonb_set(submissions, $3::text[], $4::jsonb), revision = revision + 1, updated_at = now() WHERE id = $1 AND worker_id = $2 RETURNING id", id, workerId, [String(index)], JSON.stringify(value));
@@ -291,14 +299,29 @@ export function createGenerationWorker(options: GenerationTaskOptions) {
                         };
                         await setSlot({ status: "submitting" });
                         try {
-                            const outputs = await provider.submitImage(channel, { ...request, settings: { ...request.settings, count: 1 } }, controller.signal);
-                            await setSlot({ status: "completed", outputs });
+                            if (row!.kind === "text") {
+                                const answer = await provider.submitText(channel, { ...request, settings: { ...request.settings, count: 1 } }, async (delta) => {
+                                    content = delta;
+                                    await setSlot({ status: "submitting", content });
+                                }, controller.signal);
+                                if (!answer) throw new Error("文本供应商未返回内容");
+                                await setSlot({ status: "completed", content: answer });
+                            } else {
+                                const outputs = await provider.submitImage(channel, { ...request, settings: { ...request.settings, count: 1 } }, controller.signal);
+                                await setSlot({ status: "completed", outputs });
+                            }
                         } catch {
-                            if (owned()) await setSlot({ status: "uncertain" });
+                            if (owned()) await setSlot({ status: "uncertain", ...(row!.kind === "text" ? { content } : {}) });
                         }
                     }));
                     if (!owned()) return;
                     row = (await queryOne<GenerationTaskRow>(await getPool(), "SELECT * FROM generation_tasks WHERE id = $1 AND worker_id = $2", id, workerId))!;
+                    if (row.kind === "text") {
+                        const uncertain = row.submissions.some((slot) => slot.status === "uncertain");
+                        const completed = row.submissions.filter((slot) => slot.status === "completed").length;
+                        await change(id, { status: uncertain ? "needs_attention" : completed === slots.length ? "succeeded" : completed ? "partial" : "failed", error_code: uncertain ? "submission_uncertain" : completed ? null : "provider_failed" });
+                        return;
+                    }
                     const sources = row.submissions.flatMap((slot, slotIndex) => (slot.outputs || []).map((output, outputIndex) => ({ ...output, resultId: `${id}-${slotIndex}-${outputIndex}` })));
                     row = await change(id, sources.length ? { status: "archiving", raw_result: sources } : { status: "needs_attention", error_code: "submission_uncertain" });
                 } else {
@@ -307,8 +330,13 @@ export function createGenerationWorker(options: GenerationTaskOptions) {
                         if (!written || !owned()) throw new Error("生成执行器已失去所有权");
                         return written;
                     });
-                    const upstream = await provider.submitVideo(channel, request, controller.signal);
-                    row = await change(id, { status: "running", upstream, next_poll_at: new Date().toISOString() });
+                    if (row.kind === "audio") {
+                        const output = await provider.submitAudio(channel, request, controller.signal);
+                        row = await change(id, { status: "archiving", raw_result: [output] });
+                    } else {
+                        const upstream = await provider.submitVideo(channel, request, controller.signal);
+                        row = await change(id, { status: "running", upstream, next_poll_at: new Date().toISOString() });
+                    }
                 }
             }
             if (row.status === "running") {
@@ -343,9 +371,9 @@ export function createGenerationWorker(options: GenerationTaskOptions) {
             if (!result.rows[0]?.locked || stopped) { await client.end(); return; }
             leader = client;
             controller = new AbortController();
-            await client.query(`UPDATE generation_tasks SET status = CASE WHEN status <> 'submitting' THEN status WHEN kind = 'image' THEN 'queued' ELSE 'needs_attention' END,
-                error_code = CASE WHEN status <> 'submitting' THEN error_code WHEN kind = 'image' THEN NULL ELSE 'submission_uncertain' END,
-                submissions = CASE WHEN status = 'submitting' AND kind = 'image' THEN COALESCE((SELECT jsonb_agg(CASE WHEN item->>'status' = 'submitting' THEN jsonb_build_object('status','uncertain') ELSE item END) FROM jsonb_array_elements(submissions) item), '[]'::jsonb) ELSE submissions END,
+            await client.query(`UPDATE generation_tasks SET status = CASE WHEN status <> 'submitting' THEN status WHEN kind IN ('image','text') THEN 'queued' ELSE 'needs_attention' END,
+                error_code = CASE WHEN status <> 'submitting' THEN error_code WHEN kind IN ('image','text') THEN NULL ELSE 'submission_uncertain' END,
+                submissions = CASE WHEN status = 'submitting' AND kind IN ('image','text') THEN COALESCE((SELECT jsonb_agg(CASE WHEN item->>'status' = 'submitting' THEN item || jsonb_build_object('status','uncertain') ELSE item END) FROM jsonb_array_elements(submissions) item), '[]'::jsonb) ELSE submissions END,
                 worker_id = $1, revision = revision + 1, updated_at = now() WHERE status IN ('queued','submitting','running','archiving')
                 AND NOT EXISTS (SELECT 1 FROM backup_runs b WHERE b.workspace_id = generation_tasks.workspace_id AND b.kind = 'restore' AND b.status = 'running')`, [workerId]);
         } catch (error) {
