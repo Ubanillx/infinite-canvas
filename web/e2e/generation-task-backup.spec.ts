@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { mkdir, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { Readable } from "node:stream";
 import { Pool } from "pg";
 import { test, expect } from "./auth";
 import { execute, getPool, queryOne } from "../src/server/db";
@@ -19,11 +20,21 @@ function fakeWebdav() {
     const files = new Map<string, Buffer>();
     const directories = new Set<string>(["/"]);
     const propfindFailures = new Map<string, number>();
+    const putFailures = new Map<string, number>();
     const deletes: string[] = [];
+    const stalled: string[] = [];
+    const control: { stall?: (method: string, path: string) => boolean; partialBody?: boolean } = {};
     const server = createServer(async (req, res) => {
         const path = decodeURIComponent(new URL(req.url || "/", "http://localhost").pathname).replace(/\/$/, "") || "/";
+        if (control.stall?.(req.method || "", path)) {
+            req.resume(); stalled.push(path);
+            if (control.partialBody) { res.writeHead(200, { "content-length": 100 }); res.write("partial"); }
+            return;
+        }
         if (req.method === "MKCOL") { directories.add(path); res.writeHead(201).end(); return; }
         if (req.method === "PUT") {
+            const failure = putFailures.get(path);
+            if (failure) { putFailures.delete(path); req.resume(); res.writeHead(failure).end(); return; }
             const chunks: Buffer[] = [];
             for await (const chunk of req) chunks.push(Buffer.from(chunk));
             files.set(path, Buffer.concat(chunks)); res.writeHead(201).end(); return;
@@ -48,11 +59,11 @@ function fakeWebdav() {
         res.writeHead(200, { "content-length": file.length, "content-type": "application/octet-stream" });
         res.end(req.method === "HEAD" ? undefined : file);
     });
-    return { server, files, propfindFailures, deletes };
+    return { server, files, directories, propfindFailures, putFailures, deletes, control, stalled };
 }
 
 test("backup and restore tasks, historical reference bytes, and post-snapshot idempotency", async ({ request }) => {
-    const { server, files, propfindFailures, deletes } = fakeWebdav();
+    const { server, files, directories, propfindFailures, putFailures, deletes, control, stalled } = fakeWebdav();
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {
         const address = server.address();
@@ -61,7 +72,10 @@ test("backup and restore tasks, historical reference bytes, and post-snapshot id
         await mkdir(configDir, { recursive: true });
         process.env.INFINITE_CANVAS_DATA_DIR = configDir;
         await writeFile(`${configDir}/config.json`, JSON.stringify({ webdav: { url: `http://127.0.0.1:${address.port}/`, username: "fixture", password: "fixture", directory: "dav" } }));
-        const { getBackupStatus, startBackupTask, listBackupRuns, listBackupSnapshots, saveBackupSettings } = await import("../src/server/system-backup");
+        const { readServerWebdavConfig } = await import("../src/server/webdav-client");
+        expect(readServerWebdavConfig().target.origin).toBe(`http://127.0.0.1:${address.port}`);
+        expect(readServerWebdavConfig().directory).toBe("dav");
+        const { cancelBackupTask, getActiveBackupTask, getBackupStatus, startBackupTask, listBackupRuns, listBackupSnapshots, saveBackupSettings } = await import("../src/server/system-backup");
         const { startRestoreTask } = await import("../src/server/system-restore");
         const { workspaces, user } = await (await request.get("/api/auth/me")).json();
         const context = { id: workspaces[0].id as string, userId: user.id as string, role: "owner" as const };
@@ -115,11 +129,80 @@ test("backup and restore tasks, historical reference bytes, and post-snapshot id
         expect(files.get(archivedObjectPath)).toEqual(Buffer.from("newer reference"));
         expect(deletes).not.toContain(`/dav/system-backups/snapshots/${backupId}`);
         expect(propfindFailures.has(`/dav/system-backups/snapshots/${backupId}/manifest.json`)).toBe(false);
+
+        // Exercise each stalled network phase with real task state and isolated storage.
+        for (const stage of ["directory", "upload", "download-headers", "download-body", "prune"]) {
+            const protectedFiles = new Map([...files].filter(([path]) => path.startsWith("/dav/system-backups/snapshots/")));
+            const deletesBefore = deletes.length;
+            const stalledBefore = stalled.length;
+            control.partialBody = stage === "download-body";
+            control.stall = (verb, path) => stage === "directory" ? verb === "MKCOL"
+                : stage === "upload" ? verb === "PUT" && path.endsWith("generation-tasks.json")
+                : stage.startsWith("download") ? verb === "GET" && path === archivedObjectPath
+                : verb === "PROPFIND" && path === `/dav/system-backups/snapshots/${backupId}/manifest.json`;
+            const cancelledRun = await startBackupTask(context.userId);
+            try {
+                await expect.poll(() => stalled.length).toBeGreaterThan(stalledBefore);
+                expect(cancelBackupTask()).toBe(true);
+                expect(getActiveBackupTask()?.progress.message).toBe("正在取消任务");
+                await expect.poll(async () => (await listBackupRuns()).find((run) => run.id === cancelledRun)?.status).toBe("cancelled");
+                expect((await getBackupStatus()).active).toBeNull();
+                expect(deletes.slice(deletesBefore)).toEqual([]);
+                for (const [path, bytes] of protectedFiles) expect(files.get(path)).toEqual(bytes);
+            } finally { control.stall = undefined; }
+        }
+
+        const snapshotsBeforePartial = new Map([...files].filter(([path]) => path.startsWith("/dav/system-backups/snapshots/")));
+        files.set(archivedObjectPath, Buffer.alloc(currentReference.bytes, 0x58));
+        putFailures.set(archivedObjectPath, 503);
+        const deletesBeforePartial = deletes.length;
+        const partialRun = await startBackupTask(context.userId);
+        await expect.poll(async () => (await listBackupRuns()).find((run) => run.id === partialRun)?.status).toBe("partial");
+        expect(deletes.slice(deletesBeforePartial)).toEqual([]);
+        for (const [path, bytes] of snapshotsBeforePartial) expect(files.get(path)).toEqual(bytes);
+
+        // A missing directory before an uncertain probe must not trigger early deletion.
+        const orphan = "/dav/system-backups/snapshots/20990101T000000Z-aaaaaaaa";
+        directories.add(orphan);
+        const deletesBeforeUncertainProbe = deletes.length;
+        propfindFailures.set(`/dav/system-backups/snapshots/${backupId}/manifest.json`, 503);
+        const uncertainRun = await startBackupTask(context.userId);
+        await expect.poll(async () => (await listBackupRuns()).find((run) => run.id === uncertainRun)?.status).toBe("succeeded");
+        expect(deletes.slice(deletesBeforeUncertainProbe)).toEqual([]);
+        directories.delete(orphan);
+        // An HTTP success with an unreadable manifest is not proof of a usable snapshot.
+        const oldManifestPath = `/dav/system-backups/snapshots/${backupId}/manifest.json`;
+        const oldManifest = files.get(oldManifestPath)!;
+        const deletesBeforeInvalidManifest = deletes.length;
+        files.set(oldManifestPath, Buffer.from("invalid manifest"));
+        try {
+            const invalidManifestRun = await startBackupTask(context.userId);
+            await expect.poll(async () => (await listBackupRuns()).find((run) => run.id === invalidManifestRun)?.status).toBe("succeeded");
+            expect(deletes.slice(deletesBeforeInvalidManifest)).toEqual([]);
+        } finally { files.set(oldManifestPath, oldManifest); }
         const newer = await createGenerationTask(context, { ...payload, requestId: randomUUID(), references: [] }, deps);
         const output = await queryOne<{ object_version: string }>(await getPool(), "SELECT object_version FROM media_files WHERE workspace_id = $1 AND storage_key = $2", context.id, outputKey);
         await execute(await getPool(), "DELETE FROM generation_tasks WHERE id = ANY($1::text[])", [saved.id, inFlight.id, video.id]);
         await execute(await getPool(), "DELETE FROM media_files WHERE workspace_id = $1 AND storage_key = $2", context.id, outputKey);
         await deleteMediaObject(mediaObjectKey(context.id, outputKey, output!.object_version));
+        // Cancellation while waiting for the transaction lock must not commit restored data.
+        const cancelledPool = new Pool({ connectionString: process.env.DATABASE_URL });
+        const cancelledClient = await cancelledPool.connect();
+        try {
+            await cancelledClient.query("BEGIN");
+            await cancelledClient.query("SELECT id FROM workspaces WHERE id = $1 FOR UPDATE", [context.id]);
+            const cancelledRestore = await startRestoreTask(context.userId, backupId, context.id, "snapshots");
+            await expect.poll(async () => (await getBackupStatus()).active?.progress.phase).toBe("restore-data");
+            expect(cancelBackupTask()).toBe(true);
+            await cancelledClient.query("ROLLBACK");
+            await expect.poll(async () => (await listBackupRuns()).find((run) => run.id === cancelledRestore)?.status).toBe("cancelled");
+            expect(await queryOne(await getPool(), "SELECT id FROM generation_tasks WHERE id = $1", saved.id)).toBeNull();
+            expect(await queryOne(await getPool(), "SELECT storage_key FROM media_files WHERE workspace_id = $1 AND storage_key = $2", context.id, outputKey)).toBeNull();
+        } finally {
+            await cancelledClient.query("ROLLBACK").catch(() => undefined);
+            cancelledClient.release();
+            await cancelledPool.end();
+        }
         const progressPool = new Pool({ connectionString: process.env.DATABASE_URL });
         const lockClient = await progressPool.connect();
         let lockActive = false;
@@ -191,6 +274,66 @@ test("backup and restore tasks, historical reference bytes, and post-snapshot id
         expect(await (await request.get(`/api/media/blob/${outputKey}`, { headers })).body()).toEqual(newerBytes);
         expect((await createGenerationTask(context, { ...payload, requestId: protectedTask.requestId, references: [{ kind: "image", storageKey: outputKey }] }, deps)).id).toBe(protectedTask.id);
     } finally {
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+});
+
+test("backup cancellation stays visible until the server reports completion", async ({ page, request }) => {
+    const { user, workspaces } = await (await request.get("/api/auth/me")).json();
+    await execute(await getPool(), "UPDATE users SET is_admin = TRUE WHERE id = $1", user.id);
+    await page.addInitScript((workspace) => {
+        sessionStorage.setItem("infinite-canvas:active-workspace", JSON.stringify(workspace));
+    }, workspaces[0]);
+    let cancelling = false;
+    let finished = false;
+    const startedAt = new Date().toISOString();
+    await page.route("**/api/admin/backup/status", (route) => route.fulfill({ json: {
+        configured: true,
+        settings: { enabled: false, intervalMinutes: 1440, retention: 30, safetyRetention: 5 },
+        active: finished ? null : { runId: "ui-fixture", kind: "backup", startedAt, progress: { phase: "backup", current: 0, total: 2, uploadedFiles: 0, uploadedBytes: 0, workspaceName: "隔离测试工作区", message: cancelling ? "正在取消任务" : "传输媒体 1/68" } },
+        lastRun: finished ? { id: "ui-fixture", kind: "backup", purpose: "manual", status: "cancelled", startedAt, finishedAt: startedAt, summary: null, error: "任务已取消" } : null,
+    } }));
+    await page.route("**/api/admin/backup/runs", (route) => route.fulfill({ json: { items: [] } }));
+    await page.route("**/api/admin/backup/cancel", (route) => { cancelling = true; return route.fulfill({ json: { cancelled: true } }); });
+    await page.goto("/config/webdav");
+    await expect(page.getByText("传输媒体 1/68", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "取消任务", exact: true }).click();
+    await expect(page.getByText("正在取消任务", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: /正在取消$/ })).toHaveClass(/ant-btn-loading/);
+    await page.screenshot({ path: test.info().outputPath("backup-cancelling.png"), fullPage: true });
+    finished = true;
+    await expect(page.getByText("上次备份：已取消", { exact: true })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole("button", { name: "立即备份", exact: true })).toBeEnabled();
+    await page.screenshot({ path: test.info().outputPath("backup-cancelled.png"), fullPage: true });
+});
+
+test("an early successful WebDAV response cannot hide an incomplete upload source", async () => {
+    const { putWebdavStream } = await import("../src/server/webdav-client");
+    let received!: () => void;
+    const waiting = new Promise<void>((resolve) => { received = resolve; });
+    const source = new Readable({ read() {} });
+    const server = createServer((req, res) => {
+        req.resume();
+        res.writeHead(201).end();
+        if (req.method === "PUT") received();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("Fake WebDAV did not bind");
+        let completed = false;
+        const pending = putWebdavStream({ target: new URL(`http://127.0.0.1:${address.port}`), directory: "", authorization: "Basic fixture" }, "object", source, "application/octet-stream", 100)
+            .then(() => { completed = true; return "succeeded"; }, () => "failed");
+        source.push("partial");
+        await waiting;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(completed).toBe(false);
+        source.destroy(new Error("incomplete source"));
+        expect(await pending).toBe("failed");
+    } finally {
+        source.destroy();
+        server.closeAllConnections();
         await new Promise<void>((resolve) => server.close(() => resolve()));
     }
 });
