@@ -28,6 +28,9 @@ import { canvasAgentProxyPath, forwardCanvasAgent } from "./src/server/canvas-ag
 import { homedir } from "node:os";
 import { consumeRegistrationCode, normalizeRegistrationEmail, readRegistrationConfig, redactRegistrationConfig, registrationPolicy, RegistrationError, saveRegistrationConfig, sendRegistrationCode, verifiedSsoRegistrationEmail, verifyRegistrationSmtp } from "./src/server/registration";
 import { normalizeUserPreferences } from "./src/lib/user-preferences";
+import { createGenerationTask, createGenerationWorker, GenerationTaskError, hideGenerationTask, listGenerationTasks, readGenerationTask, resumeGenerationTask } from "./src/server/generation-tasks";
+import type { ResolvedGenerationChannel } from "./src/server/generation-provider";
+import { GENERATION_MEDIA_LIMIT_BYTES, GENERATION_REQUEST_LIMIT_BYTES } from "./src/server/generation-media";
 
 const webDir = dirname(fileURLToPath(import.meta.url));
 const localVersion = readFileSync(resolve(webDir, "../VERSION"), "utf8").trim() || "dev";
@@ -41,9 +44,9 @@ function normalizeIp(value: string) {
 const serverConfigPath = resolve(process.env.INFINITE_CANVAS_DATA_DIR || resolve(process.env.HOME || webDir, ".infinite-canvas/data"), "config.json");
 const maxServerConfigBytes = 1024 * 1024;
 const aiProxyPath = "/api/ai";
-const maxAiRequestBytes = 64 * 1024 * 1024;
-const maxMediaBytes = 100 * 1024 * 1024;
-const protectedApiPaths = ["/api/auth", "/api/config", "/api/preferences", "/api/workspaces", "/api/admin", "/api/data", "/api/prompts", "/api/media", "/api/prompt-source", "/api/remote-media", aiProxyPath, "/api/image-proxy", canvasAgentProxyPath];
+const maxAiRequestBytes = GENERATION_REQUEST_LIMIT_BYTES;
+const maxMediaBytes = GENERATION_MEDIA_LIMIT_BYTES;
+const protectedApiPaths = ["/api/auth", "/api/config", "/api/preferences", "/api/workspaces", "/api/admin", "/api/data", "/api/prompts", "/api/media", "/api/generation-tasks", "/api/prompt-source", "/api/remote-media", aiProxyPath, "/api/image-proxy", canvasAgentProxyPath];
 const allowedNetworks = (process.env.INFINITE_CANVAS_ALLOWED_NETWORKS || "127.0.0.1,::1,192.168.0.0/22,172.16.0.0/12")
     .split(",")
     .map((value) => value.trim())
@@ -409,6 +412,68 @@ async function workspaceContext(req: IncomingMessage, requestUrl = new URL(req.u
 
 function canWriteWorkspace(context: WorkspaceContext) {
     return context.role === "owner" || context.role === "editor";
+}
+
+async function resolveGenerationChannel(model: string, kind: "image" | "video", original?: Omit<ResolvedGenerationChannel, "apiKey" | "script">): Promise<ResolvedGenerationChannel> {
+    const stored = asRecord(await readStoredServerConfig());
+    const config = asRecord(stored?.config);
+    const channels = Array.isArray(config?.channels) ? config.channels.map(asRecord).filter((channel) => channel) : [];
+    const separator = model.indexOf("::");
+    const modelName = separator < 0 ? model : model.slice(separator + 2);
+    const channelId = separator < 0 ? original?.id : model.slice(0, separator);
+    const channel = channels.find((candidate) => (!channelId || candidate!.id === channelId) && Array.isArray(candidate!.models) && candidate!.models.some((item: unknown) => {
+        const entry = asRecord(item);
+        return entry?.name === modelName && entry.capability === kind;
+    }));
+    if (!channel || typeof channel.apiKey !== "string" || !channel.apiKey || typeof channel.baseUrl !== "string") throw new GenerationTaskError("生成渠道未配置或模型能力不匹配", 422);
+    const entry = (channel.models as unknown[]).map(asRecord).find((item) => item?.name === modelName);
+    if (entry?.script) throw new GenerationTaskError("脚本模型尚不支持持久化执行，请选择内建渠道模型", 422);
+    const baseUrl = providerBaseUrl(channel.baseUrl, channel.apiFormat);
+    const resolved: ResolvedGenerationChannel = { id: String(channel.id), baseUrl, apiKey: channel.apiKey, apiFormat: channel.apiFormat as ResolvedGenerationChannel["apiFormat"], model: modelName };
+    if (original && (original.id !== resolved.id || original.baseUrl !== resolved.baseUrl || original.apiFormat !== resolved.apiFormat || original.model !== resolved.model)) throw new GenerationTaskError("原生成渠道已变化，请恢复原配置后核对任务", 409);
+    return resolved;
+}
+
+function generationTaskAccess(): Plugin {
+    const options = { resolveChannel: resolveGenerationChannel };
+    const worker = createGenerationWorker(options);
+    const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+        const url = new URL(req.url || "/", "http://localhost");
+        if (url.pathname !== "/api/generation-tasks" && !url.pathname.startsWith("/api/generation-tasks/")) return next();
+        res.setHeader("Cache-Control", "no-store");
+        try {
+            const context = await workspaceContext(req, url);
+            if (!context) return sendJson(res, 403, { error: "工作区不存在或无权访问" });
+            const match = /^\/api\/generation-tasks(?:\/([^/]+)(?:\/(resume))?)?$/.exec(url.pathname);
+            if (!match) return sendJson(res, 404, { error: "生成任务接口不存在" });
+            const id = match[1] ? decodeURIComponent(match[1]) : "";
+            if (req.method === "GET" && !id) return sendJson(res, 200, { items: await listGenerationTasks(context.id, url.searchParams.get("kind") || undefined, {
+                ...(url.searchParams.has("source") ? { source: url.searchParams.get("source") as "all" | "workbench" | "canvas" } : {}),
+                ...Object.fromEntries(["projectId", "nodeId", "requestId"].filter((key) => url.searchParams.has(key)).map((key) => [key, url.searchParams.get(key)!])),
+            }) });
+            if (req.method === "GET" && id && !match[2]) return sendJson(res, 200, { task: await readGenerationTask(context.id, id) });
+            if (!canWriteWorkspace(context)) return sendJson(res, 403, { error: "当前工作区为只读权限" });
+            if (req.method === "POST" && !id) {
+                const raw = await readRequestBuffer(req, maxAiRequestBytes, "生成请求过大");
+                let body: unknown;
+                try { body = JSON.parse(raw.toString("utf8")); } catch { return sendJson(res, 400, { error: "生成请求不是有效 JSON" }); }
+                return sendJson(res, 202, { task: await createGenerationTask(context, body, options) });
+            }
+            if (req.method === "POST" && id && match[2] === "resume") return sendJson(res, 200, { task: await resumeGenerationTask(context, id) });
+            if (req.method === "DELETE" && id && !match[2]) { await hideGenerationTask(context, id); return sendJson(res, 200, { hidden: true }); }
+            return sendJson(res, 405, { error: "Method not allowed" });
+        } catch (error) {
+            if (error instanceof GenerationTaskError || error instanceof RequestBodyError) return sendJson(res, error.status, { error: error.message });
+            // Provider payloads and credentials never enter request logs or public error responses.
+            return sendJson(res, 500, { error: "持久化生成任务服务暂时不可用" });
+        }
+    };
+    const attach = (server: { middlewares: { use: (handler: typeof middleware) => void }; httpServer?: { once: (event: string, listener: () => void) => void } | null }) => {
+        server.middlewares.use(middleware);
+        if (process.env.INFINITE_CANVAS_GENERATION_WORKER !== "off") worker.start();
+        server.httpServer?.once("close", () => { void worker.stop(); });
+    };
+    return { name: "generation-task-access", configureServer: attach, configurePreviewServer: attach };
 }
 
 function canvasAgentGateway(): Plugin {
@@ -1630,7 +1695,7 @@ function localPluginsManifest(): Plugin {
 export default defineConfig({
     base: process.env.VITE_BASE || "/",
     optimizeDeps: { include: ["file-type"] },
-    plugins: [react(), localPluginsManifest(), sessionContext(), authAccess(), serverApiAccessControl(), canvasAgentGateway(), workspaceAccess(), userPreferencesAccess(), systemBackupAccess(), adminAccess(), workspaceMediaStorage(), workspaceDataAccess(), workspacePromptsAccess(), serverConfigStorage(), aiProviderProxy(), promptSourceProxy(), remoteMediaProxy(), imageProxy()],
+    plugins: [react(), localPluginsManifest(), sessionContext(), authAccess(), serverApiAccessControl(), canvasAgentGateway(), workspaceAccess(), userPreferencesAccess(), systemBackupAccess(), adminAccess(), workspaceMediaStorage(), workspaceDataAccess(), workspacePromptsAccess(), generationTaskAccess(), serverConfigStorage(), aiProviderProxy(), promptSourceProxy(), remoteMediaProxy(), imageProxy()],
     preview: { allowedHosts: (process.env.INFINITE_CANVAS_ALLOWED_HOSTS || "ubuntu-server").split(",").map((host) => host.trim()).filter(Boolean) },
     resolve: {
         alias: {
