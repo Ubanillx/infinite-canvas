@@ -17,18 +17,22 @@ import { clampVideoSeconds } from "@/lib/media-size";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes, formatDuration } from "@/lib/image-utils";
 import { boolConfig, isSeedanceVideoConfig, normalizeSeedanceRatio, seedanceReferenceLabel, seedanceVideoReferenceError, seedanceVideoReferenceHint, SEEDANCE_REFERENCE_LIMITS, SEEDANCE_VIDEO_MIME_TYPES } from "@/lib/seedance-video";
-import { deleteStoredMedia, resolveMediaUrl, uploadMediaFile } from "@/services/file-storage";
-import { resolveImageUrl, ensureImagePreview, getImagePreviewRevision, previewUrlFor, subscribeImagePreviews, uploadImage } from "@/services/image-storage";
+import { deleteStoredMedia, getMediaBlob, resolveMediaUrl, uploadMediaFile } from "@/services/file-storage";
+import { resolveImageUrl, getImageBlob, ensureImagePreview, getImagePreviewRevision, previewUrlFor, subscribeImagePreviews, uploadImage } from "@/services/image-storage";
 import { createVideoGenerationTask, pollVideoGenerationTask, storeGeneratedVideo, type VideoGenerationTask } from "@/services/api/video";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
-import { modelOptionLabel, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { modelOptionLabel, resolveModelScript, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 import i18n from "@/i18n";
 import { saveWorkspaceData } from "@/services/workspace-data";
 import { readWorkspaceLogs } from "@/services/workspace-logs";
+import { getActiveWorkspace } from "@/lib/workspace";
+import { hideGenerationTask, listGenerationTasks, resumeGenerationTask, submitWorkbenchGenerationTask } from "@/services/api/generation-tasks";
+import { isGenerationTaskActive, type GenerationTask } from "@/types/generation-task";
+import { taskReferencesToWorkbench } from "@/pages/generation-task-references";
 
 type GeneratedVideo = {
     id: string;
@@ -50,6 +54,9 @@ type GenerationResult = {
 
 type GenerationLog = {
     id: string;
+    taskId?: string;
+    taskStatus?: GenerationTask["status"];
+    errorCode?: string;
     createdAt: number;
     title: string;
     prompt: string;
@@ -116,6 +123,12 @@ export default function VideoPage() {
     const updateAgentTask = useWorkbenchAgentStore((state) => state.updateTask);
     const processedCommandRef = useRef(0);
     const agentTaskIdRef = useRef<string | undefined>(undefined);
+    const submittingRef = useRef(false);
+    const selectedTaskIdRef = useRef<string | null>(null);
+    const refreshSequenceRef = useRef(0);
+    const pageWorkspaceIdRef = useRef(getActiveWorkspace()?.id);
+    const workspaceChangedRef = useRef(false);
+    const pageWorkspaceIsCurrent = () => getActiveWorkspace()?.id === pageWorkspaceIdRef.current;
 
     const model = effectiveConfig.videoModel || effectiveConfig.model;
     const canGenerate = Boolean(prompt.trim());
@@ -128,7 +141,9 @@ export default function VideoPage() {
     }, [running, startedAt]);
 
     useEffect(() => {
-        void refreshLogs();
+        void refreshLogs().catch(() => undefined);
+        const timer = window.setInterval(() => { void refreshLogs().catch(() => undefined); }, 2500);
+        return () => window.clearInterval(timer);
     }, []);
 
     const addReferences = async (files?: FileList | null) => {
@@ -212,6 +227,8 @@ export default function VideoPage() {
         }
     };
     const generate = async () => {
+        if (submittingRef.current) return;
+        if (!pageWorkspaceIsCurrent()) return message.error("工作区已切换，请刷新工作台后再生成");
         const agentTaskId = agentTaskIdRef.current;
         agentTaskIdRef.current = undefined;
         const snapshot = buildRequestSnapshot();
@@ -219,25 +236,57 @@ export default function VideoPage() {
             if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", error: t("videoWorkbench.invalidParams") });
             return;
         }
-        setElapsedMs(0);
+        const workspaceId = getActiveWorkspace()?.id;
+        if (!workspaceId) return message.error("请先选择工作区");
+        submittingRef.current = true;
         setRunning(true);
+        try {
+            if ([...snapshot.references, ...snapshot.videoReferences, ...snapshot.audioReferences].some((item) => !item.storageKey) || (await Promise.all([...snapshot.references.map((item) => getImageBlob(item.storageKey!)), ...[...snapshot.videoReferences, ...snapshot.audioReferences].map((item) => getMediaBlob(item.storageKey!))])).some((blob) => !blob)) throw new Error("参考媒体已丢失，请重新上传后再生成");
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : "参考媒体读取失败";
+            if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", error: detail });
+            message.error(detail);
+            submittingRef.current = false;
+            setRunning(false);
+            return;
+        }
+        const requestId = nanoid();
+        let submitted = false;
+        setElapsedMs(0);
         if (agentTaskId) updateAgentTask(agentTaskId, { status: "running", error: undefined });
         setPreviewLog(null);
         setResults([{ id: nanoid(), status: "pending" }]);
-        const batchStartedAt = performance.now();
-        setStartedAt(batchStartedAt);
+        setStartedAt(performance.now());
         try {
-            const task = await createVideoGenerationTask(snapshot.config, snapshot.text, snapshot.references, { videos: snapshot.videoReferences, audios: snapshot.audioReferences });
-            const log = buildLog({ prompt: snapshot.text, model, config: snapshot.config, references: snapshot.references, videoReferences: snapshot.videoReferences, audioReferences: snapshot.audioReferences, durationMs: 0, status: "pending", task });
-            await saveLog(log, false);
-            void pollGenerationLog(log, snapshot.config, agentTaskId);
+            if (resolveModelScript(effectiveConfig, model)) {
+                selectedTaskIdRef.current = null;
+                const task = await createVideoGenerationTask(snapshot.config, snapshot.text, snapshot.references, { videos: snapshot.videoReferences, audios: snapshot.audioReferences });
+                submitted = true;
+                const log: GenerationLog = { id: nanoid(), createdAt: Date.now(), title: snapshot.text.slice(0, 12) || model, prompt: snapshot.text, time: new Date().toLocaleString(i18n.resolvedLanguage, { hour12: false }), model, config: { model, videoModel: model, size: snapshot.config.size, vquality: snapshot.config.vquality, videoSeconds: snapshot.config.videoSeconds, videoGenerateAudio: snapshot.config.videoGenerateAudio, videoWatermark: snapshot.config.videoWatermark, videoMode: snapshot.config.videoMode }, references: snapshot.references, videoReferences: snapshot.videoReferences, audioReferences: snapshot.audioReferences, durationMs: 0, size: snapshot.config.size, resolution: normalizeResolution(snapshot.config.vquality), seconds: snapshot.config.videoSeconds, status: "pending", task };
+                await saveLog(log, false);
+                void pollGenerationLog(log, snapshot.config, agentTaskId);
+                return;
+            }
+            const settings = { size: snapshot.config.size, resolution: snapshot.config.vquality, seconds: snapshot.config.videoSeconds, generateAudio: snapshot.config.videoGenerateAudio === "true", watermark: snapshot.config.videoWatermark === "true", mode: snapshot.config.videoMode, systemPrompt: snapshot.config.systemPrompt };
+            const task = await submitWorkbenchGenerationTask(workspaceId, { requestId, kind: "video", prompt: snapshot.text, model, settings, references: [
+                ...snapshot.references.map((item) => ({ kind: "image" as const, storageKey: item.storageKey || "", name: item.name, mimeType: item.type })),
+                ...snapshot.videoReferences.map((item) => ({ kind: "video" as const, storageKey: item.storageKey || "", name: item.name, mimeType: item.type, width: item.width, height: item.height, durationMs: item.durationMs })),
+                ...snapshot.audioReferences.map((item) => ({ kind: "audio" as const, storageKey: item.storageKey || "", name: item.name, mimeType: item.type, durationMs: item.durationMs })),
+            ] });
+            submitted = true;
+            if (getActiveWorkspace()?.id !== workspaceId) { setRunning(false); return; }
+            selectedTaskIdRef.current = task.id;
+            setPreviewLog(videoTaskLog(task));
+            await refreshLogs().catch(() => undefined);
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : t("workbench.generationFailed");
             setResults([{ id: nanoid(), status: "failed", error: errorMessage }]);
             if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", successCount: 0, failCount: 1, error: errorMessage });
-            await saveLog(buildLog({ prompt: snapshot.text, model, config: snapshot.config, references: snapshot.references, videoReferences: snapshot.videoReferences, audioReferences: snapshot.audioReferences, durationMs: performance.now() - batchStartedAt, status: "failed", error: errorMessage }));
+            if (resolveModelScript(effectiveConfig, model) && pageWorkspaceIsCurrent()) await saveLog({ id: nanoid(), createdAt: Date.now(), title: snapshot.text.slice(0, 12) || model, prompt: snapshot.text, time: new Date().toLocaleString(i18n.resolvedLanguage, { hour12: false }), model, config: { model, videoModel: model, size: snapshot.config.size, vquality: snapshot.config.vquality, videoSeconds: snapshot.config.videoSeconds, videoGenerateAudio: snapshot.config.videoGenerateAudio, videoWatermark: snapshot.config.videoWatermark, videoMode: snapshot.config.videoMode }, references: snapshot.references, videoReferences: snapshot.videoReferences, audioReferences: snapshot.audioReferences, durationMs: 0, size: snapshot.config.size, resolution: normalizeResolution(snapshot.config.vquality), seconds: snapshot.config.videoSeconds, status: "failed", error: errorMessage });
             message.error(errorMessage);
-            setRunning(false);
+        } finally {
+            submittingRef.current = false;
+            if (!submitted) setRunning(false);
         }
     };
 
@@ -247,6 +296,10 @@ export default function VideoPage() {
         processedCommandRef.current = videoCommand.nonce;
         clearVideoCommand();
         if (typeof videoCommand.prompt === "string") setPrompt(videoCommand.prompt);
+        if (videoCommand.references) {
+            const refs = taskReferencesToWorkbench(pageWorkspaceIdRef.current || "", videoCommand.references);
+            setReferences(refs.images); setVideoReferences(refs.videos); setAudioReferences(refs.audios);
+        }
         if (videoCommand.run && running) {
             if (videoCommand.taskId) updateAgentTask(videoCommand.taskId, { status: "failed", error: t("videoWorkbench.busy") });
             return;
@@ -283,6 +336,14 @@ export default function VideoPage() {
     };
 
     const retryResult = () => {
+        if (!pageWorkspaceIsCurrent()) return message.error("工作区已切换，请刷新工作台后再操作");
+        if (previewLog?.taskId) {
+            if (previewLog.taskStatus === "needs_attention" && ["archive_failed", "poll_error", "poll_exhausted", "configuration_changed"].includes(previewLog.errorCode || "")) {
+                void resumeGenerationTask(getActiveWorkspace()!.id, previewLog.taskId).then(() => refreshLogs()).catch((error) => message.error(error instanceof Error ? error.message : t("workbench.generationFailed")));
+                return;
+            }
+            if (previewLog.taskStatus === "needs_attention") { message.warning(previewLog.error || "任务提交状态不明，请核对后处理"); return; }
+        }
         void generate();
     };
 
@@ -291,6 +352,7 @@ export default function VideoPage() {
     };
 
     const saveResultToAssets = (video: GeneratedVideo) => {
+        if (!pageWorkspaceIsCurrent()) return message.error("工作区已切换，请刷新工作台后再操作");
         addAsset({
             kind: "video",
             title: t("videoWorkbench.resultTitle"),
@@ -316,6 +378,7 @@ export default function VideoPage() {
     };
 
     const createSession = () => {
+        selectedTaskIdRef.current = null;
         setLogsOpen(false);
         setPrompt("");
         setReferences([]);
@@ -329,11 +392,20 @@ export default function VideoPage() {
     };
 
     const deleteSelectedLogs = () => {
-        const mediaKeys = logs
-            .filter((log) => selectedLogIds.includes(log.id))
+        if (!pageWorkspaceIsCurrent()) return message.error("工作区已切换，请刷新工作台后再操作");
+        const selected = logs.filter((log) => selectedLogIds.includes(log.id));
+        const legacy = selected.filter((log) => !log.taskId);
+        const mediaKeys = legacy
             .map((log) => log.video?.storageKey)
             .filter((key): key is string => Boolean(key));
-        void Promise.all([deleteStoredMedia(mediaKeys), ...selectedLogIds.map((id) => logStore.removeItem(id))]).then(async () => { const next = await refreshLogs(true, false); await saveWorkspaceData("video-workbench", { logs: next.map(serializeLog) }).catch(() => undefined); });
+        void (async () => {
+            const workspaceId = getActiveWorkspace()?.id;
+            if (workspaceId) await Promise.all(selected.filter((log) => log.taskId).map((log) => hideGenerationTask(workspaceId, log.taskId!)));
+            await Promise.all([deleteStoredMedia(mediaKeys), ...legacy.map((log) => logStore.removeItem(log.id))]);
+            const next = await readStoredLogs(false);
+            await saveWorkspaceData("video-workbench", { logs: next.filter((log) => !log.taskId).map(serializeLog) });
+            await refreshLogs();
+        })().catch((error) => message.error(error instanceof Error ? error.message : t("workbench.generationFailed")));
         if (previewLog && selectedLogIds.includes(previewLog.id)) {
             setPreviewLog(null);
             setResults([]);
@@ -343,15 +415,38 @@ export default function VideoPage() {
     };
 
     const saveLog = async (log: GenerationLog, resumePending = true) => {
+        if (!pageWorkspaceIsCurrent()) throw new Error("工作区已切换，旧工作台记录未写入");
         await logStore.setItem(log.id, serializeLog(log));
+        if (!pageWorkspaceIsCurrent()) throw new Error("工作区已切换，旧工作台记录未写入");
         const next = await refreshLogs(resumePending, false);
-        await saveWorkspaceData("video-workbench", { logs: next.map(serializeLog) }).catch(() => undefined);
+        if (!pageWorkspaceIsCurrent()) throw new Error("工作区已切换，旧工作台记录未写入");
+        await saveWorkspaceData("video-workbench", { logs: next.filter((item) => !item.taskId).map(serializeLog) }).catch(() => undefined);
     };
 
     const refreshLogs = async (resumePending = true, preferRemote = true) => {
-        const nextLogs = await readStoredLogs(preferRemote);
+        if (!pageWorkspaceIsCurrent()) {
+            if (!workspaceChangedRef.current) {
+                workspaceChangedRef.current = true;
+                selectedTaskIdRef.current = null;
+                setPrompt(""); setReferences([]); setVideoReferences([]); setAudioReferences([]);
+                setResults([]); setLogs([]); setPreviewLog(null); setRunning(false); setSelectedLogIds([]);
+            }
+            return [];
+        }
+        const sequence = ++refreshSequenceRef.current;
+        const workspaceId = getActiveWorkspace()?.id;
+        const [legacy, tasks] = await Promise.all([readStoredLogs(preferRemote), workspaceId ? listGenerationTasks(workspaceId, "video") : Promise.resolve([])]);
+        if (!pageWorkspaceIsCurrent()) return [];
+        const nextLogs = [...tasks.map(videoTaskLog), ...legacy].sort((a, b) => b.createdAt - a.createdAt);
+        if (sequence !== refreshSequenceRef.current || !pageWorkspaceIsCurrent() || getActiveWorkspace()?.id !== workspaceId) return nextLogs;
         setLogs(nextLogs);
-        if (resumePending) resumePendingLogs(nextLogs);
+        if (resumePending) resumePendingLogs(legacy);
+        const selected = tasks.find((task) => task.id === selectedTaskIdRef.current);
+        if (selected) {
+            setPreviewLog(videoTaskLog(selected));
+            setResults(videoTaskResults(selected));
+            setRunning(isGenerationTaskActive(selected));
+        }
         return nextLogs;
     };
 
@@ -362,7 +457,7 @@ export default function VideoPage() {
     };
 
     const pollGenerationLog = async (log: GenerationLog, configOverride?: AiConfig, agentTaskId?: string) => {
-        if (!log.task || activeLogIdsRef.current.has(log.id)) return;
+        if (!pageWorkspaceIsCurrent() || !log.task || activeLogIdsRef.current.has(log.id)) return;
         activeLogIdsRef.current.add(log.id);
         setRunning(true);
         setStartedAt((value) => value || performance.now());
@@ -371,6 +466,7 @@ export default function VideoPage() {
         try {
             for (let attempt = 0; attempt < 120; attempt += 1) {
                 const state = await pollVideoGenerationTask(configOverride || taskConfig, log.task);
+                if (!pageWorkspaceIsCurrent()) return;
                 if (state.status === "completed") {
                     const stored = await storeGeneratedVideo(state.result);
                     const nextVideo: GeneratedVideo = {
@@ -394,6 +490,7 @@ export default function VideoPage() {
                 await delay(log.task.provider === "seedance" ? 5000 : 2500);
             }
         } catch (error) {
+            if (!pageWorkspaceIsCurrent()) return;
             const errorMessage = error instanceof Error ? error.message : t("workbench.generationFailed");
             setResults([{ id: log.id, status: "failed", error: errorMessage }]);
             if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", successCount: 0, failCount: 1, error: errorMessage });
@@ -401,7 +498,7 @@ export default function VideoPage() {
             message.error(errorMessage);
         } finally {
             activeLogIdsRef.current.delete(log.id);
-            if (!activeLogIdsRef.current.size) {
+            if (!activeLogIdsRef.current.size && pageWorkspaceIsCurrent()) {
                 setRunning(false);
                 setStartedAt(0);
             }
@@ -409,6 +506,8 @@ export default function VideoPage() {
     };
 
     const previewGenerationLog = (log: GenerationLog) => {
+        if (!pageWorkspaceIsCurrent()) return message.error("工作区已切换，请刷新工作台后再操作");
+        selectedTaskIdRef.current = log.taskId || null;
         setPreviewLog(log);
         setLogsOpen(false);
         setPrompt(log.prompt);
@@ -423,6 +522,10 @@ export default function VideoPage() {
         if (log.config.videoWatermark) updateConfig("videoWatermark", log.config.videoWatermark);
         if (log.config.videoMode) updateConfig("videoMode", log.config.videoMode);
         setResults(log.status === "pending" ? [{ id: log.id, status: "pending" }] : log.video ? [{ id: log.video.id, status: "success", video: log.video }] : [{ id: log.id, status: "failed", error: log.error || t("workbench.generationFailed") }]);
+        if (log.taskId) void listGenerationTasks(getActiveWorkspace()!.id, "video").then((tasks) => {
+            const task = tasks.find((item) => item.id === log.taskId);
+            if (task && selectedTaskIdRef.current === task.id) setResults(videoTaskResults(task));
+        }).catch((error) => message.error(error instanceof Error ? error.message : t("workbench.generationFailed")));
     };
 
     const resizeComposer = (height: number) => {
@@ -649,6 +752,42 @@ function LogCard({ log, selected, active, onSelectedChange, onClick }: { log: Ge
     );
 }
 
+function videoTaskResults(task: GenerationTask): GenerationResult[] {
+    const results: GenerationResult[] = task.outputs.map((output) => ({
+        id: output.id, status: "success", video: {
+            id: output.id, storageKey: output.storageKey,
+            url: `/api/media/blob/${encodeURIComponent(output.storageKey)}?workspaceId=${encodeURIComponent(task.workspaceId)}`,
+            durationMs: output.durationMs || 0, width: output.width || 0, height: output.height || 0,
+            bytes: output.bytes, mimeType: output.mimeType,
+        },
+    }));
+    if (isGenerationTaskActive(task)) results.push({ id: task.id, status: "pending" });
+    else if (task.status === "failed" || task.status === "needs_attention" || task.status === "partial" && task.failCount) results.push({ id: task.id, status: "failed", error: task.error || task.status });
+    return results;
+}
+
+function videoTaskLog(task: GenerationTask): GenerationLog {
+    const settings = task.settings;
+    const createdAt = Date.parse(task.createdAt);
+    const video = videoTaskResults(task).find((result) => result.video)?.video;
+    const resolution = normalizeResolution(String(settings.resolution || ""));
+    const config: GenerationLogConfig = {
+        model: task.model, videoModel: task.model, size: String(settings.size || ""), vquality: resolution,
+        videoSeconds: String(settings.seconds || ""), videoGenerateAudio: String(settings.generateAudio ?? true),
+        videoWatermark: String(settings.watermark ?? false), videoMode: settings.mode === "reference" ? "reference" : "frames",
+    };
+    return {
+        id: task.id, taskId: task.id, taskStatus: task.status, errorCode: task.errorCode,
+        createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),
+        title: task.prompt.slice(0, 12) || task.model, prompt: task.prompt,
+        time: new Date(task.createdAt).toLocaleString(i18n.resolvedLanguage, { hour12: false }),
+        model: task.model, config, references: taskReferencesToWorkbench(task.workspaceId, task.references || []).images, videoReferences: taskReferencesToWorkbench(task.workspaceId, task.references || []).videos, audioReferences: taskReferencesToWorkbench(task.workspaceId, task.references || []).audios,
+        durationMs: 0, size: config.size, resolution, seconds: config.videoSeconds,
+        status: isGenerationTaskActive(task) ? "pending" : video ? "success" : "failed",
+        video, error: task.error,
+    };
+}
+
 async function readStoredLogs(preferRemote = true) {
     if (typeof window === "undefined") return [];
     const logs = preferRemote ? await readWorkspaceLogs<GenerationLog>("video-workbench", logStore) : await readLocalLogs();
@@ -748,39 +887,6 @@ function normalizeLogConfig(log: Partial<GenerationLog>): GenerationLogConfig {
         videoGenerateAudio: log.config?.videoGenerateAudio || "true",
         videoWatermark: log.config?.videoWatermark || "false",
         videoMode: log.config?.videoMode === "reference" ? "reference" : "frames",
-    };
-}
-
-function buildLog({ prompt, model, config, references, videoReferences, audioReferences, durationMs, status, task, video, error }: { prompt: string; model: string; config: AiConfig; references: ReferenceImage[]; videoReferences: ReferenceVideo[]; audioReferences: ReferenceAudio[]; durationMs: number; status: GenerationLog["status"]; task?: VideoGenerationTask; video?: GeneratedVideo; error?: string }): GenerationLog {
-    const logConfig = {
-        model: config.model,
-        videoModel: config.videoModel,
-        size: config.size,
-        vquality: normalizeResolution(config.vquality),
-        videoSeconds: config.videoSeconds,
-        videoGenerateAudio: config.videoGenerateAudio,
-        videoWatermark: config.videoWatermark,
-        videoMode: config.videoMode === "reference" ? "reference" : "frames",
-    };
-    return {
-        id: nanoid(),
-        createdAt: Date.now(),
-        title: prompt.slice(0, 12) || i18n.t("workbench.untitled"),
-        prompt,
-        time: new Date().toLocaleString(i18n.resolvedLanguage, { hour12: false }),
-        model,
-        config: logConfig,
-        references,
-        videoReferences,
-        audioReferences,
-        durationMs,
-        size: logConfig.size,
-        resolution: logConfig.vquality,
-        seconds: logConfig.videoSeconds,
-        status,
-        task,
-        video,
-        error,
     };
 }
 

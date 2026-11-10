@@ -44,7 +44,25 @@ export type CanvasNodeText = {
     content: string;
 };
 
+export type CanvasGenerationTaskBinding = {
+    requestId: string;
+    taskId?: string;
+    workspaceId: string;
+    projectId: string;
+    nodeId: string;
+    originNodeId?: string;
+    kind: CanvasGenerationMode;
+    status?: import("./generation-task").GenerationTaskStatus;
+    slotIds: string[];
+    preservePrimary?: boolean;
+    submissionState?: "not_submitted";
+    requestFingerprint?: string;
+    references?: import("./generation-task").GenerationTaskReference[];
+};
+
 export type CanvasNodeMetadata = {
+    generationTask?: CanvasGenerationTaskBinding;
+    generationDispatchError?: { requestId?: string; kind: CanvasGenerationMode; message: string; createdAt: string };
     templateInput?: { name: string; description: string; required: boolean };
     content?: string;
     composerContent?: string;

@@ -13,12 +13,12 @@ import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { imageReferenceLabel } from "@/lib/image-reference-prompt";
-import { modelOptionLabel, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { modelOptionLabel, resolveModelScript, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { nanoid } from "nanoid";
 import { formatDuration } from "@/lib/image-utils";
-import { requestEdit, requestGeneration } from "@/services/api/image";
 import { deleteStoredImages, getImageBlob, ensureImagePreview, getImagePreviewRevision, previewUrlFor, resolveImageUrl, subscribeImagePreviews, uploadImage } from "@/services/image-storage";
+import { requestEdit, requestGeneration } from "@/services/api/image";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
 import type { ReferenceImage } from "@/types/image";
@@ -26,6 +26,10 @@ import i18n from "@/i18n";
 import { workspaceStoreName } from "@/lib/workspace";
 import { saveWorkspaceData } from "@/services/workspace-data";
 import { readWorkspaceLogs } from "@/services/workspace-logs";
+import { getActiveWorkspace } from "@/lib/workspace";
+import { hideGenerationTask, listGenerationTasks, resumeGenerationTask, submitWorkbenchGenerationTask } from "@/services/api/generation-tasks";
+import { isGenerationTaskActive, type GenerationTask } from "@/types/generation-task";
+import { taskReferencesToWorkbench } from "@/pages/generation-task-references";
 
 type GeneratedImage = {
     id: string;
@@ -47,6 +51,10 @@ type GenerationResult = {
 
 type GenerationLog = {
     id: string;
+    taskId?: string;
+    taskStatus?: GenerationTask["status"];
+    errorCode?: string;
+    error?: string;
     createdAt: number;
     title: string;
     prompt: string;
@@ -109,6 +117,12 @@ export default function ImagePage() {
     const updateAgentTask = useWorkbenchAgentStore((state) => state.updateTask);
     const processedCommandRef = useRef(0);
     const agentTaskIdRef = useRef<string | undefined>(undefined);
+    const submittingRef = useRef(false);
+    const selectedTaskIdRef = useRef<string | null>(null);
+    const refreshSequenceRef = useRef(0);
+    const pageWorkspaceIdRef = useRef(getActiveWorkspace()?.id);
+    const workspaceChangedRef = useRef(false);
+    const pageWorkspaceIsCurrent = () => getActiveWorkspace()?.id === pageWorkspaceIdRef.current;
 
     const model = effectiveConfig.imageModel || effectiveConfig.model;
     const canGenerate = Boolean(prompt.trim());
@@ -122,7 +136,9 @@ export default function ImagePage() {
     }, [running, startedAt]);
 
     useEffect(() => {
-        void refreshLogs();
+        void refreshLogs().catch(() => undefined);
+        const timer = window.setInterval(() => { void refreshLogs().catch(() => undefined); }, 2500);
+        return () => window.clearInterval(timer);
     }, []);
 
     const addReferences = async (files?: FileList | null) => {
@@ -162,6 +178,8 @@ export default function ImagePage() {
     };
 
     const generate = async () => {
+        if (submittingRef.current) return;
+        if (!pageWorkspaceIsCurrent()) return message.error("工作区已切换，请刷新工作台后再生成");
         const agentTaskId = agentTaskIdRef.current;
         agentTaskIdRef.current = undefined;
         const text = prompt.trim();
@@ -183,42 +201,76 @@ export default function ImagePage() {
             return;
         }
 
-        setElapsedMs(0);
+        const workspaceId = getActiveWorkspace()?.id;
+        if (!workspaceId) return message.error("请先选择工作区");
+        submittingRef.current = true;
         setRunning(true);
-        if (agentTaskId) updateAgentTask(agentTaskId, { status: "running", error: undefined });
-        setPreviewLog(null);
-        setResults(Array.from({ length: generationCount }, () => ({ id: nanoid(), status: "pending" })));
-        setSelectedResultIndex(0);
-        const batchStartedAt = performance.now();
-        setStartedAt(batchStartedAt);
-
-        const tasks = Array.from({ length: generationCount }, (_, index) => runGenerationSlot(index, snapshot));
-
-        const result = await Promise.allSettled(tasks);
-        const successImages = result.filter((item): item is PromiseFulfilledResult<GeneratedImage> => item.status === "fulfilled").map((item) => item.value);
-        const successCount = successImages.length;
-        const failCount = generationCount - successCount;
-        const failed = result.find((item): item is PromiseRejectedResult => item.status === "rejected");
-        const error = failed?.reason instanceof Error ? failed.reason.message : failCount ? t("workbench.generationFailed") : undefined;
-        if (agentTaskId) updateAgentTask(agentTaskId, { status: successCount ? "succeeded" : "failed", successCount, failCount, error: successCount ? undefined : error });
-
         try {
-            saveLog(
-                buildLog({
-                    prompt: text,
-                    model,
-                    config: { ...snapshot.config, count: String(generationCount) },
-                    references: snapshot.references,
-                    durationMs: performance.now() - batchStartedAt,
-                    successCount,
-                    failCount,
-                    status: successCount ? "success" : "failed",
-                    images: successImages,
-                }),
-            );
-            successCount ? message.success(t("imageWorkbench.generated")) : message.error(failed?.reason instanceof Error ? failed.reason.message : t("workbench.generationFailed"));
-        } finally {
+            if (snapshot.references.some((item) => !item.storageKey) || (await Promise.all(snapshot.references.map((item) => getImageBlob(item.storageKey!)))).some((blob) => !blob)) throw new Error("参考图片已丢失，请重新上传后再生成");
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : "参考图片读取失败";
+            if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", error: detail });
+            message.error(detail);
+            submittingRef.current = false;
             setRunning(false);
+            return;
+        }
+        if (resolveModelScript(effectiveConfig, model)) {
+            selectedTaskIdRef.current = null;
+            setPreviewLog(null);
+            setResults(Array.from({ length: generationCount }, () => ({ id: nanoid(), status: "pending" })));
+            setSelectedResultIndex(0);
+            const started = performance.now();
+            setStartedAt(started);
+            if (agentTaskId) updateAgentTask(agentTaskId, { status: "running", error: undefined });
+            try {
+                const settled = await Promise.allSettled(Array.from({ length: generationCount }, async (_, index) => {
+                    const itemStarted = performance.now();
+                    try {
+                        const generated = snapshot.references.length ? await requestEdit(snapshot.config, text, snapshot.references) : await requestGeneration(snapshot.config, text);
+                        if (!generated[0]) throw new Error(t("imageWorkbench.missingResult"));
+                        const stored = await uploadImage(generated[0].dataUrl);
+                        const image: GeneratedImage = { id: generated[0].id, dataUrl: stored.url, storageKey: stored.storageKey, durationMs: performance.now() - itemStarted, width: stored.width, height: stored.height, bytes: stored.bytes, mimeType: stored.mimeType };
+                        setResults((value) => value.map((item, slot) => slot === index ? { ...item, status: "success", image } : item));
+                        return image;
+                    } catch (error) {
+                        setResults((value) => value.map((item, slot) => slot === index ? { ...item, status: "failed", error: error instanceof Error ? error.message : t("workbench.generationFailed") } : item));
+                        throw error;
+                    }
+                }));
+                const images = settled.flatMap((item) => item.status === "fulfilled" ? [item.value] : []);
+                const failCount = settled.length - images.length;
+                const failure = settled.find((item): item is PromiseRejectedResult => item.status === "rejected");
+                const error = failure?.reason instanceof Error ? failure.reason.message : failCount ? t("workbench.generationFailed") : undefined;
+                if (agentTaskId) updateAgentTask(agentTaskId, { status: images.length ? "succeeded" : "failed", successCount: images.length, failCount, error });
+                await saveLegacyLog({ id: nanoid(), createdAt: Date.now(), title: text.slice(0, 12) || model, prompt: text, time: new Date().toLocaleString(i18n.resolvedLanguage, { hour12: false }), model, config: { model, imageModel: model, quality: snapshot.config.quality, size: snapshot.config.size, count: String(generationCount) }, references: snapshot.references, durationMs: performance.now() - started, successCount: images.length, failCount, imageCount: images.length, size: snapshot.config.size, quality: snapshot.config.quality, status: images.length ? "success" : "failed", images, error });
+                images.length ? message.success(t("imageWorkbench.generated")) : message.error(error || t("workbench.generationFailed"));
+            } finally {
+                submittingRef.current = false;
+                setRunning(false);
+            }
+            return;
+        }
+        const requestId = nanoid();
+        let submitted = false;
+        setStartedAt(performance.now());
+        setResults(Array.from({ length: generationCount }, () => ({ id: nanoid(), status: "pending" })));
+        try {
+            const task = await submitWorkbenchGenerationTask(workspaceId, { requestId, kind: "image", prompt: text, model, settings: { quality: snapshot.config.quality, size: snapshot.config.size, count: generationCount, background: snapshot.config.background, systemPrompt: snapshot.config.systemPrompt }, references: snapshot.references.map((item) => ({ kind: "image" as const, storageKey: item.storageKey || "", name: item.name, mimeType: item.type })) });
+            submitted = true;
+            if (getActiveWorkspace()?.id !== workspaceId) { setRunning(false); return; }
+            selectedTaskIdRef.current = task.id;
+            setPreviewLog(await imageTaskLog(task));
+            await refreshLogs().catch(() => undefined);
+            if (agentTaskId) updateAgentTask(agentTaskId, { status: "running", error: undefined });
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : t("workbench.generationFailed");
+            setResults([{ id: requestId, status: "failed", error: detail }]);
+            if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", error: detail });
+            message.error(detail);
+        } finally {
+            submittingRef.current = false;
+            if (!submitted) setRunning(false);
         }
     };
 
@@ -228,6 +280,7 @@ export default function ImagePage() {
         processedCommandRef.current = imageCommand.nonce;
         clearImageCommand();
         if (typeof imageCommand.prompt === "string") setPrompt(imageCommand.prompt);
+        if (imageCommand.references) setReferences(taskReferencesToWorkbench(pageWorkspaceIdRef.current || "", imageCommand.references).images);
         if (imageCommand.run && running) {
             if (imageCommand.taskId) updateAgentTask(imageCommand.taskId, { status: "failed", error: t("imageWorkbench.busy") });
             return;
@@ -256,10 +309,12 @@ export default function ImagePage() {
 
     const saveResultToAssets = async (image: GeneratedImage, index: number) => {
         try {
+            if (!pageWorkspaceIsCurrent()) throw new Error("工作区已切换，请刷新工作台后再操作");
             const blob = image.storageKey ? await getImageBlob(image.storageKey) : null;
             const stored = blob && image.storageKey
                 ? { url: await resolveImageUrl(image.storageKey, image.dataUrl), storageKey: image.storageKey, width: image.width, height: image.height, bytes: blob.size, mimeType: image.mimeType || blob.type || "image/png" }
                 : await uploadImage(image.dataUrl);
+            if (!pageWorkspaceIsCurrent()) throw new Error("工作区已切换，请刷新工作台后再操作");
             addAsset({
                 kind: "image",
                 title: t("imageWorkbench.resultTitle", { count: index + 1 }),
@@ -270,8 +325,8 @@ export default function ImagePage() {
                 metadata: { source: "image-page", prompt },
             });
             message.success(t("common.addedToAssets"));
-        } catch {
-            message.error(t("assets.addFailed"));
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : t("assets.addFailed"));
         }
     };
 
@@ -297,11 +352,30 @@ export default function ImagePage() {
         setStartedAt(0);
         setSelectedLogIds([]);
         setPreviewLog(null);
+        selectedTaskIdRef.current = null;
+    };
+
+    const saveLegacyLog = async (log: GenerationLog) => {
+        if (!pageWorkspaceIsCurrent()) return;
+        await logStore.setItem(log.id, serializeLog(log));
+        if (!pageWorkspaceIsCurrent()) return;
+        const next = await refreshLogs(false);
+        if (pageWorkspaceIsCurrent()) await saveWorkspaceData("image-workbench", { logs: next.filter((item) => !item.taskId).map(serializeLog) }).catch(() => undefined);
     };
 
     const deleteSelectedLogs = () => {
-        const imageKeys = logs.filter((log) => selectedLogIds.includes(log.id)).flatMap((log) => log.images.map((image) => image.storageKey).filter((key): key is string => Boolean(key)));
-        void Promise.all([deleteStoredImages(imageKeys), ...selectedLogIds.map((id) => logStore.removeItem(id))]).then(async () => { const next = await refreshLogs(false); await saveWorkspaceData("image-workbench", { logs: next.map(serializeLog) }).catch(() => undefined); });
+        if (!pageWorkspaceIsCurrent()) return message.error("工作区已切换，请刷新工作台后再操作");
+        const selected = logs.filter((log) => selectedLogIds.includes(log.id));
+        const legacy = selected.filter((log) => !log.taskId);
+        const imageKeys = legacy.flatMap((log) => log.images.map((image) => image.storageKey).filter((key): key is string => Boolean(key)));
+        void (async () => {
+            const workspaceId = getActiveWorkspace()?.id;
+            if (workspaceId) await Promise.all(selected.filter((log) => log.taskId).map((log) => hideGenerationTask(workspaceId, log.taskId!)));
+            await Promise.all([deleteStoredImages(imageKeys), ...legacy.map((log) => logStore.removeItem(log.id))]);
+            const next = await readStoredLogs(false);
+            await saveWorkspaceData("image-workbench", { logs: next.filter((log) => !log.taskId).map(serializeLog) });
+            await refreshLogs();
+        })().catch((error) => message.error(error instanceof Error ? error.message : t("workbench.generationFailed")));
         if (previewLog && selectedLogIds.includes(previewLog.id)) {
             setPreviewLog(null);
             setResults([]);
@@ -310,17 +384,35 @@ export default function ImagePage() {
         setDeleteConfirmOpen(false);
     };
 
-    const saveLog = (log: GenerationLog) => {
-        void logStore.setItem(log.id, serializeLog(log)).then(async () => { const next = await refreshLogs(false); await saveWorkspaceData("image-workbench", { logs: next.map(serializeLog) }).catch(() => undefined); });
-    };
-
     const refreshLogs = async (preferRemote = true) => {
-        const next = await readStoredLogs(preferRemote);
+        if (!pageWorkspaceIsCurrent()) {
+            if (!workspaceChangedRef.current) {
+                workspaceChangedRef.current = true;
+                selectedTaskIdRef.current = null;
+                setPrompt(""); setReferences([]); setResults([]); setLogs([]); setPreviewLog(null);
+                setRunning(false); setSelectedLogIds([]); setSelectedResultIndex(0);
+            }
+            return [];
+        }
+        const sequence = ++refreshSequenceRef.current;
+        const workspaceId = getActiveWorkspace()?.id;
+        const [legacy, tasks] = await Promise.all([readStoredLogs(preferRemote), workspaceId ? listGenerationTasks(workspaceId, "image") : Promise.resolve([])]);
+        if (!pageWorkspaceIsCurrent()) return [];
+        const next = [...await Promise.all(tasks.map(imageTaskLog)), ...legacy].sort((a, b) => b.createdAt - a.createdAt);
+        if (sequence !== refreshSequenceRef.current || !pageWorkspaceIsCurrent() || getActiveWorkspace()?.id !== workspaceId) return next;
         setLogs(next);
+        const selected = tasks.find((task) => task.id === selectedTaskIdRef.current);
+        if (selected) {
+            setPreviewLog(next.find((log) => log.id === selected.id) || null);
+            setResults(imageTaskResults(selected));
+            setRunning(isGenerationTaskActive(selected));
+        }
         return next;
     };
 
     const previewGenerationLog = async (log: GenerationLog) => {
+        if (!pageWorkspaceIsCurrent()) return message.error("工作区已切换，请刷新工作台后再操作");
+        selectedTaskIdRef.current = log.taskId || null;
         setPreviewLog(log);
         setLogsOpen(false);
         setPrompt(log.prompt);
@@ -329,7 +421,10 @@ export default function ImagePage() {
         if (log.config.quality) updateConfig("quality", log.config.quality);
         if (log.config.size) updateConfig("size", log.config.size);
         if (log.config.count) updateConfig("count", log.config.count);
-        setResults(log.images.map((image) => ({ id: image.id, status: "success", image })));
+        if (log.taskId) {
+            const task = (await listGenerationTasks(getActiveWorkspace()!.id, "image")).find((item) => item.id === log.taskId);
+            setResults(task ? imageTaskResults(task) : []);
+        } else setResults(log.images.map((image) => ({ id: image.id, status: "success", image })));
         setSelectedResultIndex(0);
     };
 
@@ -347,47 +442,19 @@ export default function ImagePage() {
         return { text, config: { ...effectiveConfig, model, count: "1" }, references: [...references] };
     };
 
-    const runGenerationSlot = async (index: number, snapshot: { text: string; config: AiConfig; references: ReferenceImage[] }) => {
-        const itemStartedAt = performance.now();
-        try {
-            const result = snapshot.references.length ? await requestEdit(snapshot.config, snapshot.text, snapshot.references) : await requestGeneration(snapshot.config, snapshot.text);
-            const image = result[0];
-            if (!image) throw new Error(t("imageWorkbench.missingResult"));
-            const stored = await uploadImage(image.dataUrl);
-            const nextImage: GeneratedImage = { id: image.id, dataUrl: stored.url, ...(stored.storageKey ? { storageKey: stored.storageKey } : {}), durationMs: performance.now() - itemStartedAt, width: stored.width, height: stored.height, bytes: stored.bytes, mimeType: stored.mimeType };
-            setResults((value) => updateResultAt(value, index, { status: "success", image: nextImage }));
-            return nextImage;
-        } catch (error) {
-            setResults((value) => updateResultAt(value, index, { status: "failed", error: error instanceof Error ? error.message : t("workbench.generationFailed") }));
-            throw error;
+    const retryResult = async () => {
+        if (!pageWorkspaceIsCurrent()) return message.error("工作区已切换，请刷新工作台后再操作");
+        if (previewLog?.taskId) {
+            if (previewLog.taskStatus === "needs_attention" && ["archive_failed", "poll_error", "poll_exhausted", "configuration_changed"].includes(previewLog.errorCode || "")) {
+                try { await resumeGenerationTask(getActiveWorkspace()!.id, previewLog.taskId); await refreshLogs(); }
+                catch (error) { message.error(error instanceof Error ? error.message : t("workbench.generationFailed")); }
+                return;
+            }
+            if (previewLog.taskStatus === "needs_attention") { message.warning(previewLog.error || "任务提交状态不明，请核对后处理"); return; }
+            void generate();
+            return;
         }
-    };
-
-    const retryResult = async (index: number) => {
-        const snapshot = buildRequestSnapshot();
-        if (!snapshot) return;
-        setPreviewLog(null);
-        setResults((value) => updateResultAt(value, index, { status: "pending", error: undefined, image: undefined }));
-        const retryStartedAt = performance.now();
-        try {
-            const image = await runGenerationSlot(index, snapshot);
-            saveLog(
-                buildLog({
-                    prompt: snapshot.text,
-                    model,
-                    config: { ...snapshot.config, count: "1" },
-                    references: snapshot.references,
-                    durationMs: performance.now() - retryStartedAt,
-                    successCount: 1,
-                    failCount: 0,
-                    status: "success",
-                    images: [image],
-                }),
-            );
-            message.success(t("workbench.retrySuccess"));
-        } catch {
-            // runGenerationSlot has already marked the result as failed.
-        }
+        void generate();
     };
 
     const selectedResult = results[selectedResultIndex] || results[0];
@@ -447,7 +514,7 @@ export default function ImagePage() {
                                             {selectedResult.status === "success" && selectedResult.image ? (
                                                 <Image src={previewUrlFor(selectedResult.image.storageKey) || selectedResult.image.dataUrl} preview={{ src: selectedResult.image.dataUrl }} alt={t("imageWorkbench.resultAlt", { count: selectedResultIndex + 1 })} style={{ width: "100%", height: "100%", objectFit: "contain" }} />
                                             ) : selectedResult.status === "failed" ? (
-                                                <div className="flex max-w-sm flex-col items-center gap-3 px-5 text-center"><span className="font-medium">{t("workbench.failed")}</span><Typography.Paragraph ellipsis={{ rows: 4 }} className="!mb-0 !text-muted-foreground">{selectedResult.error}</Typography.Paragraph><Button onClick={() => void retryResult(selectedResultIndex)}>{t("workbench.retry")}</Button></div>
+                                                <div className="flex max-w-sm flex-col items-center gap-3 px-5 text-center"><span className="font-medium">{t("workbench.failed")}</span><Typography.Paragraph ellipsis={{ rows: 4 }} className="!mb-0 !text-muted-foreground">{selectedResult.error}</Typography.Paragraph><Button onClick={() => void retryResult()}>{t("workbench.retry")}</Button></div>
                                             ) : (
                                                 <div className="flex flex-col items-center gap-3 text-muted-foreground"><LoaderCircle className="size-8 animate-spin" />{t("workbench.generating")}</div>
                                             )}
@@ -547,10 +614,6 @@ function GenerationSettings({ config, model, updateConfig, openConfigDialog, onC
     );
 }
 
-function updateResultAt(results: GenerationResult[], index: number, next: Partial<GenerationResult>) {
-    return results.map((item, itemIndex) => (itemIndex === index ? { ...item, ...next } : item));
-}
-
 function LogPanel({
     logs,
     selectedLogIds,
@@ -637,6 +700,37 @@ async function readStoredLogs(preferRemote = true) {
     return (await Promise.all(values.map(normalizeLog))).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 }
 
+function imageTaskResults(task: GenerationTask): GenerationResult[] {
+    const images = task.outputs.map((output): GeneratedImage => ({
+        id: output.id, storageKey: output.storageKey,
+        dataUrl: `/api/media/blob/${encodeURIComponent(output.storageKey)}?workspaceId=${encodeURIComponent(task.workspaceId)}`,
+        durationMs: output.durationMs || 0, width: output.width || 0, height: output.height || 0,
+        bytes: output.bytes, mimeType: output.mimeType,
+    }));
+    const results: GenerationResult[] = images.map((image) => ({ id: image.id, status: "success", image }));
+    if (isGenerationTaskActive(task)) results.push({ id: task.id, status: "pending" });
+    else if (task.status === "failed" || task.status === "needs_attention" || task.status === "partial" && task.failCount) results.push({ id: task.id, status: "failed", error: task.error || task.status });
+    return results;
+}
+
+async function imageTaskLog(task: GenerationTask): Promise<GenerationLog> {
+    const images = imageTaskResults(task).flatMap((result) => result.image ? [result.image] : []);
+    images.forEach((image) => { void ensureImagePreview(image.storageKey); });
+    const createdAt = Date.parse(task.createdAt);
+    const settings = task.settings;
+    return {
+        id: task.id, taskId: task.id, taskStatus: task.status, errorCode: task.errorCode,
+        createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),
+        title: task.prompt.slice(0, 12) || task.model, prompt: task.prompt,
+        time: new Date(task.createdAt).toLocaleString(i18n.resolvedLanguage, { hour12: false }),
+        model: task.model,
+        config: { model: task.model, imageModel: task.model, quality: String(settings.quality || ""), size: String(settings.size || ""), count: String(settings.count || 1) },
+        references: taskReferencesToWorkbench(task.workspaceId, task.references || []).images, durationMs: 0, successCount: task.successCount, failCount: task.failCount,
+        imageCount: images.length, size: String(settings.size || ""), quality: String(settings.quality || ""),
+        status: task.successCount ? "success" : "failed", images, error: task.error,
+    };
+}
+
 async function readLocalLogs() {
     const logs: GenerationLog[] = [];
     await logStore.iterate<GenerationLog, void>((log) => { logs.push(log); });
@@ -673,6 +767,7 @@ async function normalizeLog(log: Partial<GenerationLog>): Promise<GenerationLog>
         size: log.size || config.size || "",
         quality: log.quality || config.quality || "",
         status: log.status || "success",
+        error: log.error,
         images,
     };
 }
@@ -692,53 +787,5 @@ function normalizeLogConfig(log: Partial<GenerationLog>): GenerationLogConfig {
         quality: log.config?.quality || log.quality || "",
         size: log.config?.size || log.size || "",
         count: log.config?.count || String(log.imageCount || log.successCount || 1),
-    };
-}
-
-function buildLog({
-    prompt,
-    model,
-    config,
-    references,
-    durationMs,
-    successCount,
-    failCount,
-    status,
-    images,
-}: {
-    prompt: string;
-    model: string;
-    config: GenerationLogConfig;
-    references: ReferenceImage[];
-    durationMs: number;
-    successCount: number;
-    failCount: number;
-    status: GenerationLog["status"];
-    images: GeneratedImage[];
-}): GenerationLog {
-    const logConfig = {
-        model: config.model,
-        imageModel: config.imageModel,
-        quality: config.quality,
-        size: config.size,
-        count: config.count,
-    };
-    return {
-        id: nanoid(),
-        createdAt: Date.now(),
-        title: prompt.slice(0, 12) || i18n.t("workbench.untitled"),
-        prompt,
-        time: new Date().toLocaleString(i18n.resolvedLanguage, { hour12: false }),
-        model,
-        config: logConfig,
-        references,
-        durationMs,
-        successCount,
-        failCount,
-        imageCount: Number(logConfig.count) || successCount,
-        size: logConfig.size,
-        quality: logConfig.quality,
-        status,
-        images,
     };
 }

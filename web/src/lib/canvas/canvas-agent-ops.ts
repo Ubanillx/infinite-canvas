@@ -12,7 +12,7 @@ export type CanvasAgentOp =
     | { type: "connect_nodes"; id?: string; fromNodeId: string; toNodeId: string }
     | { type: "set_viewport"; viewport: ViewportTransform }
     | { type: "select_nodes"; ids: string[] }
-    | { type: "run_generation"; nodeId: string; mode?: "text" | "image" | "video" | "audio"; prompt?: string };
+    | { type: "run_generation"; nodeId: string; mode?: "text" | "image" | "video" | "audio"; prompt?: string; requestId?: string };
 
 export type CanvasAgentSnapshot = {
     projectId: string;
