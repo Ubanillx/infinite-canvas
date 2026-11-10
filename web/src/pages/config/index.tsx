@@ -1,7 +1,8 @@
 import { useTranslation } from "react-i18next";
 import { Navigate, useParams } from "react-router-dom";
 
-import { AppConfigPanel, SaveConfigButton } from "@/components/layout/app-config-modal";
+import { AppConfigPanel } from "@/components/layout/app-config-modal";
+import { SaveConfigButton } from "@/components/layout/config-save-button";
 import { ConfigPreferencesForm } from "@/components/layout/config-preferences";
 import { adminConfigSection, configSections } from "@/constant/navigation-tools";
 import { AdminOverview } from "@/pages/config/components/admin-overview";
@@ -23,7 +24,7 @@ export default function ConfigPage() {
     const preferencesTab = !adminTab && section.slug === "preferences";
     const title = preferencesTab ? t(isAdmin ? "config.tabs.defaultPreferences" : "config.tabs.preferences") : t(section.label);
     const description = t(adminTab ? "config.pageDescriptions.admin" : section.slug === "local-storage" ? "config.localStorage.pageDescription" : preferencesTab ? (isAdmin ? "config.pageDescriptions.defaultPreferences" : "config.pageDescriptions.personalPreferences") : `config.pageDescriptions.${section.slug}`);
-    const headerAction = preferencesTab ? (isAdmin ? <SaveConfigButton /> : <SaveUserPreferencesButton />) : adminTab || section.slug === "local-storage" ? null : section.slug === "registration" ? <div id="config-registration-actions" /> : <SaveConfigButton />;
+    const headerAction = preferencesTab ? (isAdmin ? <SaveConfigButton /> : <SaveUserPreferencesButton />) : adminTab || section.slug === "local-storage" || section.slug === "webdav" ? null : section.slug === "registration" ? <div id="config-registration-actions" /> : <SaveConfigButton />;
 
     return (
         <main className="h-full overflow-y-auto bg-background">

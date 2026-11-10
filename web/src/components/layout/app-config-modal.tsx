@@ -1,7 +1,7 @@
 import { App, Button, Modal, Tabs } from "antd";
 import type { TFunction } from "i18next";
-import { KeyRound, Pencil, Plus, Save, Trash2 } from "lucide-react";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { KeyRound, Pencil, Plus, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { ChannelEditorDrawer } from "@/components/layout/channel-editor-drawer";
@@ -9,27 +9,10 @@ import { ConfigBackup } from "@/components/layout/config-backup";
 import { ConfigPreferencesForm } from "@/components/layout/config-preferences";
 import { ConfigPromptSources } from "@/components/layout/config-prompt-sources";
 import { ConfigLocalStorage } from "@/components/layout/config-local-storage";
-import { getServerConfigSaveStatus, saveServerConfigNow, subscribeServerConfigSaveStatus } from "@/services/server-config";
+import { SaveConfigButton } from "@/components/layout/config-save-button";
 import { createModelChannel, modelOptionsFromChannels, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore, type AiConfig, type ApiCallFormat, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
 import { useIsAdmin } from "@/stores/use-session-store";
 import { RegistrationSettings } from "@/pages/config/components/registration-settings";
-
-export function SaveConfigButton() {
-    const { message } = App.useApp();
-    const { t } = useTranslation();
-    const serverSave = useSyncExternalStore(subscribeServerConfigSaveStatus, getServerConfigSaveStatus);
-
-    const save = async () => {
-        try {
-            await saveServerConfigNow();
-            message.success(t("config.serverStorage.saved"));
-        } catch (error) {
-            message.error(error instanceof Error ? error.message : t("config.serverStorage.saveFailed"));
-        }
-    };
-
-    return <Button icon={<Save className="size-4" />} loading={serverSave.saving} onClick={() => void save()}>{t("config.serverStorage.save")}</Button>;
-}
 
 export function AppConfigPanel({ showDoneButton = false, showTabs = true, showSaveButton = true, initialTab = "channels" }: { showDoneButton?: boolean; showTabs?: boolean; showSaveButton?: boolean; initialTab?: ConfigTabKey }) {
     const { message } = App.useApp();
@@ -80,13 +63,13 @@ export function AppConfigPanel({ showDoneButton = false, showTabs = true, showSa
 
     return (
         <div className={showDoneButton ? "flex h-full min-h-0 flex-col" : undefined}>
-            {showSaveButton && !showDoneButton && activeTab !== "local-storage" && activeTab !== "registration" ? <div className="mb-4 flex justify-end"><SaveConfigButton /></div> : null}
+            {showSaveButton && !showDoneButton && activeTab !== "local-storage" && activeTab !== "registration" && activeTab !== "webdav" ? <div className="mb-4 flex justify-end"><SaveConfigButton /></div> : null}
             <Tabs
                 activeKey={activeTab}
                 onChange={(key) => setSelectedTab(key as ConfigTabKey)}
                 renderTabBar={showTabs ? undefined : () => <></>}
                 className={showDoneButton ? "[&_.ant-tabs-content-holder]:overflow-y-auto" : undefined}
-                tabBarExtraContent={showDoneButton && showSaveButton && activeTab !== "local-storage" && activeTab !== "registration" ? <SaveConfigButton /> : undefined}
+                tabBarExtraContent={showDoneButton && showSaveButton && activeTab !== "local-storage" && activeTab !== "registration" && activeTab !== "webdav" ? <SaveConfigButton /> : undefined}
                 styles={showDoneButton ? {
                     root: { display: "flex", flex: 1, flexDirection: "column", minHeight: 0 },
                     header: { marginBottom: 0 },

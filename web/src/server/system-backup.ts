@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { Transform } from "node:stream";
 
 import { execute, getPool, isoNow, queryMany, queryOne, toIso, withReadSnapshot, withTransaction, type SqlExecutor } from "./db";
+import { backupGenerationTasks, type BackupTaskMedia } from "./generation-task-backup";
+import type { GenerationTaskRow } from "./generation-tasks";
 import { MEDIA_REFERENCE_DOMAINS, extractMediaReferences, MediaReferenceError } from "./media-references";
 import { getMediaObject, mediaObjectKey } from "./object-storage";
 import { deleteWebdavPath, ensureWebdavDirectory, getWebdavStream, listWebdavDirectory, putWebdavBuffer, putWebdavStream, readServerWebdavConfig, testWebdavConnection, webdavContentLength, webdavExists, type WebdavConfig } from "./webdav-client";
@@ -43,9 +45,10 @@ export type WorkspaceManifest = {
     prompts: { file: ManifestFileRef; count: number };
     media: { file: ManifestFileRef; count: number; bytes: number; externalMedia: number };
     promptImages: { file: ManifestFileRef; count: number; bytes: number };
+    generationTasks: { file: ManifestFileRef; count: number };
 };
 export type BackupManifest = {
-    app: "infinite-canvas"; version: 1; kind: "system-backup"; purpose: BackupPurpose; backupId: string;
+    app: "infinite-canvas"; version: 2; kind: "system-backup"; purpose: BackupPurpose; backupId: string;
     createdAt: string; completedAt: string; status: "complete" | "partial";
     totals: { workspaces: number; complete: number; media: number; mediaBytes: number; promptImages: number; promptImageBytes: number };
     workspaces: WorkspaceManifest[];
@@ -215,10 +218,12 @@ async function snapshotWorkspaces(config: WebdavConfig, workspaces: WorkspaceRow
     for (let index = 0; index < workspaces.length; index += 1) {
         assertBackupTaskActive();
         const workspace = workspaces[index];
-        setBackupProgress({ workspaceId: workspace.id, workspaceName: workspace.name, current: index });
+        setBackupProgress({ workspaceId: workspace.id, workspaceName: workspace.name });
         entries.push(await backupWorkspace(config, workspace, source, backupId));
+        setBackupProgress({ current: index + 1 });
     }
     assertBackupTaskActive();
+    setBackupProgress({ phase: "finalizing", current: 0, total: 0 });
     const totals = {
         workspaces: entries.length,
         complete: entries.filter((entry) => entry.status === "complete").length,
@@ -228,7 +233,7 @@ async function snapshotWorkspaces(config: WebdavConfig, workspaces: WorkspaceRow
         promptImageBytes: entries.reduce((sum, entry) => sum + entry.promptImages.bytes, 0),
     };
     const manifest: BackupManifest = {
-        app: "infinite-canvas", version: 1, kind: "system-backup", purpose, backupId,
+        app: "infinite-canvas", version: 2, kind: "system-backup", purpose, backupId,
         createdAt: isoNow(), completedAt: isoNow(), status: entries.every((entry) => entry.status === "complete") ? "complete" : "partial",
         totals, workspaces: entries,
     };
@@ -246,8 +251,12 @@ async function backupWorkspace(config: WebdavConfig, workspace: WorkspaceRow, so
         const domains = await queryMany<DomainRow>(tx, "SELECT domain, payload, revision, updated_at, updated_by FROM workspace_data WHERE workspace_id = $1 ORDER BY domain", workspace.id);
         const media = await queryMany<MediaRow>(tx, "SELECT storage_key, object_version, remote_path, mime_type, bytes, lifecycle_state, created_at, updated_at, content_sha256 FROM media_files WHERE workspace_id = $1 ORDER BY storage_key", workspace.id);
         const prompts = await queryMany<PromptRow>(tx, "SELECT p.id, p.workspace_id, p.title, p.prompt, p.description, p.tags, p.shared, p.created_at, p.updated_at, EXISTS(SELECT 1 FROM workspace_prompt_images i WHERE i.prompt_id = p.id) AS has_image FROM workspace_prompts p WHERE p.workspace_id = $1 ORDER BY p.id", workspace.id);
-        return { domains, media, prompts };
+        const tasks = await queryMany<GenerationTaskRow>(tx, "SELECT * FROM generation_tasks WHERE workspace_id = $1 ORDER BY id", workspace.id);
+        return { domains, media, prompts, tasks };
     });
+    const taskData = await backupGenerationTasks(config, workspace.id, snapshot.tasks, errors);
+    const tasksPath = `workspaces/${workspace.id}/generation-tasks.json`;
+    const tasksFile = await putJson(config, `${snapshotBase(source, backupId)}/${tasksPath}`, taskData.tasks, tasksPath);
     const domainRows = new Map(snapshot.domains.map((row) => [row.domain, row]));
     const referenced = new Set<string>();
     const domains: WorkspaceManifest["domains"] = {};
@@ -275,16 +284,28 @@ async function backupWorkspace(config: WebdavConfig, workspace: WorkspaceRow, so
         if (!BACKUP_DOMAIN_KEYS.includes(row.domain as BackupDomain)) errors.push(`未知数据域: ${row.domain}`);
     }
     const mediaByKey = new Map(snapshot.media.map((row) => [row.storage_key, row]));
+    const historical: MediaRow[] = [];
+    const seenVersions = new Set(snapshot.media.map((row) => `${row.storage_key}\0${row.object_version}`));
+    for (const task of snapshot.tasks) for (const ref of task.request_snapshot.references) {
+        referenced.add(ref.storageKey);
+        const identity = `${ref.storageKey}\0${ref.objectVersion}`;
+        if (seenVersions.has(identity)) continue;
+        seenVersions.add(identity);
+        const current = mediaByKey.get(ref.storageKey);
+        if (!current || current.remote_path) { errors.push(`生成任务 ${task.id} 的历史参考媒体 ${ref.storageKey} 缺少索引`); continue; }
+        historical.push({ ...current, object_version: ref.objectVersion, content_sha256: "" });
+    }
+    for (const task of snapshot.tasks) for (const output of task.outputs) referenced.add(output.storageKey);
     for (const storageKey of referenced) {
         const row = mediaByKey.get(storageKey);
         if (!row) errors.push(`媒体引用 ${storageKey} 不存在`);
         else if (row.remote_path) errors.push(`媒体引用 ${storageKey} 只存在于旧外部快照`);
     }
-    const mediaEntries: ManifestMedia[] = [];
+    const mediaEntries: BackupTaskMedia[] = [];
     let externalMedia = 0;
     let mediaBytes = 0;
     const existingMedia = await listExistingObjects(config, `${SYSTEM_BACKUP_ROOT}/objects/${workspace.id}/media`).catch(() => null);
-    for (const row of snapshot.media) {
+    for (const row of [...snapshot.media, ...historical]) {
         assertBackupTaskActive();
         if (row.remote_path) {
             externalMedia += 1;
@@ -294,17 +315,25 @@ async function backupWorkspace(config: WebdavConfig, workspace: WorkspaceRow, so
         const objectPath = `objects/${workspace.id}/media/${name}`;
         let sha256 = row.content_sha256;
         let bytes = Number(row.bytes);
+        let mimeType = row.mime_type;
+        const isHistorical = historical.includes(row);
         try {
-            const existingLength = existingMedia?.has(name) ? await webdavContentLength(config, `${SYSTEM_BACKUP_ROOT}/${objectPath}`).catch(() => null) : null;
-            if (existingLength === bytes) {
-                if (!sha256) sha256 = await hashMediaObject(workspace.id, row);
-            } else {
+            let existingMatches = false;
+            if (!isHistorical && existingMedia?.has(name)) {
+                const existingLength = await webdavContentLength(config, `${SYSTEM_BACKUP_ROOT}/${objectPath}`).catch(() => null);
+                if (existingLength === bytes) {
+                    if (!sha256) sha256 = await hashMediaObject(workspace.id, row);
+                    existingMatches = await webdavObjectMatches(config, `${SYSTEM_BACKUP_ROOT}/${objectPath}`, bytes, sha256).catch(() => false);
+                }
+            }
+            if (!existingMatches) {
                 const object = await getMediaObject(mediaObjectKey(workspace.id, row.storage_key, row.object_version));
+                if (isHistorical && object.contentType) mimeType = object.contentType;
                 const actualBytes = object.contentLength ?? bytes;
-                if (actualBytes !== bytes) errors.push(`媒体 ${row.storage_key} 大小与索引不一致`);
+                if (!isHistorical && actualBytes !== bytes) errors.push(`媒体 ${row.storage_key} 大小与索引不一致`);
                 const hash = createHash("sha256");
                 const hasher = new Transform({ transform(chunk: Buffer, _encoding, callback) { hash.update(chunk); callback(null, chunk); } });
-                await putWebdavStream(config, `${SYSTEM_BACKUP_ROOT}/${objectPath}`, object.body.pipe(hasher), row.mime_type || "application/octet-stream", actualBytes);
+                await putWebdavStream(config, `${SYSTEM_BACKUP_ROOT}/${objectPath}`, object.body.pipe(hasher), mimeType || "application/octet-stream", actualBytes);
                 sha256 = hash.digest("hex");
                 bytes = actualBytes;
                 setBackupProgress({ uploadedFiles: (activeTask?.progress.uploadedFiles || 0) + 1, uploadedBytes: (activeTask?.progress.uploadedBytes || 0) + bytes });
@@ -316,11 +345,16 @@ async function backupWorkspace(config: WebdavConfig, workspace: WorkspaceRow, so
             }
         } catch (error) {
             errors.push(`媒体 ${row.storage_key}: ${error instanceof Error ? error.message : "导出失败"}`);
-            mediaEntries.push({ storageKey: row.storage_key, objectVersion: row.object_version, objectPath, mimeType: row.mime_type, bytes, sha256, createdAt: toIso(row.created_at), updatedAt: toIso(row.updated_at), lifecycleState: row.lifecycle_state, missing: true });
+            mediaEntries.push({ storageKey: row.storage_key, objectVersion: row.object_version, objectPath, mimeType, bytes, sha256, createdAt: toIso(row.created_at), updatedAt: toIso(row.updated_at), lifecycleState: row.lifecycle_state, missing: true, ...(isHistorical ? { historical: true } : {}) });
             continue;
         }
-        mediaEntries.push({ storageKey: row.storage_key, objectVersion: row.object_version, objectPath, mimeType: row.mime_type, bytes, sha256, createdAt: toIso(row.created_at), updatedAt: toIso(row.updated_at), lifecycleState: row.lifecycle_state });
+        mediaEntries.push({ storageKey: row.storage_key, objectVersion: row.object_version, objectPath, mimeType, bytes, sha256, createdAt: toIso(row.created_at), updatedAt: toIso(row.updated_at), lifecycleState: row.lifecycle_state, ...(isHistorical ? { historical: true } : {}) });
         mediaBytes += bytes;
+    }
+    for (const item of taskData.media) {
+        if (mediaByKey.has(item.storageKey)) { errors.push(`生成任务结果 ${item.storageKey} 与媒体索引冲突`); continue; }
+        mediaEntries.push(item);
+        mediaBytes += item.bytes;
     }
     const mediaFile = await putJson(config, `${snapshotBase(source, backupId)}/workspaces/${workspace.id}/media.json`, mediaEntries, `workspaces/${workspace.id}/media.json`);
     const prompts: ManifestPrompt[] = [];
@@ -346,6 +380,7 @@ async function backupWorkspace(config: WebdavConfig, workspace: WorkspaceRow, so
         prompts: { file: promptsFile, count: prompts.length },
         media: { file: mediaFile, count: mediaEntries.filter((entry) => !entry.missing).length, bytes: mediaBytes, externalMedia },
         promptImages: { file: promptImagesFile, count: promptImages.length, bytes: promptImages.reduce((sum, item) => sum + item.bytes, 0) },
+        generationTasks: { file: tasksFile, count: taskData.tasks.length },
     };
 }
 
@@ -364,10 +399,12 @@ async function backupPromptImages(config: WebdavConfig, workspaceId: string, pro
         const objectPath = `objects/${workspaceId}/prompts/${name}`;
         existing ||= await listExistingObjects(config, `${SYSTEM_BACKUP_ROOT}/objects/${workspaceId}/prompts`).catch(() => null);
         const existingLength = existing?.has(name) ? await webdavContentLength(config, `${SYSTEM_BACKUP_ROOT}/${objectPath}`).catch(() => null) : null;
-        if (existingLength !== buffer.length) await putWebdavBuffer(config, `${SYSTEM_BACKUP_ROOT}/${objectPath}`, buffer, image.mime_type || "application/octet-stream");
+        const checksum = sha256Hex(buffer);
+        const existingMatches = existingLength === buffer.length && await webdavObjectMatches(config, `${SYSTEM_BACKUP_ROOT}/${objectPath}`, buffer.length, checksum).catch(() => false);
+        if (!existingMatches) await putWebdavBuffer(config, `${SYSTEM_BACKUP_ROOT}/${objectPath}`, buffer, image.mime_type || "application/octet-stream");
         const current = await queryOne<{ updated_at: Date }>(await getPool(), "SELECT updated_at FROM workspace_prompts WHERE id = $1 AND workspace_id = $2", prompt.id, workspaceId);
         if (!current || toIso(current.updated_at) !== toIso(prompt.updated_at)) { errors.push(`提示词 ${prompt.id} 在备份期间被修改`); continue; }
-        entries.push({ promptId: prompt.id, objectPath, mimeType: image.mime_type || "application/octet-stream", bytes: buffer.length, sha256: sha256Hex(buffer) });
+        entries.push({ promptId: prompt.id, objectPath, mimeType: image.mime_type || "application/octet-stream", bytes: buffer.length, sha256: checksum });
     }
     return entries;
 }
@@ -382,6 +419,19 @@ async function hashMediaObject(workspaceId: string, row: MediaRow) {
     const hash = createHash("sha256");
     for await (const chunk of object.body) hash.update(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     return hash.digest("hex");
+}
+
+async function webdavObjectMatches(config: WebdavConfig, path: string, expectedBytes: number, expectedSha256: string) {
+    const file = await getWebdavStream(config, path);
+    if (!file) return false;
+    const hash = createHash("sha256");
+    let bytes = 0;
+    for await (const chunk of file.stream) {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        bytes += buffer.length;
+        hash.update(buffer);
+    }
+    return bytes === expectedBytes && hash.digest("hex") === expectedSha256;
 }
 
 function mediaObjectName(storageKey: string, objectVersion: string) {
@@ -424,7 +474,7 @@ export async function readBackupManifest(config: WebdavConfig, source: SnapshotS
     const buffer = await readWebdavBuffer(config, `${snapshotBase(source, backupId)}/manifest.json`);
     if (!buffer) throw new SystemBackupError("备份清单不存在", 404);
     const manifest = JSON.parse(buffer.toString("utf8")) as Partial<BackupManifest>;
-    if (manifest.app !== "infinite-canvas" || manifest.version !== 1 || manifest.kind !== "system-backup" || manifest.backupId !== backupId || !["manual", "scheduled", "pre-restore"].includes(String(manifest.purpose)) || !Array.isArray(manifest.workspaces)) throw new SystemBackupError("备份清单格式无效");
+    if (manifest.app !== "infinite-canvas" || manifest.version !== 2 || manifest.kind !== "system-backup" || manifest.backupId !== backupId || !["manual", "scheduled", "pre-restore"].includes(String(manifest.purpose)) || !Array.isArray(manifest.workspaces) || manifest.workspaces.some((workspace) => !workspace.generationTasks)) throw new SystemBackupError("备份清单格式无效");
     return manifest as BackupManifest;
 }
 
@@ -446,7 +496,7 @@ export async function listBackupSnapshots(): Promise<SnapshotSummary[]> {
     const config = readServerWebdavConfig();
     const snapshots: SnapshotSummary[] = [];
     for (const source of ["snapshots", "safety"] as const) {
-        const names = await listWebdavDirectory(config, `${SYSTEM_BACKUP_ROOT}/${source}`).catch(() => []);
+        const names = await listWebdavDirectory(config, `${SYSTEM_BACKUP_ROOT}/${source}`);
         for (const id of names.filter(isSnapshotId).sort().reverse()) {
             try {
                 const manifest = await readBackupManifest(config, source, id);
@@ -460,7 +510,8 @@ export async function listBackupSnapshots(): Promise<SnapshotSummary[]> {
 }
 
 async function pruneSnapshots(config: WebdavConfig, source: SnapshotSource, retention: number, currentId: string, preserveIds: string[] = []) {
-    const names = await listWebdavDirectory(config, `${SYSTEM_BACKUP_ROOT}/${source}`).catch(() => []);
+    const names = await listWebdavDirectory(config, `${SYSTEM_BACKUP_ROOT}/${source}`).catch(() => null);
+    if (!names) return;
     const ids = names.filter(isSnapshotId).sort().reverse();
     const valid: string[] = [];
     for (const id of ids) {
@@ -468,8 +519,8 @@ async function pruneSnapshots(config: WebdavConfig, source: SnapshotSource, rete
             if (await webdavExists(config, `${SYSTEM_BACKUP_ROOT}/${source}/${id}/manifest.json`)) valid.push(id);
             else if (id !== currentId) await deleteWebdavPath(config, `${SYSTEM_BACKUP_ROOT}/${source}/${id}`).catch(() => undefined);
         } catch {
-            // On an uncertain probe, keep the directory instead of risking a valid snapshot.
-            valid.push(id);
+            // An uncertain probe must stop this pruning pass before any snapshot is deleted.
+            return;
         }
     }
     const keep = new Set(valid.slice(0, Math.max(retention, 1)));

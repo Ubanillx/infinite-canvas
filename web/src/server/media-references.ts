@@ -5,7 +5,7 @@ import { parseAgentAttachmentManifest } from "../lib/agent/agent-attachment-cont
 
 export const MEDIA_REFERENCE_DOMAINS = ["canvas", "canvas-templates", "assets", "image-workbench", "video-workbench", "agent-sessions"] as const;
 export type MediaReferenceDomain = (typeof MEDIA_REFERENCE_DOMAINS)[number];
-export const MEDIA_REFERENCE_PARSER_VERSION = 2;
+export const MEDIA_REFERENCE_PARSER_VERSION = 3;
 const storageKeyPattern = /^[a-z][a-z0-9-]*:[A-Za-z0-9_-]+$/;
 const mediaFields = new Set(["storageKey", "content", "references", "dataUrl", "url", "coverUrl"]);
 const mediaPrefixes = /^(image|video|audio|file|video-reference|audio-reference):/;
@@ -36,7 +36,7 @@ function walk(value: unknown, path: string, field: string, ownerKind: string, ow
 }
 
 export function extractMediaReferences(domain: string, payload: unknown): MediaReference[] {
-    requireShape(MEDIA_REFERENCE_DOMAINS.includes(domain as MediaReferenceDomain), domain);
+    requireShape(MEDIA_REFERENCE_DOMAINS.includes(domain as MediaReferenceDomain) || domain === "generation-tasks", domain);
     requireShape(record(payload), domain);
     const refs: MediaReference[] = [];
     let entries: unknown;
@@ -57,6 +57,8 @@ export function extractMediaReferences(domain: string, payload: unknown): MediaR
         case "image-workbench": case "video-workbench":
             requireShape(payload.version === undefined, domain);
             entries = payload.logs; path = "/logs"; kind = domain === "image-workbench" ? "image-log" : "video-log"; break;
+        case "generation-tasks":
+            entries = payload.tasks; path = "/tasks"; kind = "generation-task"; break;
         default: {
             try {
                 const manifest = parseAgentAttachmentManifest(payload);
@@ -173,8 +175,12 @@ export async function runMediaGcDryRun(workspaceId: string, inspectObject = head
     });
 }
 
-function readDomains(db: SqlExecutor, workspaceId: string) {
-    return queryMany<DomainRow>(db, "SELECT domain, payload, revision FROM workspace_data WHERE workspace_id = $1 ORDER BY domain", workspaceId);
+async function readDomains(db: SqlExecutor, workspaceId: string) {
+    const rows = await queryMany<DomainRow>(db, "SELECT domain, payload, revision FROM workspace_data WHERE workspace_id = $1 ORDER BY domain", workspaceId);
+    // Task references are authoritative table rows, never a client-writable /api/data domain.
+    const tasks = await queryMany<{ id: string; request_snapshot: { references: unknown[] }; outputs: unknown[]; revision: number }>(db, "SELECT id, request_snapshot, outputs, revision FROM generation_tasks WHERE workspace_id = $1 ORDER BY id", workspaceId);
+    if (tasks.length) rows.push({ domain: "generation-tasks", payload: JSON.stringify({ tasks: tasks.map((task) => ({ id: task.id, references: task.request_snapshot.references.map((ref) => ({ storageKey: (ref as { storageKey: string }).storageKey })), outputs: task.outputs })) }), revision: tasks.reduce((sum, task) => sum + task.revision, 0) });
+    return rows;
 }
 function readMedia(db: SqlExecutor, workspaceId: string) {
     return queryMany<MediaRow>(db, "SELECT storage_key, remote_path, bytes, lifecycle_state, updated_at, object_version, content_sha256 FROM media_files WHERE workspace_id = $1 ORDER BY storage_key", workspaceId);

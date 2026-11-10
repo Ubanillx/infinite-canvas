@@ -87,7 +87,9 @@ export function clearWebdavDirectoryCache() {
 
 export async function webdavExists(config: WebdavConfig, path: string) {
     const response = await webdavRequest(config, path, { method: "PROPFIND", headers: { Depth: "0" }, timeoutMs: METADATA_TIMEOUT_MS });
-    return isOk(response) || statusCode(response) === 207;
+    if (isOk(response) || statusCode(response) === 207) { response.resume(); return true; }
+    if (statusCode(response) === 404) { response.resume(); return false; }
+    await throwWebdavError(response, `无法检查 WebDAV 路径 ${path}`);
 }
 
 export async function listWebdavDirectory(config: WebdavConfig, path: string) {
