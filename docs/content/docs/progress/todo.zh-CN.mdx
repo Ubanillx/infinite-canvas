@@ -5,7 +5,7 @@ description: 当前项目后续值得处理的事项
 
 # TODO
 
-- 平台 MCP：P1 管理能力、P2 模板/媒体贯通、P3 工作台持久化生成及 P4 画布图片/视频持久生成已移入待测试。部署前核对线上 release revision、镜像和实际 MCP `tools/list`；P0 对线上 SHA/镜像及工具清单的核对仍未完成。后续 P5 补齐文本/音频任务适配、候选与流式进度及备份语义，并按角色提供管理功能；脚本模型保留浏览器执行路径。平台工具仍依赖已认证的在线网页；大模板包文件传输、其他创建工具的幂等及跨标签页数据自动同步继续跟进。
+- 平台 MCP：P1 管理能力、P2 模板/媒体贯通、P3 工作台持久化生成、P4 画布图片/视频持久生成及 P5 画布文本/音频持久生成已移入待测试，等待用户验收。部署前核对线上 release revision、镜像和实际 MCP `tools/list`；P0 对线上 SHA/镜像及工具清单的核对仍未完成。按角色提供管理功能继续跟进；脚本模型保留浏览器执行路径。平台工具仍依赖已认证的在线网页；大模板包文件传输、其他创建工具的幂等及跨标签页数据自动同步继续跟进。
 
 - 超大前端模块：`web/src/pages/canvas/project.tsx`（约 3600 行）和 `web/src/components/agent/local-agent-panel.tsx`（约 1900 行）需要分阶段拆分，不能一次性重写。画布页先抽视口/选择/连线指针与键盘事件到 `web/src/pages/canvas/hooks/use-canvas-interactions.ts`，上传与拖放抽到 `use-canvas-upload.ts`，生成/重试流水线抽到 `use-canvas-generation.ts`，剪贴板与历史抽到 `use-canvas-clipboard.ts`，页面只保留组合与渲染；Agent 面板把连接初始化、队列/中断、附件上传和会话历史抽到 `web/src/components/agent/hooks/`。每完成一次抽取运行 `tsc --noEmit` 与现有 smoke/browse 脚本。工作区文案、深色主题、WebDAV 状态键和技能术语修复已移入待测试。
 
