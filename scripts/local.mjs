@@ -75,10 +75,11 @@ if (command === "agent") {
 if (command === "dev" || command === "e2e-server") {
     const testing = command === "e2e-server";
     const log = process.env.LOCAL_SERVER_LOG || resolve(artifacts, "dev-server.jsonl");
-    // E2E 必须指向独立的 database 与 bucket；缺少时拒绝启动，避免污染开发数据。
+    // E2E 必须指向独立的 database、bucket 与配置目录；缺少时拒绝启动。
     const env = { ...agentEnv };
     if (testing) {
         if (!process.env.DATABASE_URL || !process.env.S3_BUCKET) throw new Error("E2E requires DATABASE_URL and S3_BUCKET for an isolated database and bucket");
+        if (!process.env.INFINITE_CANVAS_DATA_DIR || resolve(process.env.INFINITE_CANVAS_DATA_DIR) === resolve(homedir(), ".infinite-canvas/data")) throw new Error("E2E requires an explicit isolated INFINITE_CANVAS_DATA_DIR");
         env.DATABASE_URL = process.env.DATABASE_URL;
         env.S3_BUCKET = process.env.S3_BUCKET;
         console.log(`Database: ${process.env.DATABASE_URL}\nBucket:   ${process.env.S3_BUCKET}\nLog:      ${log}`);
@@ -106,13 +107,16 @@ if (command === "dev" || command === "e2e-server") {
 } else if (command === "e2e") {
     const runDir = resolve(artifacts, `e2e-${new Date().toISOString().replace(/[:.]/g, "-")}`);
     mkdirSync(runDir, { recursive: true });
+    const dataDir = resolve(runDir, "app-data");
+    mkdirSync(dataDir, { recursive: true });
     const log = resolve(runDir, "server.jsonl");
     const runId = `${Date.now().toString(36)}_${process.pid}`;
     const middleware = JSON.parse(execFileSync("node", ["scripts/e2e-middleware.mjs", "up", runId], { encoding: "utf8" }).trim());
-    console.log(`E2E database: ${middleware.database}\nE2E bucket:   ${middleware.bucket}`);
+    console.log(`E2E database: ${middleware.database}\nE2E bucket:   ${middleware.bucket}\nE2E config:   ${dataDir}`);
     try {
         code = await run("node", ["node_modules/@playwright/test/cli.js", "test", ...process.argv.slice(3)], "web", {
             DATABASE_URL: middleware.databaseUrl, S3_BUCKET: middleware.bucket, LOCAL_SERVER_LOG: log,
+            INFINITE_CANVAS_DATA_DIR: dataDir,
             PLAYWRIGHT_OUTPUT_DIR: resolve(runDir, "test-results"), PLAYWRIGHT_HTML_REPORT: resolve(runDir, "report"),
         }, resolve(runDir, "tests.jsonl"));
     } finally {
