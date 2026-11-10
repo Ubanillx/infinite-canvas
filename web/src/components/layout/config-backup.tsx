@@ -312,6 +312,7 @@ export function ConfigBackup({ visible = true }: { visible?: boolean }) {
                                 <div className={`h-full rounded-full bg-primary ${active.progress.total ? "" : "w-1/3 animate-pulse motion-reduce:animate-none"}`} style={active.progress.total ? { width: `${progressPercent}%` } : undefined} />
                             </div>
                             {active.progress.workspaceName ? <p className="break-words">{t("config.webdav.backup.workspaceLabel", { name: active.progress.workspaceName })}</p> : null}
+                            {active.progress.message ? <p role="status">{active.progress.message}</p> : null}
                             <p className="tabular-nums">{t(active.progress.phase === "download-media" || active.progress.phase === "restore-data" ? "config.webdav.backup.downloadedMedia" : "config.webdav.backup.uploadedMedia", { count: active.progress.uploadedFiles })} · {formatCompactBytes(active.progress.uploadedBytes)}</p>
                         </div>
                     ) : null}
@@ -319,7 +320,7 @@ export function ConfigBackup({ visible = true }: { visible?: boolean }) {
                     {!active && status?.lastRun?.error ? <Alert className="mt-3" type="error" showIcon title={status.lastRun.error} /> : null}
                     <div className="mt-4 flex flex-wrap gap-2">
                         <Button type="primary" icon={<CloudUpload className="size-4" />} disabled={Boolean(active) || !status?.configured} loading={busy} onClick={() => void runBackup()}>{t("config.webdav.backup.runNow")}</Button>
-                        {active ? <Button icon={<Square className="size-3.5" />} loading={cancelling} onClick={() => void cancelTask()}>{t("config.webdav.backup.cancel")}</Button> : null}
+                        {active ? <Button icon={<Square className="size-3.5" />} loading={cancelling || active.progress.message === "正在取消任务"} onClick={() => void cancelTask()}>{t(active.progress.message === "正在取消任务" ? "config.webdav.backup.cancelling" : "config.webdav.backup.cancel")}</Button> : null}
                     </div>
                     <div className="mt-4 border-t border-border pt-4"><p className="text-sm leading-6 text-muted-foreground">{t("config.webdav.backup.scopeNotice")}</p></div>
                 </section>

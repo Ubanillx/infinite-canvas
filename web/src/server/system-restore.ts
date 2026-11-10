@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 import { execute, getPool, queryMany, queryOne, toIso, withReadSnapshot, withTransaction, type SqlExecutor } from "./db";
 import type { BackupGenerationTask, BackupTaskMedia } from "./generation-task-backup";
@@ -37,7 +38,7 @@ export async function startRestoreTask(actorUserId: string, snapshotId: string, 
         catch { throw new SystemBackupError("WebDAV 尚未配置", 503); }
     })();
     const runId = await beginBackupTask("restore", "manual", actorUserId, workspaceId);
-    void performRestore(runId, config, snapshotId, workspaceId, source, actorUserId).catch((error) => settleBackupTaskFailure(runId, error));
+    void performRestore(runId, { ...config, signal: assertBackupTaskActive().controller.signal }, snapshotId, workspaceId, source, actorUserId).catch((error) => settleBackupTaskFailure(runId, error));
     return runId;
 }
 
@@ -57,7 +58,7 @@ async function performRestore(runId: string, config: ReturnType<typeof readServe
         const baseline = await captureBaseline(workspaceId);
         setBackupProgress({ phase: "pre-restore", workspaceId, workspaceName: workspace.name });
         await createSafetySnapshot(config, workspaceId, settings, source === "safety" ? [snapshotId] : []);
-        setBackupProgress({ phase: "preparing", current: 0, total: 0, uploadedFiles: 0, uploadedBytes: 0 });
+        setBackupProgress({ phase: "preparing", current: 0, total: 0, uploadedFiles: 0, uploadedBytes: 0, message: "" });
         const domains = await loadDomains(config, source, snapshotId, entry);
         const prompts = await loadPrompts(config, source, snapshotId, entry);
         const promptImages = await loadPromptImages(config, source, snapshotId, entry);
@@ -222,16 +223,20 @@ async function stageMedia(config: ReturnType<typeof readServerWebdavConfig>, wor
         assertBackupTaskActive();
         const file = await getWebdavStream(config, objectFilePath(item.objectPath));
         if (!file) throw new SystemBackupError(`备份媒体不存在: ${item.storageKey}`);
-        if (file.contentLength !== undefined && file.contentLength !== item.bytes) throw new SystemBackupError(`备份媒体大小不一致: ${item.storageKey}`);
+        if (file.contentLength !== undefined && file.contentLength !== item.bytes) { file.stream.destroy(); throw new SystemBackupError(`备份媒体大小不一致: ${item.storageKey}`); }
         const newObjectVersion = randomUUID();
         const objectKey = mediaObjectKey(workspaceId, item.storageKey, newObjectVersion);
         stagedKeys.push(objectKey);
         const hash = createHash("sha256");
         const hasher = new Transform({ transform(chunk: Buffer, _encoding, callback) { hash.update(chunk); callback(null, chunk); } });
         try {
-            await putMediaStream(objectKey, file.stream.pipe(hasher), item.mimeType, item.bytes);
+            await Promise.all([
+                pipeline(file.stream, hasher, { signal: config.signal }),
+                putMediaStream(objectKey, hasher, item.mimeType, item.bytes, config.signal),
+            ]);
         } finally {
             if (!file.stream.readableEnded) file.stream.destroy();
+            hasher.destroy();
         }
         if (hash.digest("hex") !== item.sha256) throw new SystemBackupError(`备份媒体内容校验失败: ${item.storageKey}`);
         staged.push({ ...item, newObjectVersion, objectKey });
@@ -257,6 +262,7 @@ async function stagePromptImages(config: ReturnType<typeof readServerWebdavConfi
 async function commitRestore(workspaceId: string, domains: Map<string, LoadedDomain>, prompts: ManifestPrompt[], promptImages: StagedPromptImage[], media: StagedMedia[], tasks: BackupGenerationTask[], baseline: Baseline, actorUserId: string) {
     await withTransaction(async (tx) => {
         const workspace = await queryOne<{ id: string }>(tx, "SELECT id FROM workspaces WHERE id = $1 FOR UPDATE", workspaceId);
+        assertBackupTaskActive();
         if (!workspace) throw new SystemBackupError("目标工作区不存在", 404);
         const current = await captureBaselineWith(tx, workspaceId);
         if (current.domains !== baseline.domains || current.media !== baseline.media || current.prompts !== baseline.prompts || current.tasks !== baseline.tasks) throw new SystemBackupError("恢复期间工作区数据已变化，请重试", 409);
@@ -360,6 +366,7 @@ async function commitRestore(workspaceId: string, domains: Map<string, LoadedDom
                 VALUES ($1,$2,'generation-task',$3,'generation-tasks',$4,$5)`, workspaceId, ref.key, task.id, task.revision + 1, ref.path);
         }
         await execute(tx, "UPDATE workspaces SET updated_at = now(), data_restored_at = now() WHERE id = $1", workspaceId);
+        assertBackupTaskActive();
     });
 }
 

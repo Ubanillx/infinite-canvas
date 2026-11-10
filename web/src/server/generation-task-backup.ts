@@ -37,6 +37,7 @@ export async function backupGenerationTasks(config: WebdavConfig, workspaceId: s
     const tasks: BackupGenerationTask[] = [];
     const media: BackupTaskMedia[] = [];
     for (const row of rows) {
+        config.signal?.throwIfAborted();
         const provider = row.provider_snapshot;
         try {
             const url = new URL(provider.baseUrl);
@@ -50,7 +51,7 @@ export async function backupGenerationTasks(config: WebdavConfig, workspaceId: s
                 const id = descriptor.resultId || `${row.id}-${i}`;
                 if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error("结果标识无效");
                 if (outputs.some((output) => output.id === id)) continue;
-                const downloaded = await downloadOutput({ ...provider, apiKey: descriptor.kind === "provider" ? await providerKey(provider) : "" }, descriptor);
+                const downloaded = await downloadOutput({ ...provider, apiKey: descriptor.kind === "provider" ? await providerKey(provider) : "" }, descriptor, config.signal);
                 if (!downloaded.bytes.length || !downloaded.mimeType.startsWith(`${row.kind}/`)) throw new Error("供应商媒体类型或大小无效");
                 const storageKey = `${row.kind}:${id}`;
                 const objectVersion = `backup-${sha256(downloaded.bytes)}`;
@@ -89,6 +90,7 @@ export async function backupGenerationTasks(config: WebdavConfig, workspaceId: s
                 status, upstream, outputs, error_code: errorCode, poll_count: row.poll_count, submissions,
                 revision: row.revision, hidden: row.hidden, createdAt: date(row.created_at), updatedAt: date(row.updated_at), nextPollAt: row.next_poll_at ? date(row.next_poll_at) : null });
         } catch (error) {
+            config.signal?.throwIfAborted();
             errors.push(`生成任务 ${row.id}: ${error instanceof Error ? error.message : "结果备份失败"}`);
         }
     }

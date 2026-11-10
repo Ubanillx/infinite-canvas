@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 import { execute, getPool, isoNow, queryMany, queryOne, toIso, withReadSnapshot, withTransaction, type SqlExecutor } from "./db";
 import { backupGenerationTasks, type BackupTaskMedia } from "./generation-task-backup";
@@ -70,7 +71,7 @@ type MediaRow = { storage_key: string; object_version: string; remote_path: stri
 type PromptRow = { id: string; workspace_id: string; title: string; prompt: string; description: string; tags: string; shared: boolean; created_at: Date; updated_at: Date; has_image: boolean };
 type PromptImageRow = { prompt_id: string; mime_type: string; image: Buffer };
 type RunRow = { id: string; kind: "backup" | "restore"; purpose: BackupPurpose; status: BackupRunStatus; backup_id: string | null; workspace_id: string | null; started_at: Date; finished_at: Date | null; summary: BackupRunSummary | null; error: string | null };
-type ActiveTask = { runId: string; kind: "backup" | "restore"; startedAt: string; cancelled: boolean; progress: BackupProgress };
+type ActiveTask = { runId: string; kind: "backup" | "restore"; startedAt: string; cancelled: boolean; controller: AbortController; progress: BackupProgress };
 type SnapshotResult = { backupId: string; source: SnapshotSource; manifest: BackupManifest };
 
 let activeTask: ActiveTask | null = null;
@@ -91,6 +92,7 @@ export function assertBackupTaskActive() {
 
 export function setBackupProgress(patch: Partial<BackupProgress>) {
     if (!activeTask) return;
+    if (activeTask.cancelled) return;
     activeTask.progress = { ...activeTask.progress, ...patch };
 }
 
@@ -103,7 +105,7 @@ export async function beginBackupTask(kind: ActiveTask["kind"], purpose: BackupP
         const now = isoNow();
         await execute(db, `INSERT INTO backup_runs (id, kind, purpose, status, workspace_id, actor_user_id, started_at, heartbeat_at)
             VALUES ($1, $2, $3, 'running', $4, $5, $6, $6)`, runId, kind, purpose, workspaceId, actorUserId, now);
-        activeTask = { runId, kind, startedAt: now, cancelled: false, progress: { phase: "preparing", current: 0, total: 0, uploadedFiles: 0, uploadedBytes: 0 } };
+        activeTask = { runId, kind, startedAt: now, cancelled: false, controller: new AbortController(), progress: { phase: "preparing", current: 0, total: 0, uploadedFiles: 0, uploadedBytes: 0 } };
         heartbeatTimer = setInterval(() => {
             void execute(db, "UPDATE backup_runs SET heartbeat_at = now() WHERE id = $1 AND status = 'running'", runId).catch(() => undefined);
         }, HEARTBEAT_MS);
@@ -126,8 +128,9 @@ export async function finishBackupTask(runId: string, status: Exclude<BackupRunS
 
 export function cancelBackupTask() {
     if (!activeTask) return false;
-    activeTask.cancelled = true;
     setBackupProgress({ message: "正在取消任务" });
+    activeTask.cancelled = true;
+    activeTask.controller.abort(new SystemBackupError("任务已取消", 409));
     return true;
 }
 
@@ -175,7 +178,7 @@ export async function startBackupTask(actorUserId: string | null, purpose: Backu
     const db = await getPool();
     const workspaces = await queryMany<WorkspaceRow>(db, "SELECT id, name, owner_user_id, created_at, updated_at FROM workspaces ORDER BY id");
     const runId = await beginBackupTask("backup", purpose, actorUserId);
-    void performBackup(runId, config, workspaces, purpose).catch((error) => settleBackupTaskFailure(runId, error));
+    void performBackup(runId, { ...config, signal: assertBackupTaskActive().controller.signal }, workspaces, purpose).catch((error) => settleBackupTaskFailure(runId, error));
     return runId;
 }
 
@@ -192,6 +195,7 @@ async function performBackup(runId: string, config: WebdavConfig, workspaces: Wo
     try {
         const settings = await readBackupSettings();
         const result = await snapshotWorkspaces(config, workspaces, purpose, settings);
+        assertBackupTaskActive();
         const status = result.manifest.status === "complete" ? "succeeded" : "partial";
         await finishBackupTask(runId, status, {
             backupId: result.backupId,
@@ -213,7 +217,7 @@ export async function settleBackupTaskFailure(runId: string, error: unknown) {
 async function snapshotWorkspaces(config: WebdavConfig, workspaces: WorkspaceRow[], purpose: BackupPurpose, settings: BackupSettings, preserveIds: string[] = []): Promise<SnapshotResult> {
     const backupId = createSnapshotId();
     const source = sourceForPurpose(purpose);
-    setBackupProgress({ phase: purpose === "pre-restore" ? "pre-restore" : "backup", current: 0, total: workspaces.length, uploadedFiles: 0, uploadedBytes: 0 });
+    setBackupProgress({ phase: purpose === "pre-restore" ? "pre-restore" : "backup", current: 0, total: workspaces.length, uploadedFiles: 0, uploadedBytes: 0, message: "" });
     const entries: WorkspaceManifest[] = [];
     for (let index = 0; index < workspaces.length; index += 1) {
         assertBackupTaskActive();
@@ -223,7 +227,7 @@ async function snapshotWorkspaces(config: WebdavConfig, workspaces: WorkspaceRow
         setBackupProgress({ current: index + 1 });
     }
     assertBackupTaskActive();
-    setBackupProgress({ phase: "finalizing", current: 0, total: 0 });
+    setBackupProgress({ phase: "finalizing", current: 0, total: 0, message: "写入快照清单" });
     const totals = {
         workspaces: entries.length,
         complete: entries.filter((entry) => entry.status === "complete").length,
@@ -239,14 +243,16 @@ async function snapshotWorkspaces(config: WebdavConfig, workspaces: WorkspaceRow
     };
     const manifestPath = `${snapshotBase(source, backupId)}/manifest.json`;
     await putJson(config, manifestPath, manifest, "manifest.json");
-    if (source === "snapshots") await pruneSnapshots(config, source, settings.retention, backupId, preserveIds);
-    else await pruneSnapshots(config, source, settings.safetyRetention, backupId, preserveIds);
+    assertBackupTaskActive();
+    // An incomplete replacement must never evict an older usable backup.
+    if (manifest.status === "complete") await pruneSnapshots(config, source, source === "snapshots" ? settings.retention : settings.safetyRetention, backupId, preserveIds);
     setBackupProgress({ current: workspaces.length });
     return { backupId, source, manifest };
 }
 
 async function backupWorkspace(config: WebdavConfig, workspace: WorkspaceRow, source: SnapshotSource, backupId: string): Promise<WorkspaceManifest> {
     const errors: string[] = [];
+    setBackupProgress({ message: "读取工作区数据" });
     const snapshot = await withReadSnapshot(async (tx) => {
         const domains = await queryMany<DomainRow>(tx, "SELECT domain, payload, revision, updated_at, updated_by FROM workspace_data WHERE workspace_id = $1 ORDER BY domain", workspace.id);
         const media = await queryMany<MediaRow>(tx, "SELECT storage_key, object_version, remote_path, mime_type, bytes, lifecycle_state, created_at, updated_at, content_sha256 FROM media_files WHERE workspace_id = $1 ORDER BY storage_key", workspace.id);
@@ -254,8 +260,10 @@ async function backupWorkspace(config: WebdavConfig, workspace: WorkspaceRow, so
         const tasks = await queryMany<GenerationTaskRow>(tx, "SELECT * FROM generation_tasks WHERE workspace_id = $1 ORDER BY id", workspace.id);
         return { domains, media, prompts, tasks };
     });
+    setBackupProgress({ message: "归档生成任务结果" });
     const taskData = await backupGenerationTasks(config, workspace.id, snapshot.tasks, errors);
     const tasksPath = `workspaces/${workspace.id}/generation-tasks.json`;
+    setBackupProgress({ message: "写入工作区清单" });
     const tasksFile = await putJson(config, `${snapshotBase(source, backupId)}/${tasksPath}`, taskData.tasks, tasksPath);
     const domainRows = new Map(snapshot.domains.map((row) => [row.domain, row]));
     const referenced = new Set<string>();
@@ -304,9 +312,13 @@ async function backupWorkspace(config: WebdavConfig, workspace: WorkspaceRow, so
     const mediaEntries: BackupTaskMedia[] = [];
     let externalMedia = 0;
     let mediaBytes = 0;
+    setBackupProgress({ message: "读取远端媒体目录" });
     const existingMedia = await listExistingObjects(config, `${SYSTEM_BACKUP_ROOT}/objects/${workspace.id}/media`).catch(() => null);
+    let processedMedia = 0;
     for (const row of [...snapshot.media, ...historical]) {
         assertBackupTaskActive();
+        processedMedia += 1;
+        setBackupProgress({ message: `校验媒体 ${processedMedia}/${snapshot.media.length + historical.length}` });
         if (row.remote_path) {
             externalMedia += 1;
             continue;
@@ -327,13 +339,20 @@ async function backupWorkspace(config: WebdavConfig, workspace: WorkspaceRow, so
                 }
             }
             if (!existingMatches) {
-                const object = await getMediaObject(mediaObjectKey(workspace.id, row.storage_key, row.object_version));
+                setBackupProgress({ message: `读取源媒体 ${processedMedia}/${snapshot.media.length + historical.length}` });
+                const object = await getMediaObject(mediaObjectKey(workspace.id, row.storage_key, row.object_version), config.signal);
                 if (isHistorical && object.contentType) mimeType = object.contentType;
                 const actualBytes = object.contentLength ?? bytes;
                 if (!isHistorical && actualBytes !== bytes) errors.push(`媒体 ${row.storage_key} 大小与索引不一致`);
                 const hash = createHash("sha256");
                 const hasher = new Transform({ transform(chunk: Buffer, _encoding, callback) { hash.update(chunk); callback(null, chunk); } });
-                await putWebdavStream(config, `${SYSTEM_BACKUP_ROOT}/${objectPath}`, object.body.pipe(hasher), mimeType || "application/octet-stream", actualBytes);
+                setBackupProgress({ message: `传输媒体 ${processedMedia}/${snapshot.media.length + historical.length}` });
+                try {
+                    await Promise.all([
+                        pipeline(object.body, hasher, { signal: config.signal }),
+                        putWebdavStream(config, `${SYSTEM_BACKUP_ROOT}/${objectPath}`, hasher, mimeType || "application/octet-stream", actualBytes),
+                    ]);
+                } finally { object.body.destroy(); hasher.destroy(); }
                 sha256 = hash.digest("hex");
                 bytes = actualBytes;
                 setBackupProgress({ uploadedFiles: (activeTask?.progress.uploadedFiles || 0) + 1, uploadedBytes: (activeTask?.progress.uploadedBytes || 0) + bytes });
@@ -344,6 +363,7 @@ async function backupWorkspace(config: WebdavConfig, workspace: WorkspaceRow, so
                 if (!current || toIso(current.updated_at) !== toIso(row.updated_at) || Number(current.bytes) !== bytes) errors.push(`媒体 ${row.storage_key} 在备份期间被修改`);
             }
         } catch (error) {
+            config.signal?.throwIfAborted();
             errors.push(`媒体 ${row.storage_key}: ${error instanceof Error ? error.message : "导出失败"}`);
             mediaEntries.push({ storageKey: row.storage_key, objectVersion: row.object_version, objectPath, mimeType, bytes, sha256, createdAt: toIso(row.created_at), updatedAt: toIso(row.updated_at), lifecycleState: row.lifecycle_state, missing: true, ...(isHistorical ? { historical: true } : {}) });
             continue;
@@ -356,6 +376,7 @@ async function backupWorkspace(config: WebdavConfig, workspace: WorkspaceRow, so
         mediaEntries.push(item);
         mediaBytes += item.bytes;
     }
+    setBackupProgress({ message: "写入媒体和提示词清单" });
     const mediaFile = await putJson(config, `${snapshotBase(source, backupId)}/workspaces/${workspace.id}/media.json`, mediaEntries, `workspaces/${workspace.id}/media.json`);
     const prompts: ManifestPrompt[] = [];
     for (const row of snapshot.prompts) {
@@ -415,7 +436,7 @@ async function listExistingObjects(config: WebdavConfig, path: string) {
 }
 
 async function hashMediaObject(workspaceId: string, row: MediaRow) {
-    const object = await getMediaObject(mediaObjectKey(workspaceId, row.storage_key, row.object_version));
+    const object = await getMediaObject(mediaObjectKey(workspaceId, row.storage_key, row.object_version), assertBackupTaskActive().controller.signal);
     const hash = createHash("sha256");
     for await (const chunk of object.body) hash.update(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     return hash.digest("hex");
@@ -510,14 +531,18 @@ export async function listBackupSnapshots(): Promise<SnapshotSummary[]> {
 }
 
 async function pruneSnapshots(config: WebdavConfig, source: SnapshotSource, retention: number, currentId: string, preserveIds: string[] = []) {
+    setBackupProgress({ message: "探测历史快照，确认后清理" });
     const names = await listWebdavDirectory(config, `${SYSTEM_BACKUP_ROOT}/${source}`).catch(() => null);
     if (!names) return;
     const ids = names.filter(isSnapshotId).sort().reverse();
     const valid: string[] = [];
     for (const id of ids) {
+        config.signal?.throwIfAborted();
         try {
-            if (await webdavExists(config, `${SYSTEM_BACKUP_ROOT}/${source}/${id}/manifest.json`)) valid.push(id);
-            else if (id !== currentId) await deleteWebdavPath(config, `${SYSTEM_BACKUP_ROOT}/${source}/${id}`).catch(() => undefined);
+            if (await webdavExists(config, `${SYSTEM_BACKUP_ROOT}/${source}/${id}/manifest.json`)) {
+                await readBackupManifest(config, source, id);
+                valid.push(id);
+            }
         } catch {
             // An uncertain probe must stop this pruning pass before any snapshot is deleted.
             return;
@@ -527,6 +552,7 @@ async function pruneSnapshots(config: WebdavConfig, source: SnapshotSource, rete
     keep.add(currentId);
     preserveIds.forEach((id) => keep.add(id));
     for (const id of ids) {
+        config.signal?.throwIfAborted();
         if (!keep.has(id)) await deleteWebdavPath(config, `${SYSTEM_BACKUP_ROOT}/${source}/${id}`).catch(() => undefined);
     }
 }
@@ -570,7 +596,7 @@ export async function initializeSystemBackup() {
 export function stopSystemBackup() {
     if (schedulerTimer) clearInterval(schedulerTimer);
     schedulerTimer = null;
-    if (activeTask) activeTask.cancelled = true;
+    cancelBackupTask();
 }
 
 function startBackupScheduler() {

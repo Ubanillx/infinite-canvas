@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { addAbortSignal, type Readable } from "node:stream";
 import { CopyObjectCommand, DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client, type ListObjectsV2CommandInput } from "@aws-sdk/client-s3";
 
 let client: S3Client | undefined;
@@ -31,23 +32,24 @@ export function mediaObjectKey(workspaceId: string, storageKey: string, objectVe
     return objectVersion ? `${base}-${objectVersion}` : base;
 }
 
-export async function putMediaStream(key: string, body: NodeJS.ReadableStream, contentType: string, contentLength?: number) {
+export async function putMediaStream(key: string, body: NodeJS.ReadableStream, contentType: string, contentLength?: number, signal?: AbortSignal) {
     await s3().send(new PutObjectCommand({
         Bucket: bucket(),
         Key: key,
         Body: body as never,
         ContentType: contentType,
         ContentLength: contentLength,
-    }));
+    }), { abortSignal: signal });
 }
 
 export async function putMediaBuffer(key: string, body: Buffer, contentType: string) {
     await s3().send(new PutObjectCommand({ Bucket: bucket(), Key: key, Body: body, ContentType: contentType, ContentLength: body.length }));
 }
 
-export async function getMediaObject(key: string) {
-    const result = await s3().send(new GetObjectCommand({ Bucket: bucket(), Key: key }));
-    return { body: result.Body as NodeJS.ReadableStream, contentLength: result.ContentLength, contentType: result.ContentType };
+export async function getMediaObject(key: string, signal?: AbortSignal) {
+    const result = await s3().send(new GetObjectCommand({ Bucket: bucket(), Key: key }), { abortSignal: signal });
+    if (signal && result.Body) addAbortSignal(signal, result.Body as Readable);
+    return { body: result.Body as Readable, contentLength: result.ContentLength, contentType: result.ContentType };
 }
 
 export async function headMediaObject(key: string) {

@@ -3,9 +3,10 @@ import http, { type IncomingMessage, type RequestOptions } from "node:http";
 import https from "node:https";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import { Readable } from "node:stream";
+import { addAbortSignal, Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
-export type WebdavConfig = { target: URL; directory: string; authorization: string };
+export type WebdavConfig = { target: URL; directory: string; authorization: string; signal?: AbortSignal };
 export type WebdavStream = { stream: IncomingMessage; contentLength?: number };
 
 const METADATA_TIMEOUT_MS = 60_000;
@@ -41,13 +42,14 @@ export async function testWebdavConnection(config: WebdavConfig) {
     await ensureWebdavDirectory(config, "");
     const response = await webdavRequest(config, "", { method: "PROPFIND", headers: { Depth: "0" } });
     if (isOk(response) || statusCode(response) === 207) {
-        response.resume();
+        await discardResponse(response);
         return;
     }
     await throwWebdavError(response, "WebDAV 连接失败");
 }
 
 export async function ensureWebdavDirectory(config: WebdavConfig, path: string) {
+    config.signal?.throwIfAborted();
     const fullPath = [config.directory, path].filter(Boolean).join("/");
     const cacheKey = `${config.target.href}:${fullPath}`;
     if (directoryCache.has(cacheKey)) return;
@@ -58,8 +60,12 @@ export async function ensureWebdavDirectory(config: WebdavConfig, path: string) 
     for (const segment of [...webdavPathSegments(config.directory), ...webdavPathSegments(path)]) {
         current = current ? `${current}/${segment}` : segment;
         const response = await webdavRequest(rootConfig, current, { method: "MKCOL" });
-        if (isOk(response)) continue;
-        if ([403, 405, 409, 423].includes(statusCode(response)) && await webdavExists(rootConfig, current)) continue;
+        if (isOk(response)) { await discardResponse(response); continue; }
+        if ([403, 405, 409, 423].includes(statusCode(response))) {
+            await discardResponse(response);
+            if (await webdavExists(rootConfig, current)) continue;
+            throw new Error(`无法创建 WebDAV 目录 ${current}`);
+        }
         await throwWebdavError(response, `无法创建 WebDAV 目录 ${current}`);
     }
     directoryCache.add(cacheKey);
@@ -68,14 +74,14 @@ export async function ensureWebdavDirectory(config: WebdavConfig, path: string) 
 /** Returns the remote object length when the server exposes DAV:getcontentlength. */
 export async function webdavContentLength(config: WebdavConfig, path: string) {
     const response = await webdavRequest(config, path, { method: "PROPFIND", headers: { Depth: "0" }, timeoutMs: METADATA_TIMEOUT_MS });
-    if (statusCode(response) === 404) return null;
+    if (statusCode(response) === 404) { await discardResponse(response); return null; }
     if (!isOk(response) && statusCode(response) !== 207) await throwWebdavError(response, `无法读取 WebDAV 文件 ${path}`);
     const text = await readResponseText(response);
     const match = /<[^>]*getcontentlength[^>]*>(\d+)<\/[^>]*getcontentlength>/i.exec(text);
     if (match) return Number(match[1]);
     const head = await webdavRequest(config, path, { method: "HEAD", timeoutMs: METADATA_TIMEOUT_MS }).catch(() => null);
     if (!head) return null;
-    head.resume();
+    await discardResponse(head);
     if (!isOk(head)) return null;
     const length = Number(head.headers["content-length"]);
     return Number.isFinite(length) ? length : null;
@@ -87,14 +93,14 @@ export function clearWebdavDirectoryCache() {
 
 export async function webdavExists(config: WebdavConfig, path: string) {
     const response = await webdavRequest(config, path, { method: "PROPFIND", headers: { Depth: "0" }, timeoutMs: METADATA_TIMEOUT_MS });
-    if (isOk(response) || statusCode(response) === 207) { response.resume(); return true; }
-    if (statusCode(response) === 404) { response.resume(); return false; }
+    if (isOk(response) || statusCode(response) === 207) { await discardResponse(response); return true; }
+    if (statusCode(response) === 404) { await discardResponse(response); return false; }
     await throwWebdavError(response, `无法检查 WebDAV 路径 ${path}`);
 }
 
 export async function listWebdavDirectory(config: WebdavConfig, path: string) {
     const response = await webdavRequest(config, path, { method: "PROPFIND", headers: { Depth: "1" }, timeoutMs: METADATA_TIMEOUT_MS });
-    if (statusCode(response) === 404) return [];
+    if (statusCode(response) === 404) { await discardResponse(response); return []; }
     if (!isOk(response) && statusCode(response) !== 207) await throwWebdavError(response, `无法读取 WebDAV 目录 ${path}`);
     const text = await readResponseText(response);
     const current = webdavPathSegments(path).at(-1) || "";
@@ -104,14 +110,19 @@ export async function listWebdavDirectory(config: WebdavConfig, path: string) {
 }
 
 export async function putWebdavStream(config: WebdavConfig, path: string, body: Readable, contentType: string, contentLength: number) {
-    await ensureWebdavDirectory(config, parentPath(path));
-    const response = await webdavRequest(config, path, {
-        method: "PUT",
-        headers: { "Content-Type": contentType, "Content-Length": String(contentLength) },
-        body,
-        timeoutMs: MEDIA_IDLE_TIMEOUT_MS,
-    });
-    if (!isOk(response)) await throwWebdavError(response, `无法上传 WebDAV 文件 ${path}`);
+    try {
+        await ensureWebdavDirectory(config, parentPath(path));
+        const response = await webdavRequest(config, path, {
+            method: "PUT",
+            headers: { "Content-Type": contentType, "Content-Length": String(contentLength) },
+            body,
+            timeoutMs: MEDIA_IDLE_TIMEOUT_MS,
+        });
+        if (!isOk(response)) await throwWebdavError(response, `无法上传 WebDAV 文件 ${path}`);
+        await discardResponse(response);
+    } finally {
+        if (!body.readableEnded) body.destroy();
+    }
 }
 
 export async function putWebdavBuffer(config: WebdavConfig, path: string, body: Buffer, contentType = "application/octet-stream") {
@@ -120,7 +131,7 @@ export async function putWebdavBuffer(config: WebdavConfig, path: string, body: 
 
 export async function getWebdavStream(config: WebdavConfig, path: string) {
     const response = await webdavRequest(config, path, { method: "GET", timeoutMs: MEDIA_IDLE_TIMEOUT_MS });
-    if (statusCode(response) === 404) return null;
+    if (statusCode(response) === 404) { await discardResponse(response); return null; }
     if (!isOk(response)) await throwWebdavError(response, `无法下载 WebDAV 文件 ${path}`);
     const contentLength = Number(response.headers["content-length"]);
     return { stream: response, contentLength: Number.isFinite(contentLength) ? contentLength : undefined } satisfies WebdavStream;
@@ -128,11 +139,13 @@ export async function getWebdavStream(config: WebdavConfig, path: string) {
 
 export async function deleteWebdavPath(config: WebdavConfig, path: string) {
     const response = await webdavRequest(config, path, { method: "DELETE", timeoutMs: METADATA_TIMEOUT_MS });
-    if (isOk(response) || statusCode(response) === 404) return;
+    if (isOk(response) || statusCode(response) === 404) { await discardResponse(response); return; }
     if (![409, 423].includes(statusCode(response))) await throwWebdavError(response, `无法删除 WebDAV 路径 ${path}`);
+    await discardResponse(response);
     for (const name of await listWebdavDirectory(config, path)) await deleteWebdavPath(config, `${path}/${name}`);
     const retry = await webdavRequest(config, path, { method: "DELETE", timeoutMs: METADATA_TIMEOUT_MS });
     if (!isOk(retry) && statusCode(retry) !== 404) await throwWebdavError(retry, `无法删除 WebDAV 路径 ${path}`);
+    await discardResponse(retry);
 }
 
 function parentPath(path: string) {
@@ -140,19 +153,46 @@ function parentPath(path: string) {
 }
 
 function webdavRequest(config: WebdavConfig, path: string, options: RequestOptions & { method: string; body?: Readable; timeoutMs?: number }) {
+    config.signal?.throwIfAborted();
     const url = buildWebdavUrl(config, path);
     const requestOptions = { method: options.method, headers: { ...options.headers, Authorization: config.authorization } };
     return new Promise<IncomingMessage>((resolve, reject) => {
-        const request = url.protocol === "https:" ? https.request(url, requestOptions, resolve) : http.request(url, requestOptions, resolve);
+        let responseStream: IncomingMessage | undefined;
+        let upload = Promise.resolve();
+        const onResponse = (response: IncomingMessage) => {
+            responseStream = response;
+            response.on("error", reject);
+            if (config.signal) addAbortSignal(config.signal, response);
+            if (options.body && isOk(response)) void upload.then(() => resolve(response), reject);
+            else resolve(response);
+        };
+        const request = url.protocol === "https:" ? https.request(url, requestOptions, onResponse) : http.request(url, requestOptions, onResponse);
+        // Explicitly abort as well: Bun's node:http compatibility does not always
+        // reject a request awaiting headers when only options.signal is supplied.
+        const abort = () => {
+            const error = config.signal?.reason instanceof Error ? config.signal.reason : new Error("任务已取消");
+            reject(error);
+            responseStream?.destroy(error);
+            options.body?.destroy(error);
+            request.destroy(error);
+        };
+        config.signal?.addEventListener("abort", abort, { once: true });
+        request.once("error", () => config.signal?.removeEventListener("abort", abort));
+        request.once("response", (response) => response.once("close", () => config.signal?.removeEventListener("abort", abort)));
+        if (config.signal?.aborted) { abort(); return; }
         request.setTimeout(options.timeoutMs || METADATA_TIMEOUT_MS, () => request.destroy(new Error("WebDAV 请求超时")));
         request.on("error", (error) => reject(error instanceof Error ? error : new Error(String(error))));
         if (options.body) {
-            options.body.on("error", (error) => request.destroy(error));
-            options.body.pipe(request);
+            upload = pipeline(options.body, request, { signal: config.signal });
+            void upload.catch(reject);
         } else {
             request.end();
         }
     });
+}
+
+async function discardResponse(response: IncomingMessage) {
+    for await (const _ of response) { /* Drain successful/unused bodies so keep-alive connections can be reused. */ }
 }
 
 function buildWebdavUrl(config: WebdavConfig, path: string) {
