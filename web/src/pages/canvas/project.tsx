@@ -1856,7 +1856,7 @@ function InfiniteCanvasPage() {
         setNodes((prev) =>
             prev.map((node) =>
                 node.id === nodeId
-                    ? { ...node, metadata: { ...node.metadata, content, texts: node.metadata?.texts?.map((text) => (text.id === node.metadata?.primaryTextId ? { ...text, content } : text)) } }
+                    ? { ...node, metadata: { ...node.metadata, generationTask: undefined, content, texts: node.metadata?.texts?.map((text) => (text.id === node.metadata?.primaryTextId ? { ...text, content } : text)) } }
                     : node,
             ),
         );
@@ -2494,7 +2494,7 @@ function InfiniteCanvasPage() {
         async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, requestId?: string) => {
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
             const generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode);
-            const requestFingerprint = JSON.stringify({ nodeId, mode, prompt, model: generationConfig.model, quality: generationConfig.quality, size: generationConfig.size, count: generationConfig.count, background: generationConfig.background, seconds: generationConfig.videoSeconds, resolution: generationConfig.vquality, generateAudio: generationConfig.videoGenerateAudio, watermark: generationConfig.videoWatermark, videoMode: generationConfig.videoMode, systemPrompt: generationConfig.systemPrompt });
+            const requestFingerprint = JSON.stringify({ nodeId, mode, prompt, model: generationConfig.model, quality: generationConfig.quality, size: generationConfig.size, count: generationConfig.count, background: generationConfig.background, seconds: generationConfig.videoSeconds, resolution: generationConfig.vquality, generateAudio: generationConfig.videoGenerateAudio, watermark: generationConfig.videoWatermark, videoMode: generationConfig.videoMode, systemPrompt: generationConfig.systemPrompt, textCount: sourceNode?.metadata?.textCount || 1, reasoningEffort: generationConfig.reasoningEffort, audioVoice: generationConfig.audioVoice, audioFormat: generationConfig.audioFormat, audioSpeed: generationConfig.audioSpeed, audioInstructions: generationConfig.audioInstructions });
             const sameRequest = requestId ? nodesRef.current.find((node) => node.metadata?.generationTask?.requestId === requestId) : undefined;
             if (sameRequest) {
                 const binding = sameRequest.metadata!.generationTask!;
@@ -2804,6 +2804,10 @@ function InfiniteCanvasPage() {
                     if (!reuseAudioNode) setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: nodeId, toNodeId: audioId }]);
                     const controller = startGenerationRequest(audioId, nodeId, nodeId, runController);
                     try {
+                        if (!resolveModelScript(generationConfig, generationConfig.model)) {
+                            await canvasTasks.run({ requestId, requestFingerprint, nodeId: audioId, originNodeId: nodeId, kind: "audio", config: generationConfig, prompt: effectivePrompt, signal: controller.signal });
+                            return;
+                        }
                         const audio = await storeGeneratedAudio(await requestAudioGeneration(generationConfig, effectivePrompt, { signal: controller.signal }), generationConfig.audioFormat);
                         setNodes((prev) => prev.map((node) => (node.id === audioId ? { ...node, metadata: { ...node.metadata, ...audioMetadata(audio), prompt: effectivePrompt, ...buildAudioGenerationMetadata(generationConfig) } } : node)));
                     } finally {
@@ -2851,6 +2855,14 @@ function InfiniteCanvasPage() {
                 setDialogNodeId(nodeId);
 
                 const controller = rootId === nodeId ? runController : startGenerationRequest(rootId, nodeId, nodeId, runController);
+                if (!resolveModelScript(generationConfig, generationConfig.model)) {
+                    try {
+                        await canvasTasks.run({ requestId, requestFingerprint, nodeId: rootId, originNodeId: nodeId, kind: "text", config: generationConfig, prompt: effectivePrompt, images: generationContext.referenceImages, slotIds: textIds, signal: controller.signal });
+                    } finally {
+                        if (rootId !== nodeId) finishGenerationRequest(rootId, controller);
+                    }
+                    return;
+                }
                 const results = await Promise.all(
                     textIds.map(async (textId): Promise<CanvasNodeText | null> => {
                         let streamed = "";
@@ -3010,6 +3022,11 @@ function InfiniteCanvasPage() {
 
                 if (node.type === CanvasNodeType.Text) {
                     if (!context) return;
+                    if (!resolveModelScript(generationConfig, generationConfig.model)) {
+                        await canvasTasks.run({ nodeId: node.id, originNodeId: sourceNode.id, kind: "text", config: generationConfig, prompt, images: context.referenceImages, slotIds: node.metadata?.texts?.length ? node.metadata.texts.map((text) => text.id) : [nanoid()], signal: controller.signal });
+                        return;
+                    }
+                    setNodes((items) => items.map((item) => item.id === node.id ? { ...item, metadata: { ...item.metadata, generationTask: undefined } } : item));
                     let streamed = "";
                     const answer = await requestImageQuestion(
                         generationConfig,
@@ -3035,6 +3052,11 @@ function InfiniteCanvasPage() {
                     return;
                 }
                 if (node.type === CanvasNodeType.Audio) {
+                    if (!resolveModelScript(generationConfig, generationConfig.model)) {
+                        await canvasTasks.run({ nodeId: node.id, originNodeId: sourceNode.id, kind: "audio", config: generationConfig, prompt, signal: controller.signal });
+                        return;
+                    }
+                    setNodes((items) => items.map((item) => item.id === node.id ? { ...item, metadata: { ...item.metadata, generationTask: undefined } } : item));
                     const audio = await storeGeneratedAudio(await requestAudioGeneration(generationConfig, prompt, { signal: controller.signal }), generationConfig.audioFormat);
                     setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, ...audioMetadata(audio), prompt, ...buildAudioGenerationMetadata(generationConfig) } } : item)));
                     return;

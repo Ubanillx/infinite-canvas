@@ -13,7 +13,7 @@ export type GenerationChannel = {
 };
 export type ResolvedGenerationChannel = Omit<GenerationChannel, "channelId"> & { id: string };
 export type GenerationReference = { bytes: Buffer; mimeType: string; name?: string };
-export type GenerationRequest = { kind: "image" | "video"; prompt: string; settings: Record<string, unknown>; references: Array<GenerationReference & { kind: "image" | "video" | "audio" }> };
+export type GenerationRequest = { kind: "image" | "video" | "text" | "audio"; prompt: string; settings: Record<string, unknown>; references: Array<GenerationReference & { kind: "image" | "video" | "audio" }> };
 export type GenerationInput = {
     prompt: string;
     images?: GenerationReference[];
@@ -47,7 +47,7 @@ export const requestGenerationProvider: ProviderRequest = async (url, init) => {
     return { status: response.status, headers: { "content-type": contentType }, bytes };
 };
 
-function target(channel: GenerationChannel, path: string) {
+export function target(channel: GenerationChannel, path: string) {
     if (!channel.apiKey || !channel.model || channel.script) throw new Error("渠道密钥、模型缺失或脚本模型不支持服务端生成");
     const base = new URL(channel.baseUrl);
     if (!["http:", "https:"].includes(base.protocol) || base.username || base.password || base.search || base.hash) throw new Error("无效的供应商渠道地址");
@@ -60,7 +60,7 @@ function target(channel: GenerationChannel, path: string) {
     return result;
 }
 
-function headers(channel: GenerationChannel, contentType = "application/json") {
+export function headers(channel: GenerationChannel, contentType = "application/json") {
     return { "content-type": contentType, ...(channel.apiFormat === "gemini" ? { "x-goog-api-key": channel.apiKey } : { authorization: `Bearer ${channel.apiKey}` }) };
 }
 
@@ -111,7 +111,7 @@ function imageOutput(value: unknown): OutputDescriptor {
 export async function downloadOutput(channel: ResolvedGenerationChannel, output: OutputDescriptor, signal?: AbortSignal, request: ProviderRequest = requestGenerationProvider): Promise<GenerationMedia> {
     if (output.kind === "remote") return remoteBytes(output.url, signal);
     if (output.kind === "inline") {
-        const match = /^data:(image\/[a-zA-Z0-9.+-]+|video\/[a-zA-Z0-9.+-]+);base64,([a-zA-Z0-9+/=]+)$/.exec(output.dataUrl);
+        const match = /^data:(image\/[a-zA-Z0-9.+-]+|video\/[a-zA-Z0-9.+-]+|audio\/[a-zA-Z0-9.+-]+);base64,([a-zA-Z0-9+/=]+)$/.exec(output.dataUrl);
         if (!match) throw new Error("无效的生成媒体数据");
         if (Buffer.byteLength(match[2], "base64") > GENERATION_MEDIA_LIMIT_BYTES) throw new Error("生成媒体大小超过现有媒体边界");
         return { bytes: Buffer.from(match[2], "base64"), mimeType: match[1] };

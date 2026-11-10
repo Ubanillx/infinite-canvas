@@ -14,7 +14,7 @@ import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 import { isGenerationTaskActive, type GenerationTask, type GenerationTaskReference } from "@/types/generation-task";
 
 type Options = { projectId: string; loaded: boolean; nodes: CanvasNodeData[]; nodesRef: MutableRefObject<CanvasNodeData[]>; connectionsRef: MutableRefObject<CanvasConnection[]>; setNodes: Dispatch<SetStateAction<CanvasNodeData[]>> };
-type RunInput = { requestId?: string; requestFingerprint?: string; nodeId: string; kind: "image" | "video"; config: AiConfig; prompt: string; images?: ReferenceImage[]; videos?: ReferenceVideo[]; audios?: ReferenceAudio[]; slotIds?: string[]; preservePrimary?: boolean; signal: AbortSignal; originNodeId?: string };
+type RunInput = { requestId?: string; requestFingerprint?: string; nodeId: string; kind: CanvasGenerationTaskBinding["kind"]; config: AiConfig; prompt: string; images?: ReferenceImage[]; videos?: ReferenceVideo[]; audios?: ReferenceAudio[]; slotIds?: string[]; preservePrimary?: boolean; signal: AbortSignal; originNodeId?: string };
 
 export function useCanvasGenerationTasks({ projectId, loaded, nodes, nodesRef, connectionsRef, setNodes }: Options) {
     const workspaceId = useRef(getActiveWorkspace()?.id).current;
@@ -51,7 +51,7 @@ export function useCanvasGenerationTasks({ projectId, loaded, nodes, nodesRef, c
             watches.current.set(binding.nodeId, { stop, binding, originNodeId });
             signal?.addEventListener("abort", stop, { once: true });
             let latest = initial;
-            const dimensions = new Map<string, { width: number; height: number; durationMs?: number }>();
+            const dimensions = new Map<string, { width?: number; height?: number; durationMs?: number }>();
             const decoding = new Set<string>();
             const decoded = new Set<string>();
             const publish = () => {
@@ -67,12 +67,12 @@ export function useCanvasGenerationTasks({ projectId, loaded, nodes, nodesRef, c
                 // Metadata decoding must not occupy the GET polling slot or hide a stable result.
                 publish();
                 for (const output of task.outputs) {
-                    if ((output.width && output.height) || decoded.has(output.storageKey) || decoding.has(output.storageKey)) continue;
+                    if (task.kind === "text" || (task.kind === "audio" ? output.durationMs !== undefined : output.width && output.height) || decoded.has(output.storageKey) || decoding.has(output.storageKey)) continue;
                     decoding.add(output.storageKey);
                     void hydrateCanvasTaskOutputDimensions({ ...task, outputs: [output] }, mediaController.signal).then((hydrated) => {
                         const meta = hydrated.outputs[0];
                         if (stopped || signal?.aborted || !owns(binding)) return;
-                        if (meta.width && meta.height) dimensions.set(output.storageKey, { width: meta.width, height: meta.height, durationMs: meta.durationMs });
+                        if ((meta.width && meta.height) || meta.durationMs !== undefined) dimensions.set(output.storageKey, { width: meta.width, height: meta.height, durationMs: meta.durationMs });
                         publish(); // Always use the newest task revision, never the decoded snapshot's status or output list.
                     }).catch(() => undefined).finally(() => {
                         decoding.delete(output.storageKey);
@@ -81,7 +81,7 @@ export function useCanvasGenerationTasks({ projectId, loaded, nodes, nodesRef, c
                     });
                 }
                 if (!isGenerationTaskActive(task)) {
-                    setNodes((items) => current() && items.some((node) => matchesCanvasTask(node, binding, task)) ? items.map((node) => node.id === binding.originNodeId && node.id !== binding.nodeId && node.type === "config" && !node.metadata?.generationTask ? { ...node, metadata: { ...node.metadata, status: task.outputs.length ? "success" as const : "error" as const, errorDetails: task.error } } : node) : items);
+                    setNodes((items) => current() && items.some((node) => matchesCanvasTask(node, binding, task)) ? items.map((node) => node.id === binding.originNodeId && node.id !== binding.nodeId && node.type === "config" && !node.metadata?.generationTask ? { ...node, metadata: { ...node.metadata, status: task.outputs.length || task.textOutputs?.some((output) => output.status === "succeeded") ? "success" as const : "error" as const, errorDetails: task.error } } : node) : items);
                     if (timer) clearInterval(timer);
                     resolve(); // The task is readable now; optional metadata can finish under the same cleanup/owner guard.
                     if (!decoding.size) stop();
@@ -157,13 +157,13 @@ export function useCanvasGenerationTasks({ projectId, loaded, nodes, nodesRef, c
         if (!current() || input.signal.aborted) throw new DOMException("生成已停止", "AbortError");
         const binding: CanvasGenerationTaskBinding = { requestId: input.requestId || nanoid(), workspaceId, projectId, nodeId: input.nodeId, originNodeId: input.originNodeId, requestFingerprint: input.requestFingerprint, kind: input.kind, slotIds: input.slotIds || [nanoid()], preservePrimary: input.preservePrimary, references, status: "queued" };
         // Flush pending node/connection creation before saving the request marker. The POST is forbidden until its save is acknowledged.
-        flushSync(() => setNodes((items) => items.map((node) => node.id === input.nodeId ? { ...node, metadata: { ...node.metadata, generationTask: binding, images: binding.kind === "image" ? [...(node.metadata?.images || []).map((image) => binding.slotIds.includes(image.id) ? { ...image, status: "loading" as const, errorDetails: undefined } : image), ...binding.slotIds.filter((id) => !node.metadata?.images?.some((image) => image.id === id)).map((id) => ({ id, status: "loading" as const, content: "", naturalWidth: 0, naturalHeight: 0, bytes: 0, mimeType: "" }))] : node.metadata?.images } } : node)));
+        flushSync(() => setNodes((items) => items.map((node) => node.id === input.nodeId ? { ...node, metadata: { ...node.metadata, generationTask: binding, images: binding.kind === "image" ? [...(node.metadata?.images || []).map((image) => binding.slotIds.includes(image.id) ? { ...image, status: "loading" as const, errorDetails: undefined } : image), ...binding.slotIds.filter((id) => !node.metadata?.images?.some((image) => image.id === id)).map((id) => ({ id, status: "loading" as const, content: "", naturalWidth: 0, naturalHeight: 0, bytes: 0, mimeType: "" }))] : node.metadata?.images, texts: binding.kind === "text" ? [...(node.metadata?.texts || []).map((text) => binding.slotIds.includes(text.id) ? { ...text, status: "loading" as const, content: "", errorDetails: undefined } : text), ...binding.slotIds.filter((id) => !node.metadata?.texts?.some((text) => text.id === id)).map((id) => ({ id, status: "loading" as const, content: "" }))] : node.metadata?.texts } } : node)));
         submissions.current.set(binding.requestId, binding);
         if (!owns(binding)) throw new DOMException("生成目标已变化", "AbortError");
         const markNotSubmitted = async (details: string) => {
             if (!owns(binding)) return;
             flushSync(() => {
-                update(binding, (node) => ({ ...node, metadata: { ...node.metadata, generationTask: { ...binding, status: "failed", submissionState: "not_submitted" }, status: node.metadata?.content ? "success" : "error", errorDetails: details, images: node.metadata?.images?.map((image) => binding.slotIds.includes(image.id) ? { ...image, status: "error", errorDetails: details } : image) } }));
+                update(binding, (node) => ({ ...node, metadata: { ...node.metadata, generationTask: { ...binding, status: "failed", submissionState: "not_submitted" }, status: node.metadata?.content ? "success" : "error", errorDetails: details, images: node.metadata?.images?.map((image) => binding.slotIds.includes(image.id) ? { ...image, status: "error", errorDetails: details } : image), texts: node.metadata?.texts?.map((text) => binding.slotIds.includes(text.id) ? { ...text, status: "error", errorDetails: details } : text) } }));
                 interrupted(binding, details);
             });
             if (!owns(binding)) return;
@@ -181,7 +181,11 @@ export function useCanvasGenerationTasks({ projectId, loaded, nodes, nodesRef, c
             throw new DOMException("生成目标已变化", "AbortError");
         }
         const config = input.config;
-        const settings = input.kind === "image"
+        const settings = input.kind === "text"
+            ? { count: binding.slotIds.length, systemPrompt: config.systemPrompt, reasoningEffort: config.reasoningEffort }
+            : input.kind === "audio"
+            ? { voice: config.audioVoice, format: config.audioFormat, speed: config.audioSpeed, instructions: config.audioInstructions }
+            : input.kind === "image"
             ? { quality: config.quality, size: config.size, count: binding.slotIds.length, background: config.background, systemPrompt: config.systemPrompt }
             : { size: config.size, resolution: config.vquality, seconds: config.videoSeconds, generateAudio: config.videoGenerateAudio === "true", watermark: config.videoWatermark === "true", mode: config.videoMode, systemPrompt: config.systemPrompt };
         try {

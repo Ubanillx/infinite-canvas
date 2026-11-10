@@ -8,7 +8,14 @@ const KNOWN_WORKSPACES_KEY = "infinite-canvas:known-workspaces";
 
 export function getActiveWorkspace() {
     if (typeof window === "undefined") return null;
-    return readWorkspace(window.localStorage.getItem(ACTIVE_WORKSPACE_KEY));
+    // 工作区属于当前标签页；localStorage 仅作为新标签页的默认值。
+    // 避免另一标签切换后，当前 store 数据和 Agent 回执被发往另一工作区。
+    const pinned = window.sessionStorage?.getItem(ACTIVE_WORKSPACE_KEY);
+    if (pinned != null) return readWorkspace(pinned);
+    const value = window.localStorage.getItem(ACTIVE_WORKSPACE_KEY);
+    const workspace = readWorkspace(value);
+    if (workspace && value) window.sessionStorage?.setItem(ACTIVE_WORKSPACE_KEY, value);
+    return workspace;
 }
 
 export function getKnownWorkspaces() {
@@ -28,10 +35,12 @@ export function setKnownWorkspaces(workspaces: WorkspaceAccess[]) {
 export function setActiveWorkspace(workspace: WorkspaceAccess) {
     const known = getKnownWorkspaces().filter((item) => item.id !== workspace.id);
     setKnownWorkspaces([workspace, ...known]);
+    window.sessionStorage?.setItem(ACTIVE_WORKSPACE_KEY, JSON.stringify(workspace));
     window.localStorage.setItem(ACTIVE_WORKSPACE_KEY, JSON.stringify(workspace));
 }
 
 export function clearActiveWorkspace() {
+    window.sessionStorage?.removeItem(ACTIVE_WORKSPACE_KEY);
     window.localStorage.removeItem(ACTIVE_WORKSPACE_KEY);
 }
 

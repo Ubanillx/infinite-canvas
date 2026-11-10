@@ -1,11 +1,12 @@
 import { requireAgentWorkspace } from "@/lib/agent/agent-tool-context";
 import { readAgentGenerationLogs } from "@/services/api/agent-generation-results";
 import { getGenerationTask, listGenerationTasks } from "@/services/api/generation-tasks";
-import type { GenerationTask } from "@/types/generation-task";
+import type { GenerationTask, GenerationTaskKind } from "@/types/generation-task";
 
 export const GENERATION_RESULT_TOOL_NAMES = ["generation_list_results", "generation_get_result"] as const;
 type ResultToolName = (typeof GENERATION_RESULT_TOOL_NAMES)[number];
-type Source = "image" | "video";
+type Source = GenerationTaskKind;
+type LegacySource = "image" | "video";
 type RecordValue = Record<string, unknown>;
 
 export function isGenerationResultTool(name: string): name is ResultToolName {
@@ -19,7 +20,7 @@ function record(value: unknown): RecordValue {
 function string(value: unknown) { return typeof value === "string" ? value : ""; }
 function number(value: unknown) { return typeof value === "number" && Number.isFinite(value) ? value : undefined; }
 
-function outputs(log: RecordValue, source: Source) {
+function outputs(log: RecordValue, source: LegacySource) {
     const values = source === "image" ? Array.isArray(log.images) ? log.images : [] : log.video ? [log.video] : [];
     return values.map((value) => {
         const item = record(value);
@@ -33,7 +34,7 @@ function outputs(log: RecordValue, source: Source) {
     });
 }
 
-function result(value: unknown, source: Source, detail = false) {
+function result(value: unknown, source: LegacySource, detail = false) {
     const log = record(value);
     if (!string(log.id)) throw new Error("生成历史记录缺少 ID");
     const media = outputs(log, source);
@@ -46,16 +47,18 @@ function result(value: unknown, source: Source, detail = false) {
 }
 
 function taskResult(task: GenerationTask, detail = false) {
+    const textOutputs = (task.textOutputs || []).map(({ id, slotIndex, content, status }) => ({ id, slotIndex, content, status }));
+    const count = task.kind === "text" ? textOutputs.length : task.outputs.length;
     return { id: task.id, requestId: task.requestId, source: task.kind, ...(task.canvasTarget ? { canvasTarget: { projectId: task.canvasTarget.projectId, nodeId: task.canvasTarget.nodeId } } : {}), title: task.prompt, createdAt: Date.parse(task.createdAt), status: task.status, model: task.model,
-        outputCount: task.outputs.length, storedOutputCount: task.outputs.length,
-        ...(detail ? { prompt: task.prompt, outputs: task.outputs.map((output) => ({ ...output, kind: task.kind, available: true })), errorCode: task.errorCode } : {}), durableTask: true };
+        outputCount: count, storedOutputCount: count,
+        ...(detail ? { prompt: task.prompt, outputs: task.outputs.map((output) => ({ ...output, kind: task.kind, available: true })), ...(task.kind === "text" ? { textOutputs } : {}), errorCode: task.errorCode } : {}), durableTask: true };
 }
 
 export async function runGenerationResultTool(name: ResultToolName, input: RecordValue) {
     const workspaceId = requireAgentWorkspace(input).id;
     const scope = input.source ?? "all";
-    if (scope !== "image" && scope !== "video" && (scope !== "all" || name === "generation_get_result")) throw new Error("请指定 image 或 video 结果来源");
-    const sources: Source[] = scope === "all" ? ["image", "video"] : [scope];
+    if (scope !== "image" && scope !== "video" && scope !== "text" && scope !== "audio" && (scope !== "all" || name === "generation_get_result")) throw new Error("请指定 image、video、text 或 audio 结果来源");
+    const sources: Source[] = scope === "all" ? ["image", "video", "text", "audio"] : [scope];
     if (name === "generation_get_result") {
         if (typeof input.id !== "string" || !input.id.trim()) throw new Error("请提供生成历史 ID");
         const source = sources[0];
@@ -64,6 +67,7 @@ export async function runGenerationResultTool(name: ResultToolName, input: Recor
         catch (error) { if ((error as { status?: number }).status !== 404) throw error; }
         if (task && task.kind !== source) throw new Error("生成任务与结果来源不符");
         if (task) return { workspaceId, result: taskResult(task, true), persistedHistoryOnly: false };
+        if (source === "text" || source === "audio") throw new Error("当前工作区生成结果不存在");
         const values = await readAgentGenerationLogs(workspaceId, source);
         const found = values.find((item) => record(item).id === input.id);
         if (!found) throw new Error("当前工作区生成结果不存在");
@@ -72,7 +76,7 @@ export async function runGenerationResultTool(name: ResultToolName, input: Recor
     const origin = input.origin === "canvas" || input.origin === "workbench" ? input.origin : "all";
     const filter = { source: origin, projectId: string(input.projectId), nodeId: string(input.nodeId), requestId: string(input.requestId) } as const;
     const includeLegacy = origin !== "canvas" && !filter.projectId && !filter.nodeId && !filter.requestId;
-    const values = await Promise.all(sources.map(async (source) => [...(await listGenerationTasks(workspaceId, source, filter)).map((task) => taskResult(task)), ...(includeLegacy ? (await readAgentGenerationLogs(workspaceId, source)).map((value) => result(value, source)) : [])]));
+    const values = await Promise.all(sources.map(async (source) => [...(await listGenerationTasks(workspaceId, source, filter)).map((task) => taskResult(task)), ...(includeLegacy && (source === "image" || source === "video") ? (await readAgentGenerationLogs(workspaceId, source)).map((value) => result(value, source)) : [])]));
     const keyword = string(input.keyword).trim().toLowerCase();
     const items = values.flat().filter((item) => !keyword || `${item.title} ${item.model}`.toLowerCase().includes(keyword)).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
     const pageSize = Math.max(1, Math.min(100, Math.floor(Number(input.pageSize)) || 20));

@@ -414,7 +414,7 @@ function canWriteWorkspace(context: WorkspaceContext) {
     return context.role === "owner" || context.role === "editor";
 }
 
-async function resolveGenerationChannel(model: string, kind: "image" | "video", original?: Omit<ResolvedGenerationChannel, "apiKey" | "script">): Promise<ResolvedGenerationChannel> {
+async function resolveGenerationChannel(model: string, kind: "image" | "video" | "text" | "audio", original?: Omit<ResolvedGenerationChannel, "apiKey" | "script">): Promise<ResolvedGenerationChannel> {
     const stored = asRecord(await readStoredServerConfig());
     const config = asRecord(stored?.config);
     const channels = Array.isArray(config?.channels) ? config.channels.map(asRecord).filter((channel) => channel) : [];

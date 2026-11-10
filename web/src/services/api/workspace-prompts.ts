@@ -12,6 +12,7 @@ export type WorkspacePrompt = {
     coverUrl: string;
     createdAt: string;
     updatedAt: string;
+    revision: string;
 };
 
 export type WorkspacePromptInput = Pick<WorkspacePrompt, "title" | "prompt" | "description" | "tags" | "shared"> & { coverDataUrl?: string | null };
@@ -32,16 +33,17 @@ export async function listWorkspacePrompts() {
     return (await request<{ items: WorkspacePrompt[] }>("")).items;
 }
 
-export async function saveWorkspacePrompt(input: WorkspacePromptInput, id?: string) {
+export async function saveWorkspacePrompt(input: WorkspacePromptInput, id?: string, expectedRevision?: string) {
     const result = await request<{ item: WorkspacePrompt }>(id ? `/${encodeURIComponent(id)}` : "", {
         method: id ? "PUT" : "POST",
-        body: JSON.stringify(input),
+        body: JSON.stringify(expectedRevision === undefined ? input : { ...input, expectedRevision }),
     });
     return result.item;
 }
 
-export async function deleteWorkspacePrompt(id: string) {
-    await request<{ ok: boolean }>(`/${encodeURIComponent(id)}`, { method: "DELETE" });
+export async function deleteWorkspacePrompt(id: string, expectedRevision?: string) {
+    const query = expectedRevision === undefined ? "" : `?expectedRevision=${encodeURIComponent(expectedRevision)}`;
+    await request<{ ok: boolean }>(`/${encodeURIComponent(id)}${query}`, { method: "DELETE" });
 }
 
 export type PromptLibraryPackage = { format: "infinite-canvas-prompts"; version: 1; prompts: Array<{ title: string; prompt: string; description?: string; tags?: string[]; coverDataUrl?: string }> };

@@ -3,10 +3,11 @@ import { getActiveWorkspace } from "@/lib/workspace";
 export type WorkspaceDomain = "canvas" | "canvas-templates" | "assets" | "image-workbench" | "video-workbench" | "agent-sessions";
 type StoredDomain<T> = { payload: T | null; revision: number; updatedAt: string | null; updatedBy: string | null; restoredAt?: string | null };
 type ConflictDetail = { domain: WorkspaceDomain; workspaceId: string; payload: unknown; revision: number; restoredAt?: string | null };
+export type WorkspaceDataCommit = { workspaceId: string; domain: WorkspaceDomain; revision: number; updatedAt: string | null };
 
 const revisions = new Map<string, number>();
 const restoredAtByKey = new Map<string, string | null>();
-const writes = new Map<string, Promise<void>>();
+const writes = new Map<string, Promise<WorkspaceDataCommit>>();
 const failedWrites = new Map<string, { domain: WorkspaceDomain; payload: unknown }>();
 const errors = new Map<string, { message: string; mode: "read" | "write" | "conflict" }>();
 const listeners = new Set<() => void>();
@@ -87,6 +88,7 @@ export function saveWorkspaceData(domain: WorkspaceDomain, payload: unknown, opt
         if (!response.ok) throw new Error(data.error || "工作区数据保存失败");
         revisions.set(key, data.revision);
         clearWorkspaceError(key);
+        return { workspaceId, domain, revision: data.revision, updatedAt: data.updatedAt || null };
     }).catch((error) => {
         const conflict = (error as { code?: string })?.code === "conflict";
         if (conflict) failedWrites.delete(key);
@@ -95,8 +97,17 @@ export function saveWorkspaceData(domain: WorkspaceDomain, payload: unknown, opt
         if (conflict || options.retryable !== false) setWorkspaceError(key, error instanceof Error ? error.message : "工作区数据保存失败", conflict ? "conflict" : "write");
         throw error;
     });
-    writes.set(key, write.then(() => undefined, () => undefined));
+    writes.set(key, write);
     return write;
+}
+
+/** 等待 store 本次已排队的保存，保留失败结果，不能把返回本地 ID 当作已提交。 */
+export async function waitForWorkspaceDataSave(domain: WorkspaceDomain, workspaceId: string): Promise<WorkspaceDataCommit> {
+    if (getActiveWorkspace()?.id !== workspaceId) throw new Error("工作区已切换，无法确认保存结果");
+    const write = writes.get(`${workspaceId}:${domain}`);
+    if (!write) throw new Error("没有可确认的工作区保存请求");
+    const commit = await write;
+    return commit;
 }
 
 export function resetWorkspaceDataRevision(domain: WorkspaceDomain) {

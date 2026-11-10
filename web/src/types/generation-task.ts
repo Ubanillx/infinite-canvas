@@ -1,4 +1,4 @@
-export type GenerationTaskKind = "image" | "video";
+export type GenerationTaskKind = "image" | "video" | "text" | "audio";
 export type GenerationTaskCanvasTarget = { projectId: string; nodeId: string };
 export type GenerationTaskFilter = { source?: "all" | "workbench" | "canvas"; projectId?: string; nodeId?: string; requestId?: string };
 export type GenerationTaskStatus = "queued" | "submitting" | "running" | "archiving" | "succeeded" | "partial" | "failed" | "needs_attention";
@@ -24,6 +24,8 @@ export type GenerationTaskOutput = {
     durationMs?: number;
 };
 
+export type GenerationTaskTextOutput = { id: string; slotIndex: number; content: string; status: "running" | "succeeded" | "needs_attention" };
+
 export type GenerationTask = {
     id: string;
     requestId: string;
@@ -37,6 +39,7 @@ export type GenerationTask = {
     status: GenerationTaskStatus;
     phase?: string;
     outputs: GenerationTaskOutput[];
+    textOutputs?: GenerationTaskTextOutput[];
     successCount: number;
     failCount: number;
     error?: string;

@@ -5,7 +5,7 @@ import { nanoid } from "nanoid";
 import i18n from "@/i18n";
 import { localForageStorage } from "@/lib/localforage-storage";
 import { getActiveWorkspace, workspaceStorageKey } from "@/lib/workspace";
-import { loadWorkspaceData, saveWorkspaceData } from "@/services/workspace-data";
+import { loadWorkspaceData, saveWorkspaceData, type WorkspaceDataCommit } from "@/services/workspace-data";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
 import type { CanvasTemplateContent } from "@/types/canvas-template";
@@ -47,6 +47,7 @@ type CanvasStore = {
     createProject: (title?: string, folderId?: string | null, description?: string) => string;
     importProject: (project: Partial<CanvasProject>, folderId?: string | null) => string;
     createProjectFromTemplate: (content: CanvasTemplateContent, title: string, description: string, folderId: string | null) => Promise<string>;
+    createProjectFromTemplateWithCommit: (content: CanvasTemplateContent, title: string, description: string, folderId: string | null) => Promise<{ id: string; commit: WorkspaceDataCommit }>;
     createFolder: (title?: string, parentId?: string | null) => string;
     renameFolder: (id: string, title: string) => void;
     deleteFolders: (ids: string[]) => string[];
@@ -75,6 +76,17 @@ function enqueueCanvasWrite<T>(write: () => Promise<T>) {
 
 function persistedState(state: CanvasStore): PersistedCanvasState {
     return { projects: state.projects, folders: state.folders, deletedProjects: state.deletedProjects };
+}
+
+/** 管理工具沿用画布写入队列，并等待服务端确认，跳过 UI 防抖等待。 */
+export function flushCanvasSave(workspaceId: string) {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = null;
+    return enqueueCanvasWrite(async () => {
+        if (getActiveWorkspace()?.id !== workspaceId || useCanvasStore.persist.getOptions().name !== workspaceStorageKey(CANVAS_STORE_KEY)) throw new Error("工作区已切换，画布未提交");
+        const commit = await saveWorkspaceData("canvas", { state: persistedState(useCanvasStore.getState()), version: 0 });
+        return commit;
+    });
 }
 
 const canvasStorage: PersistStorage<CanvasStore> = {
@@ -210,7 +222,8 @@ export const useCanvasStore = create<CanvasStore>()(
                 set((state) => ({ projects: [project, ...state.projects] }));
                 return project.id;
             },
-            createProjectFromTemplate: (content, title, description, folderId) => {
+            createProjectFromTemplate: async (content, title, description, folderId) => (await get().createProjectFromTemplateWithCommit(content, title, description, folderId)).id,
+            createProjectFromTemplateWithCommit: (content, title, description, folderId) => {
                 const workspaceId = getActiveWorkspace()?.id;
                 return enqueueCanvasWrite(async () => {
                     if (!workspaceId || getActiveWorkspace()?.id !== workspaceId || useCanvasStore.persist.getOptions().name !== workspaceStorageKey(CANVAS_STORE_KEY)) throw new Error(i18n.t("canvas.templates.workspaceChanged"));
@@ -221,10 +234,9 @@ export const useCanvasStore = create<CanvasStore>()(
                         folderId: get().folders.some((folder) => folder.id === folderId) ? folderId : null,
                         createdAt: now, updatedAt: now, chatSessions: [], activeChatId: null,
                     };
-                    await saveWorkspaceData("canvas", { state: { ...persistedState(get()), projects: [project, ...get().projects] }, version: 0 }, { retryable: false });
-                    if (getActiveWorkspace()?.id !== workspaceId) throw new Error(i18n.t("canvas.templates.workspaceChanged"));
-                    set((state) => ({ projects: [project, ...state.projects] }));
-                    return project.id;
+                    const commit = await saveWorkspaceData("canvas", { state: { ...persistedState(get()), projects: [project, ...get().projects] }, version: 0 }, { retryable: false });
+                    if (getActiveWorkspace()?.id === workspaceId && useCanvasStore.persist.getOptions().name === workspaceStorageKey(CANVAS_STORE_KEY) && get().hydrated) set((state) => ({ projects: [project, ...state.projects] }));
+                    return { id: project.id, commit };
                 });
             },
             createFolder: (title = i18n.t("canvas.folder.untitled"), parentId = null) => {

@@ -97,7 +97,7 @@ export const SITE_TOOL_LABELS: Record<SiteToolName, string> = {
 type SiteToolInput = Record<string, unknown>;
 type SiteToolContext = { canvasSnapshot?: CanvasAgentSnapshot | null; templateCanvas?: TemplateCanvasContext };
 type GenerationStatus = "idle" | "queued" | "submitting" | "running" | "archiving" | "succeeded" | "partial" | "failed" | "needs_attention";
-type GenerationStatusItem = { id: string; source: "canvas" | "image" | "video"; status: GenerationStatus; kind?: string; title?: string; prompt?: string; projectId?: string; createdAt?: string; updatedAt?: string; successCount?: number; failCount?: number; error?: string };
+type GenerationStatusItem = { id: string; source: "canvas" | "image" | "video" | "text" | "audio"; status: GenerationStatus; kind?: string; title?: string; prompt?: string; projectId?: string; createdAt?: string; updatedAt?: string; successCount?: number; failCount?: number; error?: string };
 type ScriptIntent = { fingerprint: string; taskId?: string };
 const scriptIntents = localforage.createInstance({ name: "infinite-canvas", storeName: "workbench_script_intents" });
 const scriptDispatches = new Map<string, { fingerprint: string; operation: Promise<unknown> }>();
@@ -143,7 +143,8 @@ export async function runSiteTool(name: SiteToolName, input: SiteToolInput, navi
 
 async function getGenerationStatus(input: SiteToolInput, canvasSnapshot?: CanvasAgentSnapshot | null) {
     const workspaceId = requireAgentWorkspace(input).id;
-    const scope = input.scope === "canvas" || input.scope === "image" || input.scope === "video" ? input.scope : "all";
+    const scope = input.scope === "canvas" || input.scope === "image" || input.scope === "video" || input.scope === "text" || input.scope === "audio" ? input.scope : "all";
+    const mediaScope = scope === "image" || scope === "video" || scope === "text" || scope === "audio";
     const taskId = typeof input.taskId === "string" ? input.taskId : "";
     const nodeIds = new Set(Array.isArray(input.nodeIds) ? input.nodeIds.filter((id): id is string => typeof id === "string") : []);
     const limit = Math.max(1, Math.min(100, Math.floor(Number(input.limit)) || 20));
@@ -156,10 +157,10 @@ async function getGenerationStatus(input: SiteToolInput, canvasSnapshot?: Canvas
     if (taskId && !browserTask) await scriptIntents.iterate<ScriptIntent, void>((intent, key) => {
         if (intent.taskId === taskId && (key.startsWith(`${workspaceId}:image:`) || key.startsWith(`${workspaceId}:video:`))) browserIntentKind = key.startsWith(`${workspaceId}:image:`) ? "image" : "video";
     });
-    const kinds = scope === "image" || scope === "video" ? [scope] : ["image", "video"] as const;
+    const kinds = mediaScope ? [scope] : ["image", "video", "text", "audio"] as const;
     const saved = taskId ? browserTask || browserIntentKind ? [] : [await getGenerationTask(workspaceId, taskId)] : (await Promise.all(kinds.map((kind) => listGenerationTasks(workspaceId, kind, { source: canvasOnly ? "canvas" : "all", projectId, requestId })))).flat();
     const matches = (task: (typeof saved)[number]) => (!taskId || task.id === taskId) && (!requestId || task.requestId === requestId)
-        && (!(scope === "image" || scope === "video") || task.kind === scope)
+        && (!mediaScope || task.kind === scope)
         && (!canvasOnly || Boolean(task.canvasTarget)) && (!projectId || task.canvasTarget?.projectId === projectId)
         && (!nodeIds.size || Boolean(task.canvasTarget && nodeIds.has(task.canvasTarget.nodeId)));
     saved.filter(matches).forEach((task) => {
@@ -172,13 +173,13 @@ async function getGenerationStatus(input: SiteToolInput, canvasSnapshot?: Canvas
             const metadata = node.metadata || {};
             const binding = metadata.generationTask;
             if (binding) {
-                if ((scope === "image" || scope === "video") && binding.kind !== scope) return;
+                if (mediaScope && binding.kind !== scope) return;
                 if (binding.workspaceId !== workspaceId || binding.projectId !== canvasSnapshot.projectId || binding.nodeId !== node.id || taskId && binding.taskId !== taskId || requestId && binding.requestId !== requestId) return;
                 if (saved.some((task) => matches(task) && task.requestId === binding.requestId)) return;
                 tasks.push({ id: binding.taskId || binding.requestId, requestId: binding.requestId, source: "canvas", kind: binding.kind, projectId: binding.projectId, canvasTarget: { projectId: binding.projectId, nodeId: node.id }, status: binding.submissionState === "not_submitted" ? "failed" : "needs_attention", submissionState: binding.submissionState, title: node.title, error: binding.submissionState === "not_submitted" ? "请求确定未受理，可明确发起新生成" : "节点已保存请求绑定，尚未读取到任务；请用原requestId核对，未重新生成", durable: false } as GenerationStatusItem);
                 return;
             }
-            if (taskId || requestId || scope === "image" || scope === "video") return;
+            if (taskId || requestId || mediaScope && (metadata.generationMode || node.type) !== scope) return;
             const status = normalizeCanvasGenerationStatus(metadata.status);
             if (!status) return;
             if (!nodeIds.size && node.type !== "config" && status !== "running" && status !== "failed" && !metadata.generationMode && !metadata.generationType && !metadata.model) return;

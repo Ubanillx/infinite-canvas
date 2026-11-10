@@ -29,7 +29,7 @@ async function taskRequest<T>(workspaceId: string, path: string, init?: RequestI
 
 export async function submitGenerationTask(workspaceId: string, input: CreateGenerationTask): Promise<GenerationTask> {
     const task = (await taskRequest<{ task: GenerationTask }>(workspaceId, "", { method: "POST", body: JSON.stringify(input) })).task;
-    if (!task?.id || task.workspaceId !== workspaceId || task.requestId !== input.requestId) throw new Error("生成任务回执无效，请按请求 ID 核对后再试");
+    if (!task?.id || task.workspaceId !== workspaceId || task.requestId !== input.requestId || task.kind !== input.kind) throw new Error("生成任务回执无效，请按请求 ID 核对后再试");
     if (task.canvasTarget?.projectId !== input.canvasTarget?.projectId || task.canvasTarget?.nodeId !== input.canvasTarget?.nodeId) throw new Error("生成任务目标回执不一致，请核对原请求");
     return task;
 }
