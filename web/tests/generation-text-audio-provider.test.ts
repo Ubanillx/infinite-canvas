@@ -31,6 +31,12 @@ test("stream failure/incomplete and Gemini blocked finish never certify partial 
     }
     await expect(readTextGenerationStream(stream(event({ candidates: [{ content: { parts: [{ text: "partial" }] } }] }) + event({ candidates: [{ finishReason: "MAX_TOKENS" }] })), true, async () => undefined)).rejects.toThrow("未正常完成");
     expect(await readTextGenerationStream(stream(event({ candidates: [{ content: { parts: [{ thought: true, text: "private thought" }, { text: "answer" }] }, finishReason: "STOP" }] })), true, async () => undefined)).toBe("answer");
+    const checkpoints: string[] = [];
+    await expect(readTextGenerationStream(stream(event({ candidates: [{ content: { parts: [{ text: "first" }] } }] }) + event({ candidates: [{ content: { parts: [{ text: "last" }] }, finishReason: "MAX_TOKENS" }] })), true, async (content) => { checkpoints.push(content); })).rejects.toThrow("未正常完成");
+    expect(checkpoints).toEqual(["first", "firstlast"]);
+    const fallback: string[] = [];
+    await expect(readTextGenerationStream(Response.json({ candidates: [{ content: { parts: [{ text: "partial" }] }, finishReason: "SAFETY" }] }), true, async (content) => { fallback.push(content); })).rejects.toThrow("完成凭据");
+    expect(fallback).toEqual(["partial"]);
 });
 
 test("nonstream fallback requires successful terminal status and checkpoints stable content", async () => {

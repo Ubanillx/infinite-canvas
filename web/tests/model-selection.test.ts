@@ -18,8 +18,9 @@ afterAll(() => {
     else Reflect.deleteProperty(globalThis, "localStorage");
 });
 
-const { buildApiUrl, defaultBaseUrlForApiFormat, defaultConfig, guessCapability, resolveModelForCapability, useConfigStore } = await import("../src/stores/use-config-store");
+const { buildApiUrl, defaultBaseUrlForApiFormat, defaultConfig, guessCapability, resolveModelForCapability, resolveModelScript, useConfigStore } = await import("../src/stores/use-config-store");
 const { buildGenerationConfig } = await import("../src/lib/canvas/canvas-generation-helpers");
+const { canvasTaskRetryConfig } = await import("../src/lib/canvas/canvas-generation-tasks");
 const { CanvasNodeType } = await import("../src/types/canvas");
 
 const config: AiConfig = {
@@ -41,6 +42,20 @@ const config: AiConfig = {
     ],
 };
 const ready = useConfigStore.getState().isAiConfigReady;
+test("retry keeps original model A when its script is added after switching current model to B", () => {
+    const current: AiConfig = { ...config, model: "replacement::model-b", textModel: "replacement::model-b", channels: [{ ...config.channels[0], models: [{ name: "model-a", capability: "text", script: "return 'A'" }, { name: "model-b", capability: "text", script: "return 'B'" }] }] };
+    const binding = { requestId: "request", workspaceId: "workspace", projectId: "project", nodeId: "node", kind: "text" as const, slotIds: ["slot"], retryInput: { prompt: "original", model: "replacement::model-a", systemPrompt: "system", reasoningEffort: "low" as const, audioVoice: "", audioFormat: "mp3", audioSpeed: "1", audioInstructions: "" } };
+    const retried = canvasTaskRetryConfig(current, binding);
+    expect(retried.model).toBe("replacement::model-a");
+    expect(resolveModelScript(retried, retried.model)).toBe("return 'A'");
+    expect(canvasTaskRetryConfig(current, { ...binding, retryInput: undefined }).model).toBe("replacement::model-b");
+});
+test("legacy audio node retains explicitly empty settings when global settings change", () => {
+    const node: CanvasNodeData = { id: "audio", type: CanvasNodeType.Audio, title: "Audio", position: { x: 0, y: 0 }, width: 240, height: 120, metadata: { audioInstructions: "", audioVoice: "" } };
+    const result = buildGenerationConfig({ ...config, audioInstructions: "new instruction", audioVoice: "new voice" }, node, "audio");
+    expect(result.audioInstructions).toBe("");
+    expect(result.audioVoice).toBe("");
+});
 test("retained Ark defaults and Seedance capability survive the upstream merge", () => {
     expect(defaultBaseUrlForApiFormat("ark")).toBe("https://ark.cn-beijing.volces.com/api/v3");
     expect(guessCapability("doubao-seedance-2.0")).toBe("video");

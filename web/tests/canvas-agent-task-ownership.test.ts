@@ -17,6 +17,9 @@ test("MCP content, media and node identity replacements detach the paid task bin
     for (const patch of [{ metadata: { content: "patch edit" } }, { type: "audio" }, { id: "replacement-node" }]) {
         expect(applyCanvasAgentOps(snapshot, [{ type: "update_node", id: "node", patch }]).nodes[0].metadata!.generationTask).toBeUndefined();
     }
+    const replacement = applyCanvasAgentOps(snapshot, [{ type: "update_node", id: "node", metadata: { content: "user edit", generationTask: { ...binding, requestId: "new-user-intent" } } }]);
+    expect(replacement.nodes[0].metadata).toMatchObject({ content: "user edit" });
+    expect(replacement.nodes[0].metadata!.generationTask).toBeUndefined();
     expect(snapshot.nodes[0].metadata!.generationTask).toBe(binding);
 });
 

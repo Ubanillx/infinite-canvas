@@ -25,9 +25,21 @@ function fixture() {
     const runtime = useCanvasGenerationTasks({ projectId: "project", loaded: false, nodes: nodesRef.current, nodesRef, connectionsRef: { current: [] }, setNodes });
     const controller = new AbortController();
     const run = (overrides: Record<string, unknown> = {}) => runtime.run({ nodeId: "node", requestId: "request", kind: "image", prompt: "prompt", config: { model: "fixture" } as any, signal: controller.signal, ...overrides });
-    return { nodesRef, controller, run };
+    return { nodesRef, controller, run, runtime };
 }
 const completed = (overrides: Partial<GenerationTask> = {}): GenerationTask => ({ id: "task", workspaceId: "workspace", requestId: "request", kind: "image", canvasTarget: { projectId: "project", nodeId: "node" }, prompt: "prompt", model: "fixture", settings: {}, references: [], outputs: [], status: "succeeded", successCount: 0, failCount: 0, revision: 1, createdAt: "now", updatedAt: "now", ...overrides });
+
+test("text retry input and stable references are saved before submission", async () => {
+    flush = async () => {};
+    const config = { model: "model", systemPrompt: "original system", reasoningEffort: "low", audioVoice: "", audioFormat: "mp3", audioSpeed: "1", audioInstructions: "" };
+    submit = async (input) => {
+        expect(saved[0][0].metadata!.generationTask).toMatchObject({ retryInput: { prompt: "original prompt", ...config }, references: [{ kind: "image", storageKey: "image:original" }] });
+        expect(input.settings.systemPrompt).toBe("original system");
+        return completed({ kind: "text", textOutputs: [] });
+    };
+    const state = fixture();
+    await state.run({ kind: "text", prompt: "original prompt", config, images: [{ id: "image", name: "image.png", type: "image/png", dataUrl: "", storageKey: "image:original" }] });
+});
 
 test("stop after saved marker but before POST persists a retryable no-submission state", async () => {
     let release!: () => void;
@@ -146,4 +158,64 @@ test("pending metadata does not block GET updates and late decoding uses the lat
         Object.assign(globalThis, { setInterval: originalSetInterval, clearInterval: originalClearInterval, Image: originalImage });
         onUpdate = () => {};
     }
+});
+
+test("late GET from an old watcher cannot overwrite a newer task binding or result", async () => {
+    const originalSetInterval = globalThis.setInterval;
+    const originalClearInterval = globalThis.clearInterval;
+    let tick!: () => void;
+    let releaseOld!: (task: GenerationTask) => void;
+    let oldGetStarted!: () => void;
+    const oldGet = new Promise<void>((resolve) => { oldGetStarted = resolve; });
+    Object.assign(globalThis, { setInterval: (callback: () => void) => { tick = callback; return 1; }, clearInterval: () => {} });
+    try {
+        flush = async () => {};
+        submit = async (input) => input.requestId === "request"
+            ? completed({ kind: "text", status: "running", textOutputs: [{ id: "old", slotIndex: 0, content: "old partial", status: "running" }] })
+            : completed({ id: "new-task", requestId: "new-request", kind: "text", status: "succeeded", textOutputs: [{ id: "new", slotIndex: 0, content: "new result", status: "succeeded" }] });
+        readTask = () => { oldGetStarted(); return new Promise<GenerationTask>((resolve) => { releaseOld = resolve; }); };
+        const state = fixture();
+        const started = new Promise<void>((resolve) => { onUpdate = (nodes) => { if (nodes[0].metadata?.content === "old partial") resolve(); }; });
+        const first = state.run({ kind: "text", slotIds: ["slot"] });
+        await started;
+        tick();
+        await oldGet;
+        await state.run({ requestId: "new-request", kind: "text", slotIds: ["slot"] });
+        releaseOld(completed({ kind: "text", status: "succeeded", revision: 2, textOutputs: [{ id: "old", slotIndex: 0, content: "late old result", status: "succeeded" }] }));
+        await first;
+        await Promise.resolve();
+        expect(state.nodesRef.current[0].metadata).toMatchObject({ content: "new result", status: "success", generationTask: { requestId: "new-request", taskId: "new-task", status: "succeeded" }, texts: [{ id: "slot", content: "new result", status: "success" }] });
+    } finally { Object.assign(globalThis, { setInterval: originalSetInterval, clearInterval: originalClearInterval }); onUpdate = () => {}; }
+});
+
+test("text GET interruption preserves partial text without reporting it as successful", async () => {
+    const originalSetInterval = globalThis.setInterval;
+    const originalClearInterval = globalThis.clearInterval;
+    let tick!: () => void;
+    Object.assign(globalThis, { setInterval: (callback: () => void) => { tick = callback; return 1; }, clearInterval: () => {} });
+    try {
+        flush = async () => {};
+        submit = async () => completed({ kind: "text", status: "submitting", textOutputs: [{ id: "task-0", slotIndex: 0, content: "partial", status: "running" }] });
+        readTask = async () => { throw new Error("offline"); };
+        const state = fixture();
+        const started = new Promise<void>((resolve) => { onUpdate = (nodes) => { if (nodes[0].metadata?.content === "partial") resolve(); }; });
+        const running = state.run({ kind: "text", slotIds: ["slot-a"] });
+        await started;
+        tick();
+        await running;
+        expect(state.nodesRef.current[0].metadata).toMatchObject({ status: "error", content: "partial", texts: [{ id: "slot-a", status: "error", content: "partial" }] });
+    } finally { Object.assign(globalThis, { setInterval: originalSetInterval, clearInterval: originalClearInterval }); onUpdate = () => {}; }
+});
+
+test("stopping a partial text keeps completed siblings and marks only unfinished candidates", async () => {
+    flush = async () => {};
+    submit = async () => completed({ kind: "text", status: "submitting", textOutputs: [{ id: "task-0", slotIndex: 0, content: "complete", status: "succeeded" }, { id: "task-1", slotIndex: 1, content: "partial", status: "running" }] });
+    const state = fixture();
+    const started = new Promise<void>((resolve) => { onUpdate = (nodes) => { if (nodes[0].metadata?.texts?.[1]?.content === "partial") resolve(); }; });
+    const running = state.run({ kind: "text", slotIds: ["slot-a", "slot-b"] });
+    await started;
+    state.runtime.stop("node");
+    await running;
+    expect(state.nodesRef.current[0].metadata).toMatchObject({ status: "success", texts: [{ id: "slot-a", status: "success", content: "complete" }, { id: "slot-b", status: "error", content: "partial" }] });
+    onUpdate = () => {};
 });

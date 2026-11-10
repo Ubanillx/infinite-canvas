@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { assertCanvasTaskRequest, matchesCanvasTask, projectCanvasTask } from "../src/lib/canvas/canvas-generation-tasks";
+import { assertCanvasTaskRequest, canvasTaskRetryConfig, matchesCanvasTask, projectCanvasTask, savedCanvasTaskRetry } from "../src/lib/canvas/canvas-generation-tasks";
+import type { AiConfig } from "../src/stores/use-config-store";
 import { CanvasNodeType, type CanvasGenerationTaskBinding, type CanvasNodeData, type CanvasNodeImage } from "../src/types/canvas";
 import type { GenerationTask } from "../src/types/generation-task";
 
@@ -12,6 +13,18 @@ function task(overrides: Partial<GenerationTask> = {}): GenerationTask {
     return { id: "task-a", requestId: binding.requestId, workspaceId: binding.workspaceId, canvasTarget: { projectId: binding.projectId, nodeId: binding.nodeId }, kind: "image", prompt: "Original prompt", model: "fixture", settings: { count: 3 }, references: [], outputs: [], status: "queued", successCount: 0, failCount: 0, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", revision: 1, ...overrides };
 }
 const output = (slotIndex: number, kind = "image") => ({ id: `output-${slotIndex}`, storageKey: `${kind}:stable-${slotIndex}`, slotIndex, mimeType: kind === "image" ? "image/png" : "video/mp4", bytes: 12, width: 1024, height: 512 });
+
+test("retry uses original system and audio settings including empty values, and old bindings fall back", () => {
+    const current = { systemPrompt: "new system", audioInstructions: "new instruction", audioVoice: "new voice" } as AiConfig;
+    const retryInput = { prompt: "original", model: "original-model", systemPrompt: "original system", reasoningEffort: "low" as const, audioVoice: "", audioFormat: "mp3", audioSpeed: "1", audioInstructions: "" };
+    const restored = canvasTaskRetryConfig(current, { ...binding, kind: "audio", retryInput });
+    expect(restored).toMatchObject({ model: "original-model", systemPrompt: "original system", reasoningEffort: "low", audioVoice: "", audioInstructions: "" });
+    expect(canvasTaskRetryConfig(current, binding)).toBe(current);
+    const textBinding = { ...binding, kind: "text" as const, retryInput, references: [{ kind: "image" as const, storageKey: "image:original" }] };
+    expect(savedCanvasTaskRetry(textBinding, "changed prompt")).toMatchObject({ prompt: "original", images: [{ storageKey: "image:original", dataUrl: "" }] });
+    expect(savedCanvasTaskRetry({ ...textBinding, retryInput: undefined, references: undefined }, "legacy")).toBeNull();
+    expect(savedCanvasTaskRetry({ ...textBinding, kind: "audio", retryInput: undefined, references: undefined }, "legacy")).toEqual({ prompt: "legacy", images: [] });
+});
 
 test("same request ID rejects a different source, mode, prompt or configuration fingerprint", () => {
     const owner = { ...binding, originNodeId: "source", requestFingerprint: "original prompt and config" };

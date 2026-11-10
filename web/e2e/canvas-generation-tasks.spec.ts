@@ -296,7 +296,8 @@ test("deleted, undone and replaced generation targets reject late results while 
             ]);
         });
         await expect.poll(async () => (await scene.nodes()).some((item) => item.id === "deleted")).toBe(false);
-        await expect.poll(async () => (await scene.nodes()).find((item) => item.id === "replaced")?.metadata?.generationTask?.requestId).toBe("new-user-intent");
+        await expect.poll(async () => (await scene.nodes()).find((item) => item.id === "replaced")?.metadata?.content).toBe("User replacement");
+        expect((await scene.nodes()).find((item) => item.id === "replaced")?.metadata?.generationTask).toBeUndefined();
         const tasks = await scene.tasks();
         await worker.tick();
         await expect.poll(async () => (await scene.tasks()).every((task) => task.status === "succeeded")).toBe(true);
@@ -307,7 +308,8 @@ test("deleted, undone and replaced generation targets reject late results while 
         expect(final.some((item) => item.id === "deleted")).toBe(false);
         expect(final.find((item) => item.id === "undone")?.metadata?.storageKey).toBeUndefined();
         expect(final.find((item) => item.id === "undone")?.metadata?.generationTask).toBeUndefined();
-        expect(final.find((item) => item.id === "replaced")?.metadata).toMatchObject({ content: "User replacement", generationTask: { requestId: "new-user-intent" } });
+        expect(final.find((item) => item.id === "replaced")?.metadata).toMatchObject({ content: "User replacement" });
+        expect(final.find((item) => item.id === "replaced")?.metadata?.generationTask).toBeUndefined();
         expect(final.find((item) => item.id === "replaced")?.metadata?.storageKey).toBeUndefined();
         expect(submits).toBe(3);
     } finally { await worker.stop(); }
