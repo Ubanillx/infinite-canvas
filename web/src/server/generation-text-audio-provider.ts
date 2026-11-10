@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createParser } from "eventsource-parser";
 import { audioMimeType, normalizeAudioFormatValue, normalizeAudioSpeedValue, normalizeAudioVoiceValue } from "../lib/audio-generation";
 import { GENERATION_JSON_LIMIT_BYTES, GENERATION_MEDIA_LIMIT_BYTES, readGenerationBytes } from "./generation-media";
 import { headers, target, type GenerationRequest, type OutputDescriptor, type ResolvedGenerationChannel } from "./generation-provider";
@@ -40,12 +41,12 @@ export async function readTextGenerationStream(response: Response, gemini: boole
     if (!response.body) throw new Error("文本供应商缺少响应流");
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
-    let buffer = "";
     let content = "";
     let complete = false;
     let bytes = 0;
-    const block = async (value: string) => {
-        const data = value.replace(/^\uFEFF/, "").split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).replace(/^ /, "")).join("\n");
+    const events: string[] = [];
+    const parser = createParser({ onEvent: (event) => events.push(event.data) });
+    const block = async (data: string) => {
         if (!data || data === "[DONE]") return;
         const event = JSON.parse(data);
         if (event.error || event.type === "error" || event.type === "response.failed" || event.type === "response.incomplete" || event.promptFeedback?.blockReason) throw new Error("文本供应商流未正常完成");
@@ -75,16 +76,12 @@ export async function readTextGenerationStream(response: Response, gemini: boole
             if (read.done) break;
             bytes += read.value.byteLength;
             if (bytes > GENERATION_JSON_LIMIT_BYTES) throw new Error("生成响应大小超过现有媒体边界");
-            buffer += decoder.decode(read.value, { stream: true });
-            for (;;) {
-                const boundary = /\r?\n\r?\n/.exec(buffer);
-                if (!boundary) break;
-                await block(buffer.slice(0, boundary.index));
-                buffer = buffer.slice(boundary.index + boundary[0].length);
-            }
+            parser.feed(decoder.decode(read.value, { stream: true }));
+            for (const data of events.splice(0)) await block(data);
         }
-        buffer += decoder.decode();
-        if (buffer.trim()) await block(buffer);
+        parser.feed(decoder.decode());
+        parser.reset({ consume: true });
+        for (const data of events.splice(0)) await block(data);
         if (!complete || !content) throw new Error("文本响应中断，已保留收到的内容，请核对原请求");
         return content;
     } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
@@ -104,9 +101,9 @@ export async function submitAudio(channel: ResolvedGenerationChannel, request: G
     const instructions = setting(request, "instructions").trim();
     const response = await fetch(target(channelValue(channel), "audio/speech"), { method: "POST", headers: headers(channelValue(channel)), redirect: "error", signal,
         body: JSON.stringify({ model: channel.model, input: request.prompt, voice: normalizeAudioVoiceValue(setting(request, "voice")), response_format: format, speed: Number(normalizeAudioSpeedValue(setting(request, "speed"))), ...(instructions ? { instructions } : {}) }) });
-    if (!response.ok) throw new Error(`音频供应商请求失败 (${response.status})`);
+    if (!response.ok) { await response.body?.cancel().catch(() => undefined); throw new Error(`音频供应商请求失败 (${response.status})`); }
     const mime = (response.headers.get("content-type") || "").split(";")[0];
-    if (mime.includes("json") || mime.includes("text/html")) throw new Error("音频供应商未返回音频");
+    if (mime.includes("json") || mime.includes("text/html")) { await response.body?.cancel().catch(() => undefined); throw new Error("音频供应商未返回音频"); }
     const bytes = response.body ? await readGenerationBytes(response.body as unknown as AsyncIterable<Uint8Array>, GENERATION_MEDIA_LIMIT_BYTES, response.headers.get("content-length") || undefined) : Buffer.alloc(0);
     if (!bytes.length) throw new Error("音频供应商未返回内容");
     return { kind: "inline", dataUrl: `data:${mime.startsWith("audio/") ? mime : audioMimeType(format)};base64,${bytes.toString("base64")}` };

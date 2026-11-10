@@ -52,14 +52,20 @@ export function applyCanvasAgentOps(snapshot: CanvasAgentSnapshot, ops?: CanvasA
                 position: op.position || { x: op.x ?? index * 36, y: op.y ?? index * 36 },
                 width: op.width || spec.width,
                 height: op.height || spec.height,
-                metadata: { ...spec.metadata, ...op.metadata },
+                metadata: { ...spec.metadata, ...op.metadata, generationTask: undefined },
             };
             nodes = [...nodes, node];
             selectedNodeIds = [node.id];
         }
         if (op.type === "update_node") {
             if (!op.id) return;
-            nodes = nodes.map((node) => (node.id === op.id ? { ...node, ...op.patch, metadata: { ...node.metadata, ...op.patch?.metadata, ...op.metadata } } : node));
+            nodes = nodes.map((node) => {
+                if (node.id !== op.id) return node;
+                const metadata = { ...node.metadata, ...op.patch?.metadata, ...op.metadata };
+                const edited = { ...op.patch?.metadata, ...op.metadata };
+                if ((op.patch?.id !== undefined && op.patch.id !== node.id) || (op.patch?.type !== undefined && op.patch.type !== node.type) || ["content", "storageKey", "images", "texts"].some((key) => Object.prototype.hasOwnProperty.call(edited, key))) metadata.generationTask = undefined;
+                return { ...node, ...op.patch, metadata };
+            });
         }
         if (op.type === "delete_node") {
             const ids = new Set(op.ids || (op.id ? [op.id] : op.nodeType ? nodes.filter((node) => node.type === op.nodeType).map((node) => node.id) : []));

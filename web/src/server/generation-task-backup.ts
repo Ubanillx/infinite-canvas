@@ -42,7 +42,7 @@ export async function backupGenerationTasks(config: WebdavConfig, workspaceId: s
             const url = new URL(provider.baseUrl);
             if (url.username || url.password || url.search || url.hash || !["http:", "https:"].includes(url.protocol)) throw new Error("渠道地址含凭据或查询参数");
             if (!provider.id || !provider.model || !["openai", "gemini", "ark", "custom"].includes(provider.apiFormat)) throw new Error("渠道元数据无效");
-            const submissions = row.submissions.map((slot) => ({ status: slot.status }));
+            const submissions = row.submissions.map((slot) => ({ status: slot.status === "submitting" ? "uncertain" as const : slot.status, ...(row.kind === "text" && typeof slot.content === "string" ? { content: slot.content } : {}) }));
             const outputs = [...row.outputs];
             const known = row.raw_result?.length ? row.raw_result : row.submissions.flatMap((slot, i) => (slot.outputs || []).map((output, j) => ({ ...output, resultId: `${row.id}-${i}-${j}` })));
             for (let i = 0; i < known.length; i++) {
@@ -62,22 +62,28 @@ export async function backupGenerationTasks(config: WebdavConfig, workspaceId: s
                 const slotIndex = row.kind === "image" && id.startsWith(`${row.id}-`) && /^\d+$/.test(slot) ? Number(slot) : undefined;
                 outputs.push({ id, storageKey, mimeType: downloaded.mimeType, bytes: downloaded.bytes.length, ...(slotIndex !== undefined ? { slotIndex } : {}) });
             }
-            const uncertain = submissions.some((slot) => slot.status === "submitting" || slot.status === "uncertain") || row.kind === "video" && row.status === "submitting";
+            const uncertain = submissions.some((slot) => slot.status === "uncertain") || (row.kind === "video" || row.kind === "audio") && row.status === "submitting";
             const pending = submissions.some((slot) => slot.status === "queued");
-            const expected = row.kind === "image" ? Number(row.request_snapshot.settings.count || 1) : 1;
+            const expected = row.kind === "image" || row.kind === "text" ? Number(row.request_snapshot.settings.count || 1) : 1;
             let status = row.status;
             let errorCode = row.error_code;
             if (row.kind === "image" && (["queued", "submitting", "archiving"].includes(status) || status === "needs_attention" && !!row.raw_result)) {
                 status = uncertain ? "needs_attention" : pending ? "queued" : outputs.length >= expected ? "succeeded" : outputs.length ? "partial" : "failed";
                 errorCode = uncertain ? "submission_uncertain" : null;
-            } else if (row.kind === "video" && status === "submitting") {
+            } else if (row.kind === "text") {
+                const completed = submissions.filter((slot) => slot.status === "completed").length;
+                if (["queued", "submitting", "archiving", "needs_attention"].includes(status)) {
+                    status = uncertain ? "needs_attention" : pending ? "queued" : completed >= expected ? "succeeded" : completed ? "partial" : "failed";
+                    errorCode = uncertain ? "submission_uncertain" : null;
+                }
+            } else if ((row.kind === "video" || row.kind === "audio") && status === "submitting") {
                 status = "needs_attention"; errorCode = "submission_uncertain";
             } else if (status === "archiving" && outputs.length) {
                 status = "succeeded"; errorCode = null;
             }
             const upstream = row.upstream && typeof row.upstream.id === "string" && /^(?:[A-Za-z0-9_-]+|(?:models\/[A-Za-z0-9_.-]+\/)?operations\/[A-Za-z0-9_/-]+)$/.test(row.upstream.id) && !row.upstream.id.includes("..")
                 ? { id: row.upstream.id, provider: row.upstream.provider, model: row.upstream.model, channelId: row.upstream.channelId } : null;
-            if (row.status === "running" && !upstream) throw new Error("视频任务缺少可安全核对的供应商 ID");
+            if (row.kind === "video" && row.status === "running" && !upstream) throw new Error("视频任务缺少可安全核对的供应商 ID");
             tasks.push({ id: row.id, actorUserId: row.actor_user_id, request_id: row.request_id, request_hash: row.request_hash, kind: row.kind,
                 request_snapshot: row.request_snapshot, provider_snapshot: { id: provider.id, baseUrl: url.href, apiFormat: provider.apiFormat, model: provider.model },
                 status, upstream, outputs, error_code: errorCode, poll_count: row.poll_count, submissions,

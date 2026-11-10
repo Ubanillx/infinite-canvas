@@ -169,7 +169,7 @@ function validateRestoreData(workspaceId: string, domains: Map<string, LoadedDom
     const requestIds = new Set<string>();
     for (const task of tasks) {
         if (typeof task.id !== "string" || !task.id || taskIds.has(task.id) || typeof task.request_id !== "string" || requestIds.has(task.request_id)
-            || !["image", "video"].includes(task.kind) || !["queued", "running", "succeeded", "partial", "failed", "needs_attention"].includes(task.status)
+            || !["image", "video", "text", "audio"].includes(task.kind) || !["queued", "running", "succeeded", "partial", "failed", "needs_attention"].includes(task.status)
             || !task.request_snapshot || !Array.isArray(task.request_snapshot.references) || !Array.isArray(task.outputs) || !Array.isArray(task.submissions)
             || !task.provider_snapshot || typeof task.provider_snapshot.baseUrl !== "string" || "apiKey" in task.provider_snapshot || "script" in task.provider_snapshot
             || "raw_result" in task || "worker_id" in task) throw new SystemBackupError("生成任务清单格式无效");
@@ -185,6 +185,7 @@ function validateRestoreData(workspaceId: string, domains: Map<string, LoadedDom
         for (const ref of task.request_snapshot.references) if (!mediaVersions.has(`${ref.storageKey}\0${ref.objectVersion}`)) throw new SystemBackupError(`生成任务 ${task.id} 的参考媒体版本缺失`);
         for (const output of task.outputs) if (!mediaKeys.has(output.storageKey)) throw new SystemBackupError(`生成任务 ${task.id} 的结果媒体缺失`);
         if (task.submissions.some((slot) => "outputs" in slot)) throw new SystemBackupError("生成任务清单包含未归档的供应商结果");
+        if (task.submissions.some((slot) => !["queued", "completed", "uncertain"].includes(slot.status) || Object.keys(slot).some((key) => key !== "status" && (key !== "content" || task.kind !== "text")) || slot.content !== undefined && typeof slot.content !== "string")) throw new SystemBackupError("生成任务候选进度格式无效");
         taskIds.add(task.id); requestIds.add(task.request_id);
     }
     for (const [domain, item] of domains) {

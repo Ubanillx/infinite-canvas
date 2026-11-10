@@ -45,7 +45,7 @@ const activeStatuses = ["queued", "submitting", "running", "archiving"];
 export function publicGenerationTask(row: GenerationTaskRow): GenerationTask {
     const snapshot = row.request_snapshot;
     const expected = row.kind === "image" || row.kind === "text" ? Number(snapshot.settings.count || 1) : 1;
-    const textOutputs = row.kind === "text" ? row.submissions.map((slot, slotIndex) => ({ id: `${row.id}-${slotIndex}`, slotIndex, content: slot.content || "", status: slot.status === "completed" ? "succeeded" as const : slot.status === "uncertain" || row.status === "needs_attention" ? "needs_attention" as const : "running" as const })) : [];
+    const textOutputs = row.kind === "text" ? row.submissions.map((slot, slotIndex) => ({ id: `${row.id}-${slotIndex}`, slotIndex, content: slot.content || "", status: slot.status === "completed" ? "succeeded" as const : slot.status === "uncertain" || !activeStatuses.includes(row.status) ? "needs_attention" as const : "running" as const })) : [];
     const successes = row.kind === "text" ? textOutputs.filter((output) => output.status === "succeeded").length : row.outputs.length;
     return { id: row.id, workspaceId: row.workspace_id, requestId: row.request_id, kind: row.kind, prompt: snapshot.prompt, model: snapshot.model, settings: snapshot.settings,
         references: snapshot.references.map(({ kind, storageKey, name, mimeType, width, height, durationMs }) => ({ kind, storageKey, ...(name ? { name } : {}), mimeType, ...(width !== undefined ? { width } : {}), ...(height !== undefined ? { height } : {}), ...(durationMs !== undefined ? { durationMs } : {}) })),

@@ -140,6 +140,21 @@ test("lost audio creation receipt recovers the original task and stable playable
     } finally { await worker.stop(); }
 });
 
+test("audio archival can resume the saved response without another speech generation", async ({ page, request }) => {
+    const selected = await workspace(request); const scene = await seed(request, selected, [node("archive", "audio")]); await select(page, selected);
+    let submits = 0; let downloads = 0;
+    const worker = createGenerationWorker(dependencies({ submitAudio: async () => { submits++; return audioOutput; }, downloadOutput: async () => { if (++downloads === 1) throw new Error("Interrupted audio archival"); return { bytes: wav, mimeType: "audio/wav" }; } }));
+    try {
+        await open(page); await generate(page, "archive", "audio"); await expect.poll(async () => (await scene.tasks()).length).toBe(1); const task = (await scene.tasks())[0];
+        await worker.tick(); await expect.poll(async () => (await scene.task(task.id)).errorCode).toBe("archive_failed");
+        const resumed = await request.post(`/api/generation-tasks/${task.id}/resume`, { headers: scene.headers }); expect(resumed.status()).toBe(200);
+        await worker.tick(); await expect.poll(async () => (await scene.task(task.id)).status).toBe("succeeded");
+        await audioBytes(request, scene.headers, await scene.task(task.id)); await page.reload(); await open(page);
+        await expect.poll(async () => (await snapshot(page)).find((item) => item.id === "archive")?.metadata?.storageKey).toBe((await scene.task(task.id)).outputs[0].storageKey);
+        expect(submits).toBe(1); expect(downloads).toBe(2);
+    } finally { await worker.stop(); }
+});
+
 test("deleted and replaced text targets reject late completion while original result stays readable", async ({ page, request }) => {
     const selected = await workspace(request); const scene = await seed(request, selected, [node("deleted"), node("replaced")]); await select(page, selected);
     const worker = createGenerationWorker(dependencies({ submitText: async () => "Original durable answer" }));
@@ -153,7 +168,7 @@ test("deleted and replaced text targets reject late completion while original re
         await page.reload(); await open(page); expect((await snapshot(page)).some((item) => item.id === "deleted")).toBe(false);
         expect((await snapshot(page)).find((item) => item.id === "replaced")!.metadata!.content).toBe("User replacement");
         const task = (await scene.tasks())[0]; expect((await scene.task(task.id)).textOutputs?.[0].content).toBe("Original durable answer");
-        const read = await page.evaluate(async ({ workspaceId, taskId }) => (await import("/src/lib/agent/agent-site-tools.ts")).runSiteTool("generation_get_result", { workspaceId, taskId }, (() => undefined) as never), { workspaceId: selected.id, taskId: task.id });
+        const read = await page.evaluate(async ({ workspaceId, taskId }) => (await import("/src/lib/agent/agent-site-tools.ts")).runSiteTool("generation_get_result", { workspaceId, source: "text", id: taskId }, (() => undefined) as never), { workspaceId: selected.id, taskId: task.id });
         expect(JSON.stringify(read)).toContain("Original durable answer");
     } finally { await worker.stop(); }
 });
@@ -175,11 +190,12 @@ test("audio results cannot cross a workspace switch even when canvas and node ID
 
 test("text and audio script models retain browser generation and persisted results without durable POST", async ({ page, request }) => {
     const selected = await workspace(request); const text = node("script-text"); text.metadata!.model = "p5-fixture::script-text";
-    const audio = node("script-audio", "audio"); audio.metadata!.model = "p5-fixture::script-audio"; await seed(request, selected, [text, audio]); await select(page, selected); const calls = posts(page);
+    const audio = node("script-audio", "audio"); audio.metadata!.model = "p5-fixture::script-audio"; const scene = await seed(request, selected, [text, audio]); await select(page, selected); const calls = posts(page);
     await open(page); await generate(page, text.id); await expect.poll(async () => (await snapshot(page)).find((item) => item.id === text.id)?.metadata?.content).toBe("Script text preserved");
     await generate(page, audio.id, "audio"); await expect.poll(async () => (await snapshot(page)).find((item) => item.id === audio.id)?.metadata?.storageKey).toMatch(/^audio:/);
     const key = (await snapshot(page)).find((item) => item.id === audio.id)!.metadata!.storageKey!;
     const blob = await request.get(`/api/media/blob/${encodeURIComponent(key)}`, { headers: { "x-infinite-canvas-workspace": selected.id } }); expect(await blob.body()).toEqual(wav);
+    await expect.poll(async () => (await scene.nodes()).find((item) => item.id === audio.id)?.metadata?.storageKey).toBe(key);
     await page.reload(); await open(page); await expect.poll(async () => (await snapshot(page)).find((item) => item.id === text.id)?.metadata?.content).toBe("Script text preserved");
     expect((await snapshot(page)).find((item) => item.id === audio.id)!.metadata!.storageKey).toBe(key); expect(calls).toEqual([]);
 });

@@ -2992,7 +2992,7 @@ function InfiniteCanvasPage() {
                           background: savedImageMetadata.background ?? effectiveConfig.background,
                           count: "1",
                       }
-                    : { ...buildGenerationConfig(effectiveConfig, sourceNode, node.type === CanvasNodeType.Text ? "text" : node.type === CanvasNodeType.Video ? "video" : node.type === CanvasNodeType.Audio ? "audio" : "image"), count: "1" };
+                    : { ...buildGenerationConfig(effectiveConfig, node.type === CanvasNodeType.Text || node.type === CanvasNodeType.Audio ? node : sourceNode, node.type === CanvasNodeType.Text ? "text" : node.type === CanvasNodeType.Video ? "video" : node.type === CanvasNodeType.Audio ? "audio" : "image"), count: "1" };
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
                 openConfigDialog(true);
                 return;
@@ -3002,7 +3002,7 @@ function InfiniteCanvasPage() {
             const controller = startGenerationRequest(node.id, sourceNode.id, node.id);
             try {
                 const context = hasSavedImageMetadata ? null : await hydrateNodeGenerationContext(buildNodeGenerationContext(sourceNode.id, nodesRef.current, connectionsRef.current, sourceNode.metadata?.composerContent || sourceNode.metadata?.prompt || node.metadata?.prompt || ""));
-                const prompt = (savedImageMetadata?.prompt || context?.prompt || "").trim();
+                const prompt = (savedImageMetadata?.prompt || (binding && (node.type === CanvasNodeType.Text || node.type === CanvasNodeType.Audio) ? node.metadata?.prompt : undefined) || context?.prompt || "").trim();
                 if (!prompt) {
                     message.warning(t("canvas.projectPage.retryPromptMissing"));
                     return;
@@ -3023,7 +3023,8 @@ function InfiniteCanvasPage() {
                 if (node.type === CanvasNodeType.Text) {
                     if (!context) return;
                     if (!resolveModelScript(generationConfig, generationConfig.model)) {
-                        await canvasTasks.run({ nodeId: node.id, originNodeId: sourceNode.id, kind: "text", config: generationConfig, prompt, images: context.referenceImages, slotIds: node.metadata?.texts?.length ? node.metadata.texts.map((text) => text.id) : [nanoid()], signal: controller.signal });
+                        const images: ReferenceImage[] = binding?.references ? binding.references.filter((reference) => reference.kind === "image").map((reference) => ({ id: reference.storageKey, name: reference.name || "reference.png", type: reference.mimeType || "image/png", dataUrl: "", storageKey: reference.storageKey })) : context.referenceImages;
+                        await canvasTasks.run({ nodeId: node.id, originNodeId: sourceNode.id, kind: "text", config: generationConfig, prompt, images, slotIds: node.metadata?.texts?.length ? node.metadata.texts.map((text) => text.id) : [nanoid()], signal: controller.signal });
                         return;
                     }
                     setNodes((items) => items.map((item) => item.id === node.id ? { ...item, metadata: { ...item.metadata, generationTask: undefined } } : item));
