@@ -28,7 +28,11 @@ export function useCanvasGenerationTasks({ projectId, loaded, nodes, nodesRef, c
         if (owns(binding)) setNodes((items) => current() && !invalidated.current.has(binding.requestId) ? items.map((node) => matchesCanvasTask(node, binding) ? transform(node) : node) : items);
     }, [current, owns, setNodes]);
     const interrupted = useCallback((binding: CanvasGenerationTaskBinding, details: string) => {
-        update(binding, (node) => ({ ...node, metadata: { ...node.metadata, status: node.metadata?.content ? "success" : "error", errorDetails: details } }));
+        update(binding, (node) => {
+            const texts = binding.kind === "text" ? node.metadata?.texts?.map((text) => binding.slotIds.includes(text.id) && text.status === "loading" ? { ...text, status: "error" as const, errorDetails: details } : text) : node.metadata?.texts;
+            const hasResult = binding.kind === "text" ? texts?.some((text) => text.status === "success") : Boolean(node.metadata?.content);
+            return { ...node, metadata: { ...node.metadata, texts, status: hasResult ? "success" : "error", errorDetails: details } };
+        });
         if (owns(binding)) setNodes((items) => current() && items.some((node) => matchesCanvasTask(node, binding)) ? items.map((node) => node.id === binding.originNodeId && node.id !== binding.nodeId && node.type === "config" && node.metadata?.status === "loading" ? { ...node, metadata: { ...node.metadata, status: "error" as const, errorDetails: details } } : node) : items);
     }, [current, owns, setNodes, update]);
 
@@ -155,7 +159,7 @@ export function useCanvasGenerationTasks({ projectId, loaded, nodes, nodesRef, c
             }
         }
         if (!current() || input.signal.aborted) throw new DOMException("生成已停止", "AbortError");
-        const binding: CanvasGenerationTaskBinding = { requestId: input.requestId || nanoid(), workspaceId, projectId, nodeId: input.nodeId, originNodeId: input.originNodeId, requestFingerprint: input.requestFingerprint, kind: input.kind, slotIds: input.slotIds || [nanoid()], preservePrimary: input.preservePrimary, references, status: "queued" };
+        const binding: CanvasGenerationTaskBinding = { requestId: input.requestId || nanoid(), workspaceId, projectId, nodeId: input.nodeId, originNodeId: input.originNodeId, requestFingerprint: input.requestFingerprint, kind: input.kind, slotIds: input.slotIds || [nanoid()], preservePrimary: input.preservePrimary, references, status: "queued", ...((input.kind === "text" || input.kind === "audio") ? { retryInput: { prompt: input.prompt, model: input.config.model, systemPrompt: input.config.systemPrompt, reasoningEffort: input.config.reasoningEffort, audioVoice: input.config.audioVoice, audioFormat: input.config.audioFormat, audioSpeed: input.config.audioSpeed, audioInstructions: input.config.audioInstructions } } : {}) };
         // Flush pending node/connection creation before saving the request marker. The POST is forbidden until its save is acknowledged.
         flushSync(() => setNodes((items) => items.map((node) => node.id === input.nodeId ? { ...node, metadata: { ...node.metadata, generationTask: binding, images: binding.kind === "image" ? [...(node.metadata?.images || []).map((image) => binding.slotIds.includes(image.id) ? { ...image, status: "loading" as const, errorDetails: undefined } : image), ...binding.slotIds.filter((id) => !node.metadata?.images?.some((image) => image.id === id)).map((id) => ({ id, status: "loading" as const, content: "", naturalWidth: 0, naturalHeight: 0, bytes: 0, mimeType: "" }))] : node.metadata?.images, texts: binding.kind === "text" ? [...(node.metadata?.texts || []).map((text) => binding.slotIds.includes(text.id) ? { ...text, status: "loading" as const, content: "", errorDetails: undefined } : text), ...binding.slotIds.filter((id) => !node.metadata?.texts?.some((text) => text.id === id)).map((id) => ({ id, status: "loading" as const, content: "" }))] : node.metadata?.texts } } : node)));
         submissions.current.set(binding.requestId, binding);

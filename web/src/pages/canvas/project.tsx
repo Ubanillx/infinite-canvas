@@ -18,7 +18,7 @@ import { imageReferenceLabel } from "@/lib/image-reference-prompt";
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
 import { getCanvasConnectionIndex, getCanvasNodeIndex } from "@/lib/canvas/canvas-graph-index";
 import { getCanvasConnectionGeometry } from "@/lib/canvas/canvas-connection-geometry";
-import { assertCanvasTaskRequest } from "@/lib/canvas/canvas-generation-tasks";
+import { assertCanvasTaskRequest, canvasTaskRetryConfig, savedCanvasTaskRetry } from "@/lib/canvas/canvas-generation-tasks";
 import { createFrameTask } from "@/lib/canvas/frame-task";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -2982,7 +2982,7 @@ function InfiniteCanvasPage() {
             const sourceNode = findRetrySourceNode(node.id, nodesRef.current, connectionsRef.current) || node;
             const savedImageMetadata = node.type === CanvasNodeType.Image ? node.metadata : undefined;
             const hasSavedImageMetadata = Boolean(savedImageMetadata?.generationType);
-            const generationConfig =
+            const baseGenerationConfig =
                 hasSavedImageMetadata && savedImageMetadata
                     ? {
                           ...effectiveConfig,
@@ -2993,6 +2993,7 @@ function InfiniteCanvasPage() {
                           count: "1",
                       }
                     : { ...buildGenerationConfig(effectiveConfig, node.type === CanvasNodeType.Text || node.type === CanvasNodeType.Audio ? node : sourceNode, node.type === CanvasNodeType.Text ? "text" : node.type === CanvasNodeType.Video ? "video" : node.type === CanvasNodeType.Audio ? "audio" : "image"), count: "1" };
+            const generationConfig = canvasTaskRetryConfig(baseGenerationConfig, binding);
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
                 openConfigDialog(true);
                 return;
@@ -3001,6 +3002,14 @@ function InfiniteCanvasPage() {
             setRunningNodeId(node.id);
             const controller = startGenerationRequest(node.id, sourceNode.id, node.id);
             try {
+                const savedRetry = binding && (node.type === CanvasNodeType.Text || node.type === CanvasNodeType.Audio) && !resolveModelScript(generationConfig, generationConfig.model) ? savedCanvasTaskRetry(binding, node.metadata?.prompt || "") : null;
+                if (savedRetry) {
+                    const { prompt, images } = savedRetry;
+                    if (!prompt) { message.warning(t("canvas.projectPage.retryPromptMissing")); return; }
+                    setNodes((prev) => prev.map((item) => item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined } } : item));
+                    await canvasTasks.run({ nodeId: node.id, originNodeId: sourceNode.id, kind: node.type === CanvasNodeType.Text ? "text" : "audio", config: generationConfig, prompt, images, slotIds: node.type === CanvasNodeType.Text && node.metadata?.texts?.length ? node.metadata.texts.map((text) => text.id) : undefined, signal: controller.signal });
+                    return;
+                }
                 const context = hasSavedImageMetadata ? null : await hydrateNodeGenerationContext(buildNodeGenerationContext(sourceNode.id, nodesRef.current, connectionsRef.current, sourceNode.metadata?.composerContent || sourceNode.metadata?.prompt || node.metadata?.prompt || ""));
                 const prompt = (savedImageMetadata?.prompt || (binding && (node.type === CanvasNodeType.Text || node.type === CanvasNodeType.Audio) ? node.metadata?.prompt : undefined) || context?.prompt || "").trim();
                 if (!prompt) {

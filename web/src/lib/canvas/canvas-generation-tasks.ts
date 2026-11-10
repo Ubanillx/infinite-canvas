@@ -1,6 +1,19 @@
 import { fitNodeSize } from "@/lib/canvas/canvas-node-size";
 import type { CanvasGenerationTaskBinding, CanvasNodeData, CanvasNodeImage, CanvasNodeText } from "@/types/canvas";
 import { isGenerationTaskActive, type GenerationTask } from "@/types/generation-task";
+import type { AiConfig } from "@/stores/use-config-store";
+import type { ReferenceImage } from "@/types/image";
+
+export function canvasTaskRetryConfig(config: AiConfig, binding?: CanvasGenerationTaskBinding): AiConfig {
+    const saved = binding?.retryInput;
+    return saved ? { ...config, model: saved.model, systemPrompt: saved.systemPrompt, reasoningEffort: saved.reasoningEffort, audioVoice: saved.audioVoice, audioFormat: saved.audioFormat, audioSpeed: saved.audioSpeed, audioInstructions: saved.audioInstructions } : config;
+}
+
+export function savedCanvasTaskRetry(binding: CanvasGenerationTaskBinding, fallbackPrompt: string) {
+    if (binding.kind !== "audio" && (binding.kind !== "text" || !binding.references)) return null;
+    const images: ReferenceImage[] = (binding.references || []).filter((reference) => reference.kind === "image").map((reference) => ({ id: reference.storageKey, name: reference.name || "reference.png", type: reference.mimeType || "image/png", dataUrl: "", storageKey: reference.storageKey }));
+    return { prompt: (binding.retryInput?.prompt ?? fallbackPrompt).trim(), images };
+}
 
 export function canvasTaskMediaUrl(workspaceId: string, key: string) {
     return `/api/media/blob/${encodeURIComponent(key)}?workspaceId=${encodeURIComponent(workspaceId)}`;

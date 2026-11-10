@@ -32,10 +32,10 @@ export async function readTextGenerationStream(response: Response, gemini: boole
         const payload = JSON.parse(bytes.toString("utf8"));
         if (payload.error || payload.promptFeedback?.blockReason) throw new Error("文本供应商返回错误");
         const candidate = payload.candidates?.[0];
-        if (gemini ? candidate?.finishReason !== "STOP" : payload.status !== "completed") throw new Error("文本结果没有完成凭据");
         const content = gemini ? (candidate.content?.parts || []).filter((part: any) => !part.thought).map((part: any) => part.text || "").join("") : responseText(payload);
+        if (content) await onDelta(content);
+        if (gemini ? candidate?.finishReason !== "STOP" : payload.status !== "completed") throw new Error("文本结果没有完成凭据");
         if (!content) throw new Error("文本供应商未返回内容");
-        await onDelta(content);
         return content;
     }
     if (!response.body) throw new Error("文本供应商缺少响应流");
@@ -51,12 +51,13 @@ export async function readTextGenerationStream(response: Response, gemini: boole
         const event = JSON.parse(data);
         if (event.error || event.type === "error" || event.type === "response.failed" || event.type === "response.incomplete" || event.promptFeedback?.blockReason) throw new Error("文本供应商流未正常完成");
         let next = content;
+        let failed = false;
         if (gemini) {
             const candidate = event.candidates?.[0];
             next += (candidate?.content?.parts || []).filter((part: any) => !part.thought).map((part: any) => part.text || "").join("");
             if (candidate?.finishReason) {
-                if (candidate.finishReason !== "STOP") throw new Error("文本供应商流未正常完成");
-                complete = true;
+                if (candidate.finishReason !== "STOP") failed = true;
+                else complete = true;
             }
         } else {
             if (event.type === "response.output_text.delta") next += typeof event.delta === "string" ? event.delta : "";
@@ -67,6 +68,7 @@ export async function readTextGenerationStream(response: Response, gemini: boole
             }
         }
         if (next !== content) { content = next; await onDelta(content); }
+        if (failed) throw new Error("文本供应商流未正常完成");
     };
     try {
         const declared = Number(response.headers.get("content-length"));

@@ -58,6 +58,7 @@ export type CanvasGenerationTaskBinding = {
     submissionState?: "not_submitted";
     requestFingerprint?: string;
     references?: import("./generation-task").GenerationTaskReference[];
+    retryInput?: { prompt: string; model: string; systemPrompt: string; reasoningEffort: import("../stores/use-config-store").ReasoningEffort; audioVoice: string; audioFormat: string; audioSpeed: string; audioInstructions: string };
 };
 
 export type CanvasNodeMetadata = {
