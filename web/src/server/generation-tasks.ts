@@ -240,7 +240,7 @@ export function createGenerationWorker(options: GenerationTaskOptions) {
             try {
                 await putMediaBuffer(objectKey, media.bytes, media.mimeType);
                 const output: GenerationTaskOutput = { id, storageKey, mimeType: media.mimeType, bytes: media.bytes.length };
-                if (row.kind === "image" || row.kind === "text") {
+                if (row.kind === "image") {
                     const slot = id.slice(`${row.id}-`.length).split("-")[0];
                     if (id.startsWith(`${row.id}-`) && /^\d+$/.test(slot)) output.slotIndex = Number(slot);
                 }
@@ -285,7 +285,7 @@ export function createGenerationWorker(options: GenerationTaskOptions) {
                 }
                 const request: GenerationRequest = { kind: row.kind, prompt: row.request_snapshot.prompt, settings: row.request_snapshot.settings, references };
                 // Persist intent before the only potentially billable request.
-                if (row.kind === "image") {
+                if (row.kind === "image" || row.kind === "text") {
                     row = await change(id, { status: "submitting", error_code: null });
                     const slots = row.submissions;
                     await Promise.allSettled(slots.map(async (slot, index) => {
