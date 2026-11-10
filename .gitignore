@@ -11,6 +11,10 @@ data-test/
 .idea
 .ci/
 .local/
+.oil-ui/
+.workbuddy/
+__pycache__/
+*.pyc
 web/playwright-report/
 web/test-results/
 web/dist
