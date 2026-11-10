@@ -52,7 +52,8 @@ async function seed(request: APIRequestContext, selected: Workspace, nodes: Canv
     const now = new Date().toISOString();
     expect((await request.put("/api/data/canvas", { headers, data: { revision: 0, payload: { version: 0, state: { folders: [], deletedProjects: [], projects: [{ id: "p5-canvas", title: "P5", folderId: null, createdAt: now, updatedAt: now, nodes, connections: [], chatSessions: [], activeChatId: null, backgroundMode: "lines", showImageInfo: false, viewport: { x: 0, y: 0, k: 1 } }] } } } })).ok()).toBe(true);
     return { headers, tasks: async (): Promise<GenerationTask[]> => (await (await request.get("/api/generation-tasks?source=canvas&projectId=p5-canvas", { headers })).json()).items,
-        task: async (id: string): Promise<GenerationTask> => (await (await request.get(`/api/generation-tasks/${id}`, { headers })).json()).task };
+        task: async (id: string): Promise<GenerationTask> => (await (await request.get(`/api/generation-tasks/${id}`, { headers })).json()).task,
+        nodes: async (): Promise<CanvasNodeData[]> => (await (await request.get("/api/data/canvas", { headers })).json()).payload.state.projects[0].nodes };
 }
 async function select(page: Page, selected: Workspace) {
     await page.context().addInitScript((value) => { if (!sessionStorage.getItem("infinite-canvas:active-workspace")) sessionStorage.setItem("infinite-canvas:active-workspace", JSON.stringify(value)); localStorage.setItem("infinite-canvas:active-workspace", JSON.stringify(value)); localStorage.setItem("canvas-side-panel-open", "0"); }, selected);
@@ -63,6 +64,9 @@ async function open(page: Page) {
 }
 async function snapshot(page: Page): Promise<CanvasNodeData[]> {
     return page.evaluate(async () => (await import("/src/stores/use-agent-store.ts")).useAgentStore.getState().canvasContext?.snapshot.nodes || []);
+}
+async function flushSave(page: Page, workspaceId: string) {
+    await page.evaluate(async (id) => (await import("/src/stores/canvas/use-canvas-store.ts")).flushCanvasSave(id), workspaceId);
 }
 async function generate(page: Page, nodeId: string, kind: "text" | "audio" = "text", requestId = randomUUID()) {
     await page.evaluate(async (op) => (await import("/src/stores/use-agent-store.ts")).useAgentStore.getState().canvasContext!.applyOps([op]), { type: "run_generation" as const, nodeId, mode: kind, prompt: `Generate ${nodeId}`, requestId });
@@ -93,12 +97,17 @@ test("text candidates expose persisted progress and reload reads the same final 
         await expect.poll(async () => (await snapshot(page)).find((item) => item.id === "stream")?.metadata?.texts?.filter((item) => item.content.startsWith("Partial")).length).toBe(2);
         const before = (await snapshot(page)).find((item) => item.id === "stream")!; const slotIds = before.metadata!.generationTask!.slotIds;
         await page.evaluate(async ({ nodeId, primary }) => (await import("/src/stores/use-agent-store.ts")).useAgentStore.getState().canvasContext!.applyOps([{ type: "update_node", id: nodeId, metadata: { primaryTextId: primary } }]), { nodeId: "stream", primary: slotIds[1] });
+        await expect.poll(async () => (await snapshot(page)).find((item) => item.id === "stream")?.metadata?.primaryTextId).toBe(slotIds[1]);
+        await flushSave(page, selected.id);
+        await expect.poll(async () => (await scene.nodes()).find((item) => item.id === "stream")?.metadata?.primaryTextId).toBe(slotIds[1]);
         await page.reload(); await open(page);
         await expect.poll(async () => (await snapshot(page)).find((item) => item.id === "stream")?.metadata?.texts?.filter((item) => item.content.startsWith("Partial")).length).toBe(2);
         finish.release(); await expect.poll(async () => (await scene.task(task.id)).status).toBe("succeeded");
         await expect.poll(async () => (await snapshot(page)).find((item) => item.id === "stream")?.metadata?.texts?.filter((item) => item.status === "success").length).toBe(2);
         const result = (await snapshot(page)).find((item) => item.id === "stream")!;
         expect(result.metadata!.texts!.map((item) => item.id)).toEqual(slotIds); expect(result.metadata!.primaryTextId).toBe(slotIds[1]); expect(result.metadata!.content).toBe("Final 1");
+        await flushSave(page, selected.id);
+        await expect.poll(async () => (await scene.nodes()).find((item) => item.id === "stream")?.metadata?.content).toBe("Final 1");
         await page.reload(); await open(page); await expect.poll(async () => (await snapshot(page)).find((item) => item.id === "stream")?.metadata?.content).toBe("Final 1");
         expect(calls).toHaveLength(1); expect(submits).toBe(2);
         expect((await scene.task(task.id)).textOutputs).toMatchObject([{ slotIndex: 0, status: "succeeded", content: "Final 0" }, { slotIndex: 1, status: "succeeded", content: "Final 1" }]);
@@ -164,6 +173,9 @@ test("deleted and replaced text targets reject late completion while original re
         await page.evaluate(async () => (await import("/src/stores/use-agent-store.ts")).useAgentStore.getState().canvasContext!.applyOps([
             { type: "delete_node", id: "deleted" }, { type: "update_node", id: "replaced", metadata: { generationTask: undefined, content: "User replacement", status: "success" } },
         ]));
+        await expect.poll(async () => (await snapshot(page)).some((item) => item.id === "deleted")).toBe(false);
+        await flushSave(page, selected.id);
+        await expect.poll(async () => (await scene.nodes()).find((item) => item.id === "replaced")?.metadata?.content).toBe("User replacement");
         await worker.tick(); await expect.poll(async () => (await scene.tasks()).every((item) => item.status === "succeeded")).toBe(true);
         await page.reload(); await open(page); expect((await snapshot(page)).some((item) => item.id === "deleted")).toBe(false);
         expect((await snapshot(page)).find((item) => item.id === "replaced")!.metadata!.content).toBe("User replacement");
@@ -195,6 +207,7 @@ test("text and audio script models retain browser generation and persisted resul
     await generate(page, audio.id, "audio"); await expect.poll(async () => (await snapshot(page)).find((item) => item.id === audio.id)?.metadata?.storageKey).toMatch(/^audio:/);
     const key = (await snapshot(page)).find((item) => item.id === audio.id)!.metadata!.storageKey!;
     const blob = await request.get(`/api/media/blob/${encodeURIComponent(key)}`, { headers: { "x-infinite-canvas-workspace": selected.id } }); expect(await blob.body()).toEqual(wav);
+    await flushSave(page, selected.id);
     await expect.poll(async () => (await scene.nodes()).find((item) => item.id === audio.id)?.metadata?.storageKey).toBe(key);
     await page.reload(); await open(page); await expect.poll(async () => (await snapshot(page)).find((item) => item.id === text.id)?.metadata?.content).toBe("Script text preserved");
     expect((await snapshot(page)).find((item) => item.id === audio.id)!.metadata!.storageKey).toBe(key); expect(calls).toEqual([]);
