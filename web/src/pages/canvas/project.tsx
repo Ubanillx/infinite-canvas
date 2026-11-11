@@ -330,7 +330,7 @@ function InfiniteCanvasPage() {
     const viewportRef = useRef(viewport);
     const sizeRef = useRef(size);
     const focusAnimRef = useRef<number | null>(null);
-    const generateNodeRef = useRef<((nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, requestId?: string) => Promise<void>) | null>(null);
+    const generateNodeRef = useRef<((nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, requestId?: string, onCreatedNodes?: (ids: string[]) => void) => Promise<void>) | null>(null);
     const connectingParamsRef = useRef(connectingParams);
     const connectionTargetNodeIdRef = useRef(connectionTargetNodeId);
     const selectionBoxRef = useRef(selectionBox);
@@ -902,6 +902,7 @@ function InfiniteCanvasPage() {
         connectionsRef,
         selectedNodeIdsRef,
         viewportRef,
+        sizeRef,
         generateNodeRef,
         setNodes,
         setConnections,
@@ -2530,7 +2531,7 @@ function InfiniteCanvasPage() {
     }, []);
 
     const handleGenerateNode = useCallback(
-        async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, requestId?: string) => {
+        async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, requestId?: string, onCreatedNodes?: (ids: string[]) => void) => {
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
             const generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode);
             const requestFingerprint = JSON.stringify({ nodeId, mode, prompt, model: generationConfig.model, quality: generationConfig.quality, size: generationConfig.size, count: generationConfig.count, background: generationConfig.background, seconds: generationConfig.videoSeconds, resolution: generationConfig.vquality, generateAudio: generationConfig.videoGenerateAudio, watermark: generationConfig.videoWatermark, videoMode: generationConfig.videoMode, systemPrompt: generationConfig.systemPrompt, textCount: sourceNode?.metadata?.textCount || 1, reasoningEffort: generationConfig.reasoningEffort, audioVoice: generationConfig.audioVoice, audioFormat: generationConfig.audioFormat, audioSpeed: generationConfig.audioSpeed, audioInstructions: generationConfig.audioInstructions });
@@ -2538,6 +2539,7 @@ function InfiniteCanvasPage() {
             if (sameRequest) {
                 const binding = sameRequest.metadata!.generationTask!;
                 assertCanvasTaskRequest(binding, nodeId, mode, requestFingerprint);
+                onCreatedNodes?.([]);
                 await canvasTasks.recover(sameRequest);
                 return;
             }
@@ -2547,6 +2549,7 @@ function InfiniteCanvasPage() {
             });
             if (busy) {
                 if (requestId) throw new Error("节点已有未核对完成的生成请求，请先读取原任务状态");
+                onCreatedNodes?.([]);
                 await canvasTasks.recover(busy);
                 return;
             }
@@ -2564,6 +2567,7 @@ function InfiniteCanvasPage() {
                 setRunningNodeId(nodeId);
                 const controller = startGenerationRequest(nodeId, nodeId, nodeId);
                 setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, prompt: scene, status: NODE_STATUS_LOADING, errorDetails: undefined } } : node)));
+                onCreatedNodes?.([nodeId]);
                 try {
                     const fullPrompt = (builtinPanel.promptPrefix || "") + scene;
                     const context = await hydrateNodeGenerationContext(buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, fullPrompt));
@@ -2682,6 +2686,7 @@ function InfiniteCanvasPage() {
                         return reuseImageNode ? existing : appendPlacedNodes(existing, [rootNode]);
                     });
                     if (!reuseImageNode) setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: nodeId, toNodeId: rootId }]);
+                    onCreatedNodes?.([rootId]);
                     setSelectedNodeIds(new Set([nodeId]));
                     setSelectedConnectionId(null);
                     setDialogNodeId(nodeId);
@@ -2796,6 +2801,7 @@ function InfiniteCanvasPage() {
                         ? prev.map((node) => (node.id === nodeId ? { ...node, ...videoNode } : node))
                         : appendPlacedNodes(prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS } } : node)), [videoNode]));
                     if (!reuseVideoNode) setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: nodeId, toNodeId: videoId }]);
+                    onCreatedNodes?.([videoId]);
                     const controller = startGenerationRequest(videoId, nodeId, nodeId, runController);
                     try {
                         if (!resolveModelScript(generationConfig, generationConfig.model)) {
@@ -2837,6 +2843,7 @@ function InfiniteCanvasPage() {
                         ? prev.map((node) => (node.id === nodeId ? { ...node, ...audioNode } : node))
                         : appendPlacedNodes(prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS } } : node)), [audioNode]));
                     if (!reuseAudioNode) setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: nodeId, toNodeId: audioId }]);
+                    onCreatedNodes?.([audioId]);
                     const controller = startGenerationRequest(audioId, nodeId, nodeId, runController);
                     try {
                         if (!resolveModelScript(generationConfig, generationConfig.model)) {
@@ -2883,6 +2890,7 @@ function InfiniteCanvasPage() {
                     ? prev.map((node) => (node.id === nodeId ? { ...node, ...rootNode } : node))
                     : appendPlacedNodes(prev.map((node) => (node.id === nodeId && isConfigNode ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined } } : node)), [rootNode]));
                 if (!reuseTextNode) setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: nodeId, toNodeId: rootId }]);
+                onCreatedNodes?.([rootId]);
                 setSelectedNodeIds(new Set([nodeId]));
                 setSelectedConnectionId(null);
                 setDialogNodeId(nodeId);

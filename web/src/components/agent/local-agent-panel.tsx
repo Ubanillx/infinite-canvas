@@ -20,7 +20,7 @@ import { getServerConfigSaveStatus, subscribeServerConfigSaveStatus } from "@/se
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useAgentSkillStore } from "@/stores/use-agent-skill-store";
 import { useShallow } from "zustand/react/shallow";
-import { useAgentStore, type AgentAttachment, type AgentBootstrapStatus, type AgentCanvasContext, type AgentCanvasReference, type AgentChatItem, type AgentConversationState, type AgentEngine, type AgentFileAttachment, type AgentImageAttachment, type AgentModel, type AgentPendingApproval, type AgentPendingToolCall, type AgentPermissionMode, type AgentQueuedMessage, type AgentReasoningEffort, type AgentThreadSummary } from "@/stores/use-agent-store";
+import { useAgentStore, type AgentAttachment, type AgentBootstrapStatus, type AgentCanvasContext, type AgentCanvasReference, type AgentCanvasTurnScope, type AgentChatItem, type AgentConversationState, type AgentEngine, type AgentFileAttachment, type AgentImageAttachment, type AgentModel, type AgentPendingApproval, type AgentPendingToolCall, type AgentPermissionMode, type AgentQueuedMessage, type AgentReasoningEffort, type AgentThreadSummary } from "@/stores/use-agent-store";
 import { type CanvasAgentOp, type CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import { isSiteTool, runSiteTool } from "@/lib/agent/agent-site-tools";
 import { acknowledgeCodexHistory, activateAgentClient, AgentApiError, createPiThread, deleteAgentFile, deletePiThread, discoverAgentConfig, exportCanvasImage, fetchAgentAttachment, fetchAgentFile, fetchAgentJson, fetchPiModels, fetchPiThread, fetchPiThreads, interruptCodexTurn, interruptPiTurn, postCodexApproval, postState, postToolResult, resumePiThread, uploadAgentFile } from "@/services/api/canvas-agent";
@@ -205,6 +205,10 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     const skillCount = useAgentSkillStore((state) => state.skills.length);
     const messageCount = useAgentStore((state) => state.messages.length);
     const canvasContextRef = useRef<AgentCanvasContext | null>(useAgentStore.getState().canvasContext);
+    const canvasTurnScope = (): AgentCanvasTurnScope => {
+        const state = useAgentStore.getState();
+        return { engine: state.engine, threadId: state.activeThreadId, turnId: state.activeTurnId, workspaceId: workspaceHeaders()["x-infinite-canvas-workspace"] || "" };
+    };
     const confirmToolsRef = useRef(confirmTools);
     const pendingToolRef = useRef<AgentPendingToolCall | null>(null);
     const autoConnectRef = useRef(false);
@@ -299,6 +303,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         }
         if (emptyThread && nextThreadId) threadMessagesRef.current.delete(nextThreadId);
         if (threadChanged || emptyThread) {
+            canvasContextRef.current?.discardTurn();
             loadThreadsSequenceRef.current += 1;
             authoritativeHistoryTurnsRef.current.clear();
             liveTurnKeysRef.current.clear();
@@ -488,7 +493,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         source.addEventListener("tool_call", (event) => {
             if (!isCurrentConnection()) return;
             const data = parseEventData<AgentPendingToolCall>(event);
-            if (data) void handleToolCall(endpoint, token, data);
+            if (data) enqueueEvent(() => handleToolCall(endpoint, token, data));
         });
         source.addEventListener("codex_approval", (event) => {
             if (!isCurrentConnection()) return;
@@ -645,7 +650,10 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         authoritative.clear();
         live.clear();
         const current = useAgentStore.getState();
-        if (current.conversation.engine !== engine) setAgentState({ messages: [], activeThreadId: "", activeTurnId: "", threads: [], pendingTool: null, pendingApprovals: [], tokenUsage: null, conversation: { ...current.conversation, engine, status: "preparing", threadId: "", mcpStatuses: {}, error: undefined } });
+        if (current.conversation.engine !== engine) {
+            canvasContextRef.current?.discardTurn();
+            setAgentState({ messages: [], activeThreadId: "", activeTurnId: "", threads: [], pendingTool: null, pendingApprovals: [], tokenUsage: null, conversation: { ...current.conversation, engine, status: "preparing", threadId: "", mcpStatuses: {}, error: undefined } });
+        }
         const clientId = clientIdRef.current;
         void fetchAgentJson<AgentWorkspaceResponse>(endpoint, token, `/agent/${engine}/prepare`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ clientId, permissionMode }) })
             .then((result) => {
@@ -1008,6 +1016,13 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     };
 
     const handleToolCall = async (endpoint: string, token: string, payload: AgentPendingToolCall) => {
+        const currentScope = canvasTurnScope();
+        if (payload.turnId && (payload.threadId !== currentScope.threadId || payload.turnId !== currentScope.turnId)) {
+            await postToolResult(endpoint, token, clientIdRef.current, { requestId: payload.requestId, error: rt("openCanvasFirst") });
+            return;
+        }
+        const context = canvasContextRef.current;
+        payload = { ...payload, turnScope: payload.turnId ? currentScope : undefined, requestEngine: currentScope.engine, requestThreadId: currentScope.threadId, workspaceId: currentScope.workspaceId, canvasInstanceId: context?.instanceId, canvasProjectId: context?.snapshot.projectId };
         if (confirmToolsRef.current && isCanvasWriteTool(payload.name)) {
             if (pendingToolRef.current) {
                 await postToolResult(endpoint, token, clientIdRef.current, { requestId: payload.requestId, error: rt("pendingCanvasTool") });
@@ -1022,10 +1037,25 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     };
 
     const runToolCall = async (endpoint: string, token: string, payload: AgentPendingToolCall) => {
+        const turnScope = payload.turnScope;
+        const canvasTarget = () => {
+            const current = useAgentStore.getState();
+            const context = canvasContextRef.current;
+            if (current.engine !== payload.requestEngine || current.activeThreadId !== payload.requestThreadId || turnScope && (!turnScope.threadId || !turnScope.turnId || current.activeTurnId !== turnScope.turnId) || workspaceHeaders()["x-infinite-canvas-workspace"] !== payload.workspaceId || !context || context.instanceId !== payload.canvasInstanceId || context.snapshot.projectId !== payload.canvasProjectId) throw new Error(rt("openCanvasFirst"));
+            return context;
+        };
         if (isSiteTool(payload.name)) {
             try {
                 addEventLog(toolName(payload.name), payload, payload);
-                const result = await runSiteTool(payload.name, payload.input || {}, navigate, { canvasSnapshot: canvasContextRef.current?.snapshot || null, templateCanvas: canvasContextRef.current?.templateCanvas });
+                const context = canvasContextRef.current;
+                const canvas = context?.templateCanvas;
+                const templateCanvas = canvas && { ...canvas, insert: async (...args: Parameters<typeof canvas.insert>) => {
+                    canvasTarget();
+                    const result = await canvas.insert(...args);
+                    canvasTarget();
+                    return result;
+                } };
+                const result = await runSiteTool(payload.name, payload.input || {}, navigate, { canvasSnapshot: context?.snapshot || null, templateCanvas });
                 if (/^prompts_(create|update|delete)$/.test(payload.name)) {
                     // 保存回执不依赖页面重读是否成功；让已打开的提示词列表失效并按需刷新。
                     void queryClient.invalidateQueries({ queryKey: ["prompts"] });
@@ -1049,25 +1079,23 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                 navigate(path);
                 result = { ok: true, path };
             } else if (payload.name === "canvas_apply_ops") {
-                const context = canvasContextRef.current;
-                if (!context) throw new Error(rt("openCanvasFirst"));
-                result = context.applyOps(appliedOps);
+                const context = canvasTarget();
+                result = context.applyOps(appliedOps, turnScope);
                 void postState(endpoint, token, clientIdRef.current, result as CanvasAgentSnapshot);
             } else if (payload.name === "canvas_create_attachment_nodes") {
-                const context = canvasContextRef.current;
-                if (!context) throw new Error(rt("openCanvasFirst"));
+                canvasTarget();
                 appliedOps = await attachmentNodeOps(endpoint, token, clientIdRef.current, payload.input?.nodes);
-                result = context.applyOps(appliedOps);
+                const context = canvasTarget();
+                result = context.applyOps(appliedOps, turnScope);
                 await postState(endpoint, token, clientIdRef.current, result as CanvasAgentSnapshot);
             } else if (payload.name === "canvas_export_image") {
-                const context = canvasContextRef.current;
-                if (!context) throw new Error(rt("openCanvasFirst"));
+                const context = canvasTarget();
                 result = await exportCanvasImage(endpoint, token, context.snapshot, payload.input as { nodeId: string; imageId?: string; threadId: string });
             } else if (payload.name === "canvas_import_artifact") {
-                const context = canvasContextRef.current;
-                if (!context) throw new Error(rt("openCanvasFirst"));
+                canvasTarget();
                 appliedOps = await artifactNodeOps(endpoint, token, payload.input?.files);
-                result = context.applyOps(appliedOps);
+                const context = canvasTarget();
+                result = context.applyOps(appliedOps, turnScope);
                 await postState(endpoint, token, clientIdRef.current, result as CanvasAgentSnapshot);
             } else {
                 const snapshot = canvasContextRef.current?.snapshot;
@@ -1502,11 +1530,16 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             return;
         }
         if (!event.replayed && event.type === "item.completed" && event.item?.type === "image_generation" && event.item.id && event.sourceClientId === clientIdRef.current) {
+            const context = canvasContextRef.current;
+            const turnScope = { engine: useAgentStore.getState().engine, ...eventScope(event), workspaceId: workspaceHeaders()["x-infinite-canvas-workspace"] || "" };
+            const projectId = context?.snapshot.projectId;
             const generated = await importGeneratedImages(endpoint, token, event.item);
             if (generated.length) {
-                const context = canvasContextRef.current;
-                if (context) {
-                    const right = Math.max(0, ...context.snapshot.nodes.map((node) => node.position.x + node.width)) + 80;
+                const state = useAgentStore.getState();
+                const current = canvasContextRef.current;
+                const sameTarget = context && current?.instanceId === context.instanceId && current.snapshot.projectId === projectId && state.engine === turnScope.engine && state.activeThreadId === turnScope.threadId && state.activeTurnId === turnScope.turnId && workspaceHeaders()["x-infinite-canvas-workspace"] === turnScope.workspaceId;
+                if (sameTarget) {
+                    const right = Math.max(0, ...current.snapshot.nodes.map((node) => node.position.x + node.width)) + 80;
                     const ops = generated.map<CanvasAgentOp>((image, index) => {
                         const size = fitNodeSize(image.upload.width, image.upload.height);
                         return {
@@ -1519,10 +1552,10 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                             metadata: imageMetadata(image.upload),
                         };
                     });
-                    const result = context.applyOps(ops);
+                    const result = current.applyOps(ops, turnScope);
                     void postState(endpoint, token, clientIdRef.current, result);
                 }
-                addEventLog(rt("importGeneratedImages"), rt(context ? "addedToSourceCanvas" : "imageGenerated"));
+                addEventLog(rt("importGeneratedImages"), rt(sameTarget ? "addedToSourceCanvas" : "imageGenerated"));
             }
         }
         if (activity && event.item?.id) {
@@ -1531,6 +1564,15 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         }
         if (event.type === "turn.completed") {
             const scope = eventScope(event);
+            if (!event.replayed && scope.threadId && scope.turnId) {
+                const context = canvasContextRef.current;
+                const turnScope = { engine: useAgentStore.getState().engine, ...scope, workspaceId: workspaceHeaders()["x-infinite-canvas-workspace"] || "" };
+                if (context) {
+                    const result = await context.finishTurn(turnScope);
+                    const state = useAgentStore.getState();
+                    if (result && canvasContextRef.current?.instanceId === context.instanceId && canvasContextRef.current?.snapshot.projectId === result.projectId && state.engine === turnScope.engine && state.activeThreadId === scope.threadId && (!state.activeTurnId || state.activeTurnId === scope.turnId) && workspaceHeaders()["x-infinite-canvas-workspace"] === turnScope.workspaceId) void postState(endpoint, token, clientIdRef.current, result);
+                }
+            }
             if (scope.turnId) {
                 finishPlanActivity(event);
                 liveTurnKeysRef.current.add(`${scope.threadId}\0${scope.turnId}`);

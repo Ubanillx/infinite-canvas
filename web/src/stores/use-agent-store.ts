@@ -32,7 +32,7 @@ export type AgentQueuedMessage = {
 };
 export type AgentChatItem = { id: string; itemId?: string; clientMessageId?: string; threadId?: string; turnId?: string; engine?: AgentEngine; role: AgentChatRole; title?: string; text: string; meta?: string; detail?: unknown; attachments?: AgentMessageAttachment[]; canvasReferences?: AgentCanvasReference[]; skill?: AgentSkillReference; streamId?: string; activityItems?: Record<string, string> };
 export type AgentEventLog = { id: string; time: string; title: string; text: string; raw?: unknown };
-export type AgentPendingToolCall = { requestId: string; name: string; input?: { ops?: CanvasAgentOp[]; path?: string } & Record<string, unknown> };
+export type AgentPendingToolCall = { requestId: string; name: string; input?: { ops?: CanvasAgentOp[]; path?: string } & Record<string, unknown>; threadId?: string; turnId?: string; turnScope?: AgentCanvasTurnScope; requestEngine?: AgentEngine; requestThreadId?: string; workspaceId?: string; canvasInstanceId?: string; canvasProjectId?: string };
 export type AgentPermissionMode = "request" | "automatic" | "full";
 export type AgentReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 export type AgentModel = {
@@ -45,7 +45,8 @@ export type AgentModel = {
 };
 export type AgentApprovalDecision = "accept" | "acceptForSession" | "decline";
 export type AgentPendingApproval = { requestId: string; method: string; threadId?: string; turnId?: string; itemId?: string; reason?: string; command?: unknown; cwd?: string; grantRoot?: string; networkApprovalContext?: unknown; permissions?: unknown; deciding?: AgentApprovalDecision };
-export type AgentCanvasContext = { snapshot: CanvasAgentSnapshot; applyOps: (ops?: CanvasAgentOp[]) => CanvasAgentSnapshot; undoOps: () => CanvasAgentSnapshot | null; canUndo: boolean; templateCanvas?: TemplateCanvasContext };
+export type AgentCanvasTurnScope = { engine: AgentEngine; threadId: string; turnId: string; workspaceId: string };
+export type AgentCanvasContext = { instanceId: string; snapshot: CanvasAgentSnapshot; applyOps: (ops?: CanvasAgentOp[], scope?: AgentCanvasTurnScope) => CanvasAgentSnapshot; finishTurn: (scope: AgentCanvasTurnScope) => Promise<CanvasAgentSnapshot | null>; discardTurn: () => void; undoOps: () => CanvasAgentSnapshot | null; canUndo: boolean; templateCanvas?: TemplateCanvasContext };
 export type AgentThreadSummary = { id: string; preview: string; name?: string | null; cwd?: string; status?: string; source?: unknown; createdAt?: number; updatedAt?: number };
 export type AgentTokenUsage = { input: number; cached: number; output: number };
 export type AgentBootstrapStatus = { key: string; text: string; detail: string; status: "running" | "ready" | "error" };

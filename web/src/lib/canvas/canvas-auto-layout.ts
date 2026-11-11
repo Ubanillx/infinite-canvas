@@ -1,6 +1,7 @@
 import { Graph, layout } from "@dagrejs/dagre";
 
 import { getGroupWrapRect } from "@/lib/canvas/canvas-node-geometry";
+import { expandCanvasGroups } from "@/lib/canvas/canvas-node-placement";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type Position } from "@/types/canvas";
 
 const NODE_GAP = 56;
@@ -155,4 +156,100 @@ export function autoLayoutCanvas(nodes: CanvasNodeData[], connections: CanvasCon
         if (shift.x || shift.y) for (const [id, node] of next) if (moving.has(groupFor(node))) next.set(id, { ...node, position: { x: node.position.x + shift.x, y: node.position.y + shift.y } });
     }
     return nodes.map((node) => next.get(node.id)!);
+}
+
+/** Arrange one Agent turn while keeping every unrelated node and group member in place. */
+export function autoLayoutCanvasChanges(nodes: CanvasNodeData[], connections: CanvasConnection[], changedIds: string[]): CanvasNodeData[] {
+    if (!changedIds.length) return nodes;
+    const changed = new Set(changedIds);
+    const byId = new Map(nodes.map((node) => [node.id, node]));
+    const moving = nodes.filter((node) => changed.has(node.id) && node.type !== CanvasNodeType.Group);
+    if (!moving.length) return nodes;
+    const movingIds = new Set(moving.map((node) => node.id));
+    const groups = nodes.filter((node) => node.type === CanvasNodeType.Group);
+    const wholeGroups = new Map(groups.filter((group) => changed.has(group.id) && nodes.some((node) => node.metadata?.groupId === group.id)
+        && nodes.every((node) => node.metadata?.groupId !== group.id || movingIds.has(node.id))).map((group) => [group.id, group]));
+    const neighbors = new Map(moving.map((node) => [node.id, new Set<string>()]));
+    const fixedGroup = (node: CanvasNodeData) => node.metadata?.groupId && !wholeGroups.has(node.metadata.groupId) ? node.metadata.groupId : null;
+    for (const edge of connections) {
+        if (!movingIds.has(edge.fromNodeId) || !movingIds.has(edge.toNodeId)) continue;
+        if (fixedGroup(byId.get(edge.fromNodeId)!) !== fixedGroup(byId.get(edge.toNodeId)!)) continue;
+        neighbors.get(edge.fromNodeId)!.add(edge.toNodeId);
+        neighbors.get(edge.toNodeId)!.add(edge.fromNodeId);
+    }
+    for (const group of wholeGroups.values()) {
+        const members = moving.filter((node) => node.metadata?.groupId === group.id);
+        for (const member of members.slice(1)) {
+            neighbors.get(members[0].id)!.add(member.id);
+            neighbors.get(member.id)!.add(members[0].id);
+        }
+    }
+
+    const next = new Map(nodes.map((node) => [node.id, node]));
+    const obstacles = nodes.filter((node) => !movingIds.has(node.id) && !wholeGroups.has(node.id));
+    const visited = new Set<string>();
+    const affectedGroups = new Set<string>();
+    for (const node of moving) {
+        if (visited.has(node.id)) continue;
+        const queue = [node.id];
+        const ids = new Set<string>(queue);
+        visited.add(node.id);
+        for (let index = 0; index < queue.length; index += 1) {
+            for (const neighbor of neighbors.get(queue[index])!) {
+                if (visited.has(neighbor)) continue;
+                visited.add(neighbor);
+                ids.add(neighbor);
+                queue.push(neighbor);
+            }
+        }
+        const component = moving.filter((item) => ids.has(item.id));
+        const componentGroups = [...wholeGroups.values()].filter((group) => component.some((item) => item.metadata?.groupId === group.id));
+        const internalEdges = connections.filter((edge) => ids.has(edge.fromNodeId) && ids.has(edge.toNodeId));
+        const positions = componentGroups.length ? null : layoutItems(component, internalEdges, { x: 0, y: 0 });
+        const laidOut = componentGroups.length ? autoLayoutCanvas([...component, ...componentGroups], internalEdges) : component.map((item) => ({ ...item, position: positions!.get(item.id)! }));
+        const layoutRect = bounds(laidOut);
+        const local = new Map(laidOut.map((item) => [item.id, { x: item.position.x - layoutRect.x, y: item.position.y - layoutRect.y }]));
+        const incoming = connections.filter((edge) => ids.has(edge.toNodeId) && !movingIds.has(edge.fromNodeId) && byId.has(edge.fromNodeId));
+        const outgoing = connections.filter((edge) => ids.has(edge.fromNodeId) && !movingIds.has(edge.toNodeId) && byId.has(edge.toNodeId));
+        const original = bounds([...component, ...componentGroups]);
+        let origin: Position = { x: original.x, y: original.y };
+        if (incoming.length) {
+            origin = {
+                x: Math.max(...incoming.map((edge) => byId.get(edge.fromNodeId)!.position.x + byId.get(edge.fromNodeId)!.width + RANK_GAP - local.get(edge.toNodeId)!.x)),
+                y: byId.get(incoming[0].fromNodeId)!.position.y + byId.get(incoming[0].fromNodeId)!.height / 2 - local.get(incoming[0].toNodeId)!.y - byId.get(incoming[0].toNodeId)!.height / 2,
+            };
+        } else if (outgoing.length) {
+            const edge = outgoing[0];
+            const fixed = byId.get(edge.toNodeId)!;
+            const source = byId.get(edge.fromNodeId)!;
+            origin = { x: fixed.position.x - RANK_GAP - source.width - local.get(source.id)!.x, y: fixed.position.y + fixed.height / 2 - local.get(source.id)!.y - source.height / 2 };
+        }
+        const positioned = component.map((item) => ({ ...item, position: { x: origin.x + local.get(item.id)!.x, y: origin.y + local.get(item.id)!.y } }));
+        const containers = componentGroups.map((group) => {
+            const placed = laidOut.find((item) => item.id === group.id)!;
+            return { ...group, position: { x: origin.x + local.get(group.id)!.x, y: origin.y + local.get(group.id)!.y }, width: placed.width, height: placed.height };
+        });
+        const candidates = [...positioned, ...containers];
+        const clear = (dx: number, dy: number) => candidates.every((item) => obstacles.every((fixed) =>
+            (fixed.type === CanvasNodeType.Group && item.metadata?.groupId === fixed.id)
+            || !intersects({ x: item.position.x + dx, y: item.position.y + dy, width: item.width, height: item.height }, { ...fixed.position, width: fixed.width, height: fixed.height })));
+        const offsets = [{ x: 0, y: 0 }];
+        for (const item of candidates) for (const fixed of obstacles) {
+            if (fixed.type === CanvasNodeType.Group && item.metadata?.groupId === fixed.id) continue;
+            offsets.push({ x: fixed.position.x + fixed.width + NODE_GAP - item.position.x, y: 0 });
+            offsets.push({ x: fixed.position.x - item.position.x - item.width - NODE_GAP, y: 0 });
+            offsets.push({ x: 0, y: fixed.position.y + fixed.height + NODE_GAP - item.position.y });
+            offsets.push({ x: 0, y: fixed.position.y - item.position.y - item.height - NODE_GAP });
+        }
+        offsets.push({ x: Math.max(...obstacles.map((item) => item.position.x + item.width), 0) + NODE_GAP - Math.min(...candidates.map((item) => item.position.x)), y: 0 });
+        const shift = offsets.sort((a, b) => Math.hypot(a.x, a.y) - Math.hypot(b.x, b.y) || Math.abs(b.x) - Math.abs(a.x)).find((offset) => clear(offset.x, offset.y))!;
+        for (const item of candidates) {
+            const placed = shift.x || shift.y ? { ...item, position: { x: item.position.x + shift.x, y: item.position.y + shift.y } } : item;
+            next.set(item.id, placed);
+            obstacles.push(placed);
+            if (item.metadata?.groupId && !wholeGroups.has(item.metadata.groupId)) affectedGroups.add(item.metadata.groupId);
+        }
+    }
+    const result = nodes.map((node) => next.get(node.id)!);
+    return affectedGroups.size ? expandCanvasGroups(result, affectedGroups) : result;
 }

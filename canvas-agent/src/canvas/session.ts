@@ -527,7 +527,7 @@ export class CanvasSession {
         const clientId = this.targetClientId;
         const client = this.clients.get(clientId);
         if (!client) throw new Error("当前没有已连接画布");
-        sendEvent(client, "tool_call", { requestId, name, input });
+        sendEvent(client, "tool_call", { requestId, name, input, ...(this.codexState.busy && this.codexState.turnId ? { threadId: this.codexState.threadId, turnId: this.codexState.turnId } : {}) });
         logger.debug("Canvas tool request sent", { requestId, name, input, clientId });
         return await new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
