@@ -64,6 +64,26 @@ test("平台管理工具在画布库也可分发，并原样返回服务端提�
     }
 });
 
+test("画布工具请求携带正在运行的轮次归属，轮次外请求保持可用", async (t) => {
+    const session = new CanvasSession("thread-1");
+    const client = connect(session, "canvas");
+    t.after(() => client.close());
+    session.updateState(snapshot("project-1"), "canvas");
+    session.setCodexState({ busy: true, threadId: "thread-1", turnId: "turn-1" });
+    const first = session.callTool("canvas_apply_ops", { ops: [{ type: "add_node", nodeType: "text" }] });
+    const call = await waitForEvent(client, "tool_call");
+    assert.equal(field(call, "threadId"), "thread-1");
+    assert.equal(field(call, "turnId"), "turn-1");
+    session.resolveResult("canvas", { requestId: String(field(call, "requestId")), result: snapshot("project-1") });
+    await first;
+    session.setCodexState({ busy: false });
+    const second = session.callTool("canvas_apply_ops", { ops: [] });
+    const outside = client.events("tool_call").at(-1);
+    assert.equal(field(outside, "turnId"), undefined);
+    session.resolveResult("canvas", { requestId: String(field(outside, "requestId")), result: snapshot("project-1") });
+    await second;
+});
+
 test("管理工具必须显式指定目标工作区，且注册清单没有重复或缺失 schema", async () => {
     assert.equal(new Set(toolNames).size, toolNames.length);
     for (const name of toolNames) {

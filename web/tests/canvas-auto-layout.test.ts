@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { autoLayoutCanvas } from "../src/lib/canvas/canvas-auto-layout";
+import { autoLayoutCanvas, autoLayoutCanvasChanges } from "../src/lib/canvas/canvas-auto-layout";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "../src/types/canvas";
 
 function node(id: string, x: number, y: number, type: CanvasNodeType = CanvasNodeType.Text, groupId?: string): CanvasNodeData {
@@ -100,4 +100,114 @@ test("packs a 109-node collection of short connected chains without changing siz
         for (let j = i + 1; j < result.length; j += 1) expect(overlaps(result[i], result[j])).toBe(false);
     }
     expect(autoLayoutCanvas(result, edges).map((item) => item.position)).toEqual(result.map((item) => item.position));
+});
+
+test("an Agent turn arranges only its new chain after a fixed source", () => {
+    const nodes = [node("source", 0, 0), node("unrelated", 800, 0), node("config", 0, 0), node("result", 0, 0)];
+    const edges: CanvasConnection[] = [
+        { id: "sc", fromNodeId: "source", toNodeId: "config" },
+        { id: "cr", fromNodeId: "config", toNodeId: "result" },
+    ];
+    const placed = autoLayoutCanvasChanges(nodes, edges, ["config", "result"]);
+    expect(placed[0]).toBe(nodes[0]);
+    expect(placed[1]).toBe(nodes[1]);
+    expect(placed[2].position.x).toBeGreaterThan(nodes[0].position.x + nodes[0].width);
+    expect(placed[3].position.x).toBeGreaterThan(placed[2].position.x + placed[2].width);
+    for (const moving of placed.slice(2)) for (const fixed of placed.slice(0, 2)) expect(overlaps(moving, fixed)).toBe(false);
+    expect(autoLayoutCanvasChanges(placed, edges, ["config", "result"]).map((item) => item.position)).toEqual(placed.map((item) => item.position));
+});
+
+test("new independent nodes pack around fixed content without moving it", () => {
+    const nodes = [node("fixed", 0, 0), node("one", 0, 0), node("two", 0, 0), node("three", 0, 0)];
+    const placed = autoLayoutCanvasChanges(nodes, [], ["one", "two", "three"]);
+    expect(placed[0]).toBe(nodes[0]);
+    for (let i = 0; i < placed.length; i += 1) for (let j = i + 1; j < placed.length; j += 1) expect(overlaps(placed[i], placed[j])).toBe(false);
+    expect(Math.max(...placed.map((item) => item.position.x)) - Math.min(...placed.map((item) => item.position.x))).toBeLessThan(800);
+});
+
+test("changed group member avoids old siblings but does not move them", () => {
+    const group = { ...node("group", -24, -52, CanvasNodeType.Group), width: 280, height: 190 };
+    const old = node("old", 0, 0, CanvasNodeType.Text, "group");
+    const changed = node("changed", 0, 0, CanvasNodeType.Image, "group");
+    const external = node("external", 500, 0);
+    const nodes = [group, old, changed, external];
+    const placed = autoLayoutCanvasChanges(nodes, [{ id: "edge", fromNodeId: "old", toNodeId: "changed" }], ["changed"]);
+    expect(placed[1]).toBe(old);
+    expect(placed[3]).toBe(external);
+    expect(placed[2].metadata?.groupId).toBe("group");
+    expect(overlaps(placed[1], placed[2])).toBe(false);
+    expect(placed[0].position.x + placed[0].width).toBeGreaterThanOrEqual(placed[2].position.x + placed[2].width);
+    expect(placed[2].width).toBe(changed.width);
+    expect(placed[2].height).toBe(changed.height);
+});
+
+test("new group and all its members move together, leaving fixed nodes untouched", () => {
+    const fixed = node("fixed", 0, 0);
+    const group = { ...node("group", -24, -52, CanvasNodeType.Group), width: 150, height: 150 };
+    const a = node("a", 0, 0, CanvasNodeType.Text, "group");
+    const b = node("b", 0, 0, CanvasNodeType.Text, "group");
+    const placed = autoLayoutCanvasChanges([fixed, group, a, b], [{ id: "ab", fromNodeId: "a", toNodeId: "b" }], ["group", "a", "b"]);
+    expect(placed[0]).toBe(fixed);
+    expect(overlaps(placed[1], fixed)).toBe(false);
+    expect(overlaps(placed[2], placed[3])).toBe(false);
+    expect(placed[1].position.x).toBeLessThanOrEqual(Math.min(placed[2].position.x, placed[3].position.x));
+    expect(placed[1].position.x + placed[1].width).toBeGreaterThanOrEqual(placed[3].position.x + placed[3].width);
+});
+
+test("an empty turn or group-only change does not trigger node movement", () => {
+    const group = { ...node("group", -24, -52, CanvasNodeType.Group), width: 280, height: 190 };
+    const member = node("member", 0, 0, CanvasNodeType.Text, "group");
+    const nodes = [group, member];
+    expect(autoLayoutCanvasChanges(nodes, [], [])).toBe(nodes);
+    expect(autoLayoutCanvasChanges(nodes, [], ["group"])).toBe(nodes);
+    expect(autoLayoutCanvasChanges(nodes, [], ["missing"])).toBe(nodes);
+});
+
+test("a chain across two old groups keeps changed members in their own containers", () => {
+    const left = { ...node("left-group", -24, -52, CanvasNodeType.Group), width: 300, height: 190 };
+    const right = { ...node("right-group", 476, -52, CanvasNodeType.Group), width: 300, height: 190 };
+    const a = node("a", 0, 0, CanvasNodeType.Text, left.id);
+    const b = node("b", 500, 0, CanvasNodeType.Image, right.id);
+    const oldLeft = node("old-left", 0, 200);
+    const oldRight = node("old-right", 500, 200);
+    const nodes = [left, right, oldLeft, oldRight, a, b];
+    const placed = autoLayoutCanvasChanges(nodes, [{ id: "ab", fromNodeId: "a", toNodeId: "b" }], ["a", "b"]);
+    expect(placed.slice(0, 4)).toEqual(nodes.slice(0, 4));
+    expect(placed[0]).toBe(left);
+    expect(placed[1]).toBe(right);
+    expect(placed[2]).toBe(oldLeft);
+    expect(placed[3]).toBe(oldRight);
+    expect(placed[4].position.x).toBeGreaterThanOrEqual(left.position.x);
+    expect(placed[4].position.x + placed[4].width).toBeLessThanOrEqual(left.position.x + left.width);
+    expect(placed[5].position.x).toBeGreaterThanOrEqual(right.position.x);
+    expect(placed[5].position.x + placed[5].width).toBeLessThanOrEqual(right.position.x + right.width);
+});
+
+test("a new group stays atomic when its two members link through an outside node", () => {
+    const group = { ...node("group", -24, -52, CanvasNodeType.Group), width: 200, height: 160 };
+    const a = node("a", 0, 0, CanvasNodeType.Text, group.id);
+    const b = node("b", 0, 0, CanvasNodeType.Text, group.id);
+    const outside = node("outside", 0, 0);
+    const edges: CanvasConnection[] = [
+        { id: "ao", fromNodeId: "a", toNodeId: "outside" },
+        { id: "ob", fromNodeId: "outside", toNodeId: "b" },
+    ];
+    const placed = autoLayoutCanvasChanges([group, a, b, outside], edges, ["group", "a", "b", "outside"]);
+    expect(overlaps(placed[0], placed[3])).toBe(false);
+    expect(overlaps(placed[1], placed[2])).toBe(false);
+    expect(placed[1].position.x).toBeGreaterThanOrEqual(placed[0].position.x);
+    expect(placed[2].position.x + placed[2].width).toBeLessThanOrEqual(placed[0].position.x + placed[0].width);
+    expect(autoLayoutCanvasChanges(placed, edges, ["group", "a", "b", "outside"]).map((item) => item.position)).toEqual(placed.map((item) => item.position));
+});
+
+test("a large Agent batch leaves an existing collection untouched", () => {
+    const fixed = Array.from({ length: 80 }, (_, index) => node(`fixed-${index}`, index % 10 * 240, Math.floor(index / 10) * 160));
+    const incoming = Array.from({ length: 30 }, (_, index) => node(`new-${index}`, 0, 0));
+    const edges = incoming.map((item, index) => ({ id: item.id, fromNodeId: index ? incoming[index - 1].id : fixed[0].id, toNodeId: item.id }));
+    const placed = autoLayoutCanvasChanges([...fixed, ...incoming], edges, incoming.map((item) => item.id));
+    for (let index = 0; index < fixed.length; index += 1) expect(placed[index]).toBe(fixed[index]);
+    for (let index = 1; index < incoming.length; index += 1) {
+        expect(placed[fixed.length + index].position.x).toBeGreaterThan(placed[fixed.length + index - 1].position.x);
+    }
+    for (const item of placed.slice(fixed.length)) for (const obstacle of fixed) expect(overlaps(item, obstacle)).toBe(false);
 });
