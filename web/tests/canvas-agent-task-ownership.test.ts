@@ -30,3 +30,17 @@ test("MCP layout and primary selection keep recovery while a copied node cannot 
     const copied = applyCanvasAgentOps(snapshot, [{ type: "add_node", id: "copied", nodeType: "text", metadata: snapshot.nodes[0].metadata }]);
     expect(copied.nodes[1].metadata!.generationTask).toBeUndefined();
 });
+
+test("MCP batch placement resolves new-node collisions but leaves manual moves intact", () => {
+    const result = applyCanvasAgentOps(snapshot, [
+        { type: "add_node", id: "first", nodeType: "text", position: { x: 0, y: 0 }, width: 240, height: 180 },
+        { type: "add_node", id: "second", nodeType: "text", position: { x: 0, y: 0 }, width: 240, height: 180 },
+        { type: "update_node", id: "node", patch: { position: { x: 40, y: 50 } } },
+    ]);
+    const [moved, first, second] = result.nodes;
+    expect(moved.position).toEqual({ x: 40, y: 50 });
+    const intersects = (a: typeof moved, b: typeof moved) => a.position.x < b.position.x + b.width && a.position.x + a.width > b.position.x && a.position.y < b.position.y + b.height && a.position.y + a.height > b.position.y;
+    expect(intersects(first, moved)).toBe(false);
+    expect(intersects(second, moved)).toBe(false);
+    expect(intersects(first, second)).toBe(false);
+});
