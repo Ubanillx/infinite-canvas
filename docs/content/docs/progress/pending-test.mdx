@@ -5,6 +5,17 @@ description: Implemented changes that still need manual verification
 
 # Pending Tests
 
+## 图片下载统一处理
+
+- 画布工具栏、多图展开后的主图与候选图、生图工作台以及素材库共用下载逻辑：优先读取当前工作区的已保存原图；未保存的远程链接通过现有同源媒体代理读取，Data URL、Blob URL 与二进制 Blob 均以文件下载，不再把供应商 URL 直接交给浏览器打开。
+- 图片后缀按实际文件格式确定，保留原始字节与中文文件名。下载失败、空响应或非图片响应显示下载失败提示，不退回打开远程网页；无法识别签名的图片先经浏览器解码校验，避免把误标为 `image/png` 的 HTML 当成图片下载，同时保留 SVG 下载支持。
+- 已通过现有 `dev:browse` 在独立浏览器验证远程链接、Data URL、Blob URL、二进制和已保存图片共 5 种来源：下载字节一致、后缀正确，页面与标签数量不变；已保存图片不读取过期供应商链接且携带工作区请求头；过期链接、HTML 和空响应均被拒绝。403 为模拟过期响应的预期结果。
+- 独立 Agent 代码质量 QA 发现并修复了 HTML 误标图片 MIME 后仍被下载的问题；修复后独立浏览器复核确认伪装 PNG 被拒绝且不触发下载，合法 SVG 仍下载为 `.svg` 并保持字节一致，未发现其他确定的功能缺陷。
+- 真实按钮 E2E 已覆盖画布主图工具栏、多图展开后的候选图、生图工作台历史结果的「下载原图」、素材卡片和详情抽屉；远程链接与已保存图片分别验证，检查原始字节、中文文件名、实际后缀、不跳转和不新增标签，已保存图片不得请求供应商链接。候选图使用与主图不同的 SVG，防止误下载主图。
+- 手机测试发现并修复了图片组操作仅在鼠标悬停时启用的问题；无悬停能力的设备直接显示并启用主图下载和候选图操作。
+- `bun scripts/local.mjs e2e image-download.spec.ts --workers=1` 最终运行桌面与手机各 12 项、共 24 项通过，其中真实按钮用例 16 项、服务与持久化回归 8 项；数据库、对象存储与配置目录均隔离，Agent 连接和生成任务提交被测试拦截，未调用付费模型。未构建、检查类型或运行全仓库 E2E 套件。
+- 待验收：在真实供应商结果中检查主图、多图候选、生图工作台与素材库的 PNG/JPEG/WebP 下载；供应商链接失效后，已保存图片仍应下载成功，未保存图片应提示失败且不跳转页面。
+
 ## Canvas automatic layout and collision avoidance
 
 - Codex and Pi live turn completion now triggers automatic layout of that turn's added or edited nodes. Multiple tool calls accumulate into one layout; unchanged nodes, including siblings in an existing group, remain fixed. Existing upstream/downstream nodes guide placement. Only group container bounds may expand to include changed members. Replay and duplicate completion must not trigger a new layout; turn ownership is isolated by workspace, project, engine and thread.
