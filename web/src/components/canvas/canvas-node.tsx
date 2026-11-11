@@ -510,7 +510,7 @@ function GroupNodeContent({ node, theme, groupChildCount }: NodeContentRendererP
     const { t } = useTranslation();
     return (
         <div className="pointer-events-none flex h-full w-full p-3">
-            <div className="flex h-7 max-w-full items-center gap-2 px-1 text-xs font-medium" style={{ color: theme.node.text }}>
+            <div className="flex h-7 max-w-full items-center gap-2 px-1 text-xs font-medium" style={{ color: theme.node.text, background: theme.canvas.background }}>
                 <Group className="size-3.5 shrink-0" style={{ color: theme.node.muted }} />
                 <span className="truncate">{node.title || t("canvas.node.group")}</span>
                 <span className="shrink-0 text-[11px] font-normal" style={{ color: theme.node.muted }}>

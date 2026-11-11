@@ -1,5 +1,5 @@
 import type { CSSProperties, ReactNode } from "react";
-import { Group, ScanText, Ungroup } from "lucide-react";
+import { Group, LayoutDashboard, ScanText, Ungroup } from "lucide-react";
 import { Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
@@ -19,6 +19,7 @@ export function CanvasSelectionToolbar({
     onGroup,
     onUngroup,
     onReversePrompt,
+    onAutoLayout,
 }: {
     nodes: CanvasNodeData[];
     viewport: ViewportTransform;
@@ -28,10 +29,11 @@ export function CanvasSelectionToolbar({
     onGroup: () => void;
     onUngroup: () => void;
     onReversePrompt: () => void;
+    onAutoLayout: () => void;
 }) {
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
-    if (nodes.length < 2) return null;
+    if (nodes.length < 2 && nodes[0]?.type !== CanvasNodeType.Group) return null;
 
     const bounds = nodeBounds(nodes);
     const left = viewport.x + bounds.left * viewport.k - SELECTION_PAD;
@@ -39,7 +41,7 @@ export function CanvasSelectionToolbar({
     const width = (bounds.right - bounds.left) * viewport.k + SELECTION_PAD * 2;
     const height = (bounds.bottom - bounds.top) * viewport.k + SELECTION_PAD * 2;
     const imageCount = nodes.filter((node) => node.type === CanvasNodeType.Image && node.metadata?.content).length;
-    const showActions = showToolbar && (canGroup || canUngroup || imageCount > 1);
+    const showActions = showToolbar;
 
     return (
         <>
@@ -67,6 +69,7 @@ export function CanvasSelectionToolbar({
                     onPointerDown={(event) => event.stopPropagation()}
                     data-canvas-selection-toolbar
                 >
+                    <SelectionAction title={t("canvas.layout.selectionHint")} label={t("canvas.layout.selection")} icon={<LayoutDashboard className="size-4" />} onClick={onAutoLayout} />
                     {imageCount > 1 ? <SelectionAction title={t("canvas.reversePrompt.selectionTitle", { count: imageCount })} label={t("canvas.reversePrompt.selectionAction")} description={t("canvas.reversePrompt.selectionSummary", { count: imageCount })} icon={<ScanText className="size-4" />} onClick={onReversePrompt} /> : null}
                     {canGroup ? <SelectionAction title={t("canvas.nodeToolbar.groupTitle")} label={t("canvas.nodeToolbar.group")} icon={<Group className="size-4" />} onClick={onGroup} /> : null}
                     {canUngroup ? <SelectionAction title={t("canvas.nodeToolbar.ungroupTitle")} label={t("canvas.nodeToolbar.ungroup")} icon={<Ungroup className="size-4" />} onClick={onUngroup} /> : null}

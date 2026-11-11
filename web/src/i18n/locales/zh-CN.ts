@@ -514,6 +514,7 @@ export default {
         openAgent: "打开 AI 助手面板",
         aiAssistant: "AI 助手",
         nodeTypes: { image: "图片", text: "文本", config: "生成配置", video: "视频", audio: "音频", group: "分组" },
+        layout: { all: "自动排版", allHint: "按连线整理整个画布，可撤销", selection: "排版选区", selectionHint: "按连线整理所选节点，分组整体参与，可撤销", done: "已完成自动排版，可撤销", unchanged: "节点已排列整齐" },
         toolbar: {
             select: "选择", pan: "平移", focus: "聚焦选区", text: "文本", image: "图片", video: "视频", audio: "音频", config: "生成配置", group: "分组", extensions: "扩展节点", upload: "上传素材", appearance: "画布外观", clear: "清空画布",
             themeMode: "主题模式", light: "浅色", dark: "深色", gridStyle: "网格样式", dots: "点阵", lines: "网格线", blank: "空白", imageInfo: "图片信息",

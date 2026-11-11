@@ -514,6 +514,7 @@ export default {
         openAgent: "Open AI Assistant panel",
         aiAssistant: "AI Assistant",
         nodeTypes: { image: "Image", text: "Text", config: "Generation config", video: "Video", audio: "Audio", group: "Group" },
+        layout: { all: "Auto layout", allHint: "Arrange the entire canvas by connections; undo is available", selection: "Arrange selection", selectionHint: "Arrange selected nodes by connections, including their groups; undo is available", done: "Layout applied; undo is available", unchanged: "Nodes are already arranged" },
         toolbar: {
             select: "Select", pan: "Move", focus: "Center focus", text: "Text", image: "Image", video: "Video", audio: "Audio", config: "Generation config", group: "Group", extensions: "Extension nodes", upload: "Upload assets", appearance: "Canvas appearance", clear: "Clear canvas",
             themeMode: "Theme", light: "Light", dark: "Dark", gridStyle: "Grid style", dots: "Dots", lines: "Lines", blank: "Blank", imageInfo: "Image info",

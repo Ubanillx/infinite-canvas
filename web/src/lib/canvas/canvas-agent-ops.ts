@@ -1,6 +1,7 @@
 import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
+import { expandCanvasGroups, placeCanvasNodes } from "@/lib/canvas/canvas-node-placement";
 import { getNodeSpec, isRegisteredNodeType } from "@/lib/canvas/node-registry";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasNodeMetadata, type CanvasNodeTypeId, type ViewportTransform } from "@/types/canvas";
 
@@ -39,6 +40,7 @@ export function applyCanvasAgentOps(snapshot: CanvasAgentSnapshot, ops?: CanvasA
     let connections = snapshot.connections;
     let selectedNodeIds = snapshot.selectedNodeIds;
     let viewport = snapshot.viewport;
+    const addedIds = new Set<string>();
 
     (Array.isArray(ops) ? ops : []).forEach((op, index) => {
         if (!op?.type) return;
@@ -55,6 +57,7 @@ export function applyCanvasAgentOps(snapshot: CanvasAgentSnapshot, ops?: CanvasA
                 metadata: { ...spec.metadata, ...op.metadata, generationTask: undefined },
             };
             nodes = [...nodes, node];
+            addedIds.add(node.id);
             selectedNodeIds = [node.id];
         }
         if (op.type === "update_node") {
@@ -86,6 +89,13 @@ export function applyCanvasAgentOps(snapshot: CanvasAgentSnapshot, ops?: CanvasA
         if (op.type === "set_viewport" && op.viewport) viewport = op.viewport;
         if (op.type === "select_nodes") selectedNodeIds = (op.ids || []).filter((id) => nodes.some((node) => node.id === id));
     });
+
+    if (addedIds.size) {
+        const placed = placeCanvasNodes(nodes.filter((node) => !addedIds.has(node.id)), nodes.filter((node) => addedIds.has(node.id)));
+        const byId = new Map(placed.map((node) => [node.id, node]));
+        const groupIds = new Set(placed.flatMap((node) => [node.metadata?.groupId, node.type === CanvasNodeType.Group ? node.id : undefined].filter((id): id is string => Boolean(id))));
+        nodes = expandCanvasGroups(nodes.map((node) => byId.get(node.id) || node), groupIds);
+    }
 
     return { ...snapshot, nodes, connections, selectedNodeIds, viewport };
 }

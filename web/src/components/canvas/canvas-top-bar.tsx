@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, BookOpen, Bot, Download, Home, Images, LayoutTemplate, Menu, PanelLeftClose, PanelLeftOpen, Plus, Redo2, RefreshCw, Save, Scan, Trash2, Undo2, Upload } from "lucide-react";
+import { ArrowLeft, BookOpen, Bot, Download, Home, Images, LayoutDashboard, LayoutTemplate, Menu, PanelLeftClose, PanelLeftOpen, Plus, Redo2, RefreshCw, Save, Scan, Trash2, Undo2, Upload } from "lucide-react";
 import { Button, Dropdown, Modal, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
@@ -34,6 +34,8 @@ export function CanvasTopBar({
     onOpenPlugins,
     onUndo,
     onRedo,
+    onAutoLayout,
+    canAutoLayout,
     agentOpen,
     compactAgentStatus,
     onToggleAgent,
@@ -60,6 +62,8 @@ export function CanvasTopBar({
     onOpenPlugins: () => void;
     onUndo: () => void;
     onRedo: () => void;
+    onAutoLayout: () => void;
+    canAutoLayout: boolean;
     agentOpen: boolean;
     compactAgentStatus: { connected: boolean; enabled: boolean; activity: string; engine: "codex" | "pi" };
     onToggleAgent: () => void;
@@ -165,6 +169,12 @@ export function CanvasTopBar({
 
                 <div className="pointer-events-auto ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1.5">
                     <ReadOnlyWorkspaceActions variant="canvas" />
+                    <Tooltip title={t("canvas.layout.allHint")}>
+                        <button type="button" onClick={onAutoLayout} disabled={readOnly || !canAutoLayout} aria-label={t("canvas.layout.all")} className="flex h-7 items-center gap-1.5 rounded-md px-1.5 transition hover:bg-black/5 disabled:opacity-35 dark:hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-offset-2" style={{ color: theme.node.text }}>
+                            <LayoutDashboard className="size-4" />
+                            <span className="hidden text-xs sm:inline">{t("canvas.layout.all")}</span>
+                        </button>
+                    </Tooltip>
                     <Dropdown trigger={["click"]} placement="bottomRight" menu={{ items: [
                         { key: "template", disabled: readOnly, icon: <Save className="size-4" />, label: t("canvas.templates.v2.saveAsNew"), onClick: onSaveTemplate },
                         { key: "template-selection", disabled: !onSaveSelectionTemplate || readOnly, icon: <Scan className="size-4" />, label: t("canvas.templates.v2.saveSelection"), onClick: onSaveSelectionTemplate },

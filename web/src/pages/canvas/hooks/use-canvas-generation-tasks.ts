@@ -3,6 +3,7 @@ import { flushSync } from "react-dom";
 import { nanoid } from "nanoid";
 import { getActiveWorkspace } from "@/lib/workspace";
 import { hydrateCanvasTaskOutputDimensions, matchesCanvasTask, projectCanvasTask } from "@/lib/canvas/canvas-generation-tasks";
+import { avoidCanvasNodeOverlap } from "@/lib/canvas/canvas-node-placement";
 import { uploadImage } from "@/services/image-storage";
 import { uploadMediaFile } from "@/services/file-storage";
 import { getGenerationTask, getGenerationTaskByRequestId, listCanvasGenerationTasks, submitGenerationTask } from "@/services/api/generation-tasks";
@@ -25,7 +26,17 @@ export function useCanvasGenerationTasks({ projectId, loaded, nodes, nodesRef, c
     const current = useCallback(() => active.current && Boolean(workspaceId) && getActiveWorkspace()?.id === workspaceId, [workspaceId]);
     const owns = useCallback((binding: CanvasGenerationTaskBinding) => current() && !invalidated.current.has(binding.requestId) && binding.workspaceId === workspaceId && binding.projectId === projectId && nodesRef.current.some((node) => matchesCanvasTask(node, binding)), [current, nodesRef, projectId, workspaceId]);
     const update = useCallback((binding: CanvasGenerationTaskBinding, transform: (node: CanvasNodeData) => CanvasNodeData) => {
-        if (owns(binding)) setNodes((items) => current() && !invalidated.current.has(binding.requestId) ? items.map((node) => matchesCanvasTask(node, binding) ? transform(node) : node) : items);
+        if (owns(binding)) setNodes((items) => {
+            if (!current() || invalidated.current.has(binding.requestId)) return items;
+            const resized = new Set<string>();
+            const next = items.map((node) => {
+                if (!matchesCanvasTask(node, binding)) return node;
+                const updated = transform(node);
+                if (updated.width !== node.width || updated.height !== node.height) resized.add(node.id);
+                return updated;
+            });
+            return resized.size ? avoidCanvasNodeOverlap(next, resized) : next;
+        });
     }, [current, owns, setNodes]);
     const interrupted = useCallback((binding: CanvasGenerationTaskBinding, details: string) => {
         update(binding, (node) => {
