@@ -625,6 +625,8 @@ export default {
         workspaceCounts: "{{canvases}} 个画布 · {{folders}} 个文件夹",
         workspaceInfo: "工作区",
         workspaceListError: "列表更新失败，显示上次获取的工作区",
+        readOnlyWorkspace: "只读",
+        returnToOwnWorkspace: "返回我的工作区",
         allWorkspaces: "查看全部工作区",
         newWorkspace: "新建工作区",
         signOut: "退出登录",

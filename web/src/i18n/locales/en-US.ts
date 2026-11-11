@@ -625,6 +625,8 @@ export default {
         workspaceCounts: "{{canvases}} canvases · {{folders}} folders",
         workspaceInfo: "Workspace",
         workspaceListError: "Could not refresh the list; showing the last loaded workspaces",
+        readOnlyWorkspace: "Read-only",
+        returnToOwnWorkspace: "Back to my workspace",
         allWorkspaces: "View all workspaces",
         newWorkspace: "New workspace",
         signOut: "Sign out",

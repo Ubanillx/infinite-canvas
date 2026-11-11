@@ -3,7 +3,7 @@ import { persist, type PersistStorage, type StorageValue } from "zustand/middlew
 
 import { nanoid } from "nanoid";
 import { localForageStorage } from "@/lib/localforage-storage";
-import { workspaceStorageKey } from "@/lib/workspace";
+import { workspaceStorageKey, getActiveWorkspace } from "@/lib/workspace";
 import { loadWorkspaceData, saveWorkspaceData } from "@/services/workspace-data";
 import { cleanupUnusedImages, ensureImagePreview, previewUrlFor, resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { cleanupUnusedMedia, resolveMediaUrl } from "@/services/file-storage";
@@ -48,11 +48,12 @@ const ASSET_STORE_KEY = "infinite-canvas:asset_store";
 
 const assetStorage: PersistStorage<AssetStore> = {
     getItem: async (name) => {
+        const readOnly = getActiveWorkspace()?.role === "viewer";
         const remote = await loadWorkspaceData<StorageValue<AssetStore>>("assets");
         const value = remote ? null : await localForageStorage.getItem(name);
         if (!remote && !value) return null;
         const parsed = remote || JSON.parse(value!) as StorageValue<AssetStore>;
-        if (!remote) {
+        if (!remote && !readOnly) {
             await saveWorkspaceData("assets", parsed);
             await Promise.resolve(localForageStorage.removeItem(name)).catch(() => undefined);
         }
@@ -68,7 +69,7 @@ const assetStorage: PersistStorage<AssetStore> = {
                         data: { ...asset.data, dataUrl: await resolveImageUrl(asset.data.storageKey, asset.data.dataUrl) },
                     };
                 }
-                if (!asset.data.dataUrl.startsWith("data:image/")) return asset;
+                if (readOnly || !asset.data.dataUrl.startsWith("data:image/")) return asset;
                 const image = await uploadImage(asset.data.dataUrl);
                 return { ...asset, coverUrl: asset.coverUrl.startsWith("data:image/") ? image.url : asset.coverUrl, data: { ...asset.data, dataUrl: image.url, storageKey: image.storageKey, bytes: image.bytes, mimeType: image.mimeType } };
             }),
@@ -76,6 +77,7 @@ const assetStorage: PersistStorage<AssetStore> = {
         return parsed;
     },
     setItem: (name, value) => {
+        if (getActiveWorkspace()?.role === "viewer") return;
         void saveWorkspaceData("assets", value).then(() => localForageStorage.removeItem(name)).catch(() => undefined);
     },
     removeItem: (name) => localForageStorage.removeItem(name),

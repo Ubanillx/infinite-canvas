@@ -59,8 +59,11 @@ async function loadWorkspaceDataFor<T>(domain: WorkspaceDomain, workspaceId: str
 }
 
 export function saveWorkspaceData(domain: WorkspaceDomain, payload: unknown, options: { retryable?: boolean } = {}) {
-    const workspaceId = getActiveWorkspace()?.id;
-    if (!workspaceId) return Promise.reject(new Error("未选择工作区，数据未保存"));
+    const workspace = getActiveWorkspace();
+    if (!workspace) return Promise.reject(new Error("未选择工作区，数据未保存"));
+    const workspaceId = workspace.id;
+    // 只读工作区不接受写入，忽略自动保存，避免每次视口或面板变化都触发 403 提示。
+    if (workspace.role === "viewer") return Promise.resolve({ workspaceId, domain, revision: revisions.get(`${workspaceId}:${domain}`) || 0, updatedAt: null });
     const key = `${workspaceId}:${domain}`;
     const previous = writes.get(key) || Promise.resolve();
     const write = previous.catch(() => undefined).then(async () => {

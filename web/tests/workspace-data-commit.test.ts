@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 
-import { saveWorkspaceData, waitForWorkspaceDataSave } from "../src/services/workspace-data";
+import { getWorkspaceDataError, saveWorkspaceData, waitForWorkspaceDataSave } from "../src/services/workspace-data";
 
 let originalFetch: typeof fetch;
 let originalWindow: PropertyDescriptor | undefined;
 let activeWorkspaceId = "";
+let activeWorkspaceRole: "owner" | "editor" | "viewer" = "editor";
 let sequence = 0;
 let requests: Array<{ method: string; workspaceId: string | null; body?: unknown }>;
 let onRequest: (method: string, workspaceId: string | null) => Promise<Response> | Response;
@@ -21,11 +22,12 @@ function response(revision: number) {
 beforeEach(() => {
     originalFetch = globalThis.fetch;
     originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    activeWorkspaceRole = "editor";
     requests = [];
     Object.defineProperty(globalThis, "window", {
         configurable: true,
         value: {
-            localStorage: { getItem: (key: string) => key === "infinite-canvas:active-workspace" ? JSON.stringify({ id: activeWorkspaceId, name: "Test", role: "editor" }) : null },
+            localStorage: { getItem: (key: string) => key === "infinite-canvas:active-workspace" ? JSON.stringify({ id: activeWorkspaceId, name: "Test", role: activeWorkspaceRole }) : null },
             dispatchEvent: () => true,
         },
     });
@@ -66,6 +68,15 @@ test("403 and 409 never return a successful receipt", async () => {
     workspace();
     onRequest = (method) => method === "GET" ? Response.json({ payload: null, revision: 2 }) : Response.json({ error: "冲突", payload: {}, revision: 3 }, { status: 409 });
     await expect(saveWorkspaceData("canvas-templates", { templates: [] })).rejects.toThrow("冲突");
+});
+
+test("viewer workspaces skip writes instead of surfacing a 403", async () => {
+    activeWorkspaceRole = "viewer";
+    const id = workspace();
+    const commit = await saveWorkspaceData("canvas", { state: { projects: [] } });
+    expect(commit).toEqual({ workspaceId: id, domain: "canvas", revision: 0, updatedAt: null });
+    expect(requests).toEqual([]);
+    expect(getWorkspaceDataError()).toBeNull();
 });
 
 test("a queued write retains its initial workspace and successful receipt after switching", async () => {

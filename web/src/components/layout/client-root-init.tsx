@@ -90,7 +90,7 @@ function ReadyClientRoot({ children }: { children: ReactNode }) {
 
     return <>
         {children}
-        {saveError || preferenceSaveError || workspaceError ? <div className="fixed left-4 right-4 top-4 z-[1100] flex flex-col gap-2 sm:left-auto sm:max-w-md">
+        {saveError || preferenceSaveError || workspaceError ? <div className="fixed left-4 right-4 top-28 z-[900] flex flex-col gap-2 sm:left-1/2 sm:right-auto sm:top-20 sm:w-[28rem] sm:max-w-[calc(100vw-2rem)] sm:-translate-x-1/2">
             {saveError ? <Alert type="error" showIcon message={t("config.serverStorage.saveFailed")} description={saveError} action={<Button size="small" onClick={retryServerConfigSave}>{t("common.retry")}</Button>} /> : null}
             {preferenceSaveError ? <Alert type="error" showIcon message={t("config.personalPreferences.saveFailed")} description={preferenceSaveError} action={<Button size="small" onClick={retryUserPreferencesSave}>{t("common.retry")}</Button>} /> : null}
             {workspaceError ? <Alert type="error" showIcon message={workspaceError.mode === "conflict" ? t("conflict.dataConflict") : t("conflict.dataUnsaved")} description={workspaceError.message} action={<Button size="small" onClick={retryWorkspaceData}>{workspaceError.mode === "conflict" ? t("conflict.refresh") : t("common.retry")}</Button>} /> : null}

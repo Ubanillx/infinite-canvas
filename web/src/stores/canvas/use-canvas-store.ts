@@ -91,6 +91,7 @@ export function flushCanvasSave(workspaceId: string) {
 
 const canvasStorage: PersistStorage<CanvasStore> = {
     getItem: async (name) => {
+        const readOnly = getActiveWorkspace()?.role === "viewer";
         const remote = await loadWorkspaceData<StorageValue<CanvasStore>>("canvas");
         if (remote) {
             const normalized = normalizeCanvasStorageValue(remote);
@@ -108,12 +109,15 @@ const canvasStorage: PersistStorage<CanvasStore> = {
         }
         const normalized = normalizeCanvasStorageValue(parsed);
         if (!normalized) throw new Error("画布本地数据格式未知或损坏，未覆盖原数据");
-        await saveWorkspaceData("canvas", normalized);
-        await Promise.resolve(localForageStorage.removeItem(name)).catch(() => undefined);
+        if (!readOnly) {
+            await saveWorkspaceData("canvas", normalized);
+            await Promise.resolve(localForageStorage.removeItem(name)).catch(() => undefined);
+        }
         queuedPersistState = normalized.state as PersistedCanvasState;
         return normalized;
     },
     setItem: (name, value) => {
+        if (getActiveWorkspace()?.role === "viewer") return;
         const nextState = value.state as PersistedCanvasState;
         if (queuedPersistState && queuedPersistState.projects === nextState.projects && queuedPersistState.folders === nextState.folders && queuedPersistState.deletedProjects === nextState.deletedProjects) return;
         queuedPersistState = nextState;

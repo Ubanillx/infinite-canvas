@@ -4,6 +4,7 @@ import { Button, Dropdown, Modal, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { UserStatusActions } from "@/components/layout/user-status-actions";
+import { ReadOnlyWorkspaceActions } from "@/components/layout/read-only-workspace-actions";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useCanvasSidePanelStore } from "@/stores/use-canvas-side-panel-store";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -163,6 +164,7 @@ export function CanvasTopBar({
                 </div>
 
                 <div className="pointer-events-auto ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1.5">
+                    <ReadOnlyWorkspaceActions variant="canvas" />
                     <Dropdown trigger={["click"]} placement="bottomRight" menu={{ items: [
                         { key: "template", disabled: readOnly, icon: <Save className="size-4" />, label: t("canvas.templates.v2.saveAsNew"), onClick: onSaveTemplate },
                         { key: "template-selection", disabled: !onSaveSelectionTemplate || readOnly, icon: <Scan className="size-4" />, label: t("canvas.templates.v2.saveSelection"), onClick: onSaveSelectionTemplate },

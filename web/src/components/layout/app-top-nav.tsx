@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 
 import { navigationTools, type NavigationToolSlug } from "@/constant/navigation-tools";
 import { AppConfigModal } from "@/components/layout/app-config-modal";
+import { ReadOnlyWorkspaceActions } from "@/components/layout/read-only-workspace-actions";
 import { WorkspaceSwitcher } from "@/components/layout/workspace-gate";
 import { MobileNavDrawer } from "@/components/layout/mobile-nav-drawer";
 import { UserStatusActions } from "@/components/layout/user-status-actions";
@@ -65,6 +66,7 @@ export function AppTopNav() {
                                 {t("canvas.aiAssistant")}
                             </Button>
                             <div className={panelOpen ? "hidden xl:block" : "hidden md:block"}><UserStatusActions showConfig={false} /></div>
+                            <ReadOnlyWorkspaceActions />
                             <WorkspaceSwitcher />
                         </div>
                     </div>
