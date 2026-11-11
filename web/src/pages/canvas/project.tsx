@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { ReactNode, ChangeEvent as ReactChangeEvent, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Group, Video } from "lucide-react";
-import { saveAs } from "file-saver";
+import { useMediaDownload } from "@/hooks/use-media-download";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 
@@ -73,7 +73,6 @@ import {
     hasResumableVideoTask,
     hydrateAssistantImages,
     hydrateCanvasImages,
-    imageExtension,
     isAudioFile,
     isGenerationCanceled,
     resetInterruptedGeneration,
@@ -207,6 +206,7 @@ function measureFocusFrame(container: HTMLDivElement | null, nodeId: string) {
 function InfiniteCanvasPage() {
     const { message, modal } = App.useApp();
     const { t } = useTranslation();
+    const downloadMedia = useMediaDownload();
     // Subscribe to the registry version so plugin registration changes rerender the canvas.
     const nodeRegistryVersion = useNodeRegistryVersion((state) => state.version);
     const params = useParams<{ id: string }>();
@@ -2006,14 +2006,15 @@ function InfiniteCanvasPage() {
 
     const downloadNodeImage = useCallback((node: CanvasNodeData) => {
         if ((node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) || !node.metadata?.content) return;
-        saveAs(node.metadata.content, `canvas-${node.type}-${node.id}.${node.type === CanvasNodeType.Video ? "mp4" : node.type === CanvasNodeType.Audio ? audioExtension(node.metadata.mimeType) : imageExtension(node.metadata.content)}`);
-    }, []);
+        const kind = node.type === CanvasNodeType.Video ? "video" : node.type === CanvasNodeType.Audio ? "audio" : "image";
+        void downloadMedia({ url: node.metadata.content, storageKey: node.metadata.storageKey, kind }, `canvas-${node.type}-${node.id}.${kind === "video" ? "mp4" : kind === "audio" ? audioExtension(node.metadata.mimeType) : "png"}`);
+    }, [downloadMedia]);
 
     const downloadBatchImage = useCallback((node: CanvasNodeData, imageId: string) => {
         const image = node.metadata?.images?.find((item) => item.id === imageId);
         if (!image?.content) return;
-        saveAs(image.content, `canvas-image-${node.id}-${image.id}.${imageExtension(image.content)}`);
-    }, []);
+        void downloadMedia({ url: image.content, storageKey: image.storageKey, kind: "image" }, `canvas-image-${node.id}-${image.id}.png`);
+    }, [downloadMedia]);
 
     const captureVideoNodeFrame = useCallback(
         async (nodeId: string, position: VideoFramePosition) => {

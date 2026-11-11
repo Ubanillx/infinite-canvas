@@ -1,14 +1,12 @@
 import { Copy, Download, FileUp, PencilLine, Plus, Search, Trash2, Upload } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { App, Button, Card, Drawer, Empty, Form, Image, Input, Modal, Pagination, Select, Space, Tag, Typography } from "antd";
-import { saveAs } from "file-saver";
 import { useTranslation } from "react-i18next";
 
 import { useCopyText } from "@/hooks/use-copy-text";
+import { useMediaDownload } from "@/hooks/use-media-download";
 import { formatBytes, readFileAsDataUrl } from "@/lib/image-utils";
-import { getMediaBlob } from "@/services/file-storage";
-import { getImageBlob, getImagePreviewRevision, subscribeImagePreviews, uploadImage } from "@/services/image-storage";
-import { remoteMediaUrl } from "@/services/api/remote-media";
+import { getImagePreviewRevision, subscribeImagePreviews, uploadImage } from "@/services/image-storage";
 import { assetCoverUrl, useAssetStore, type Asset, type AssetKind, type ImageAsset } from "@/stores/use-asset-store";
 import { exportAssets, readAssetPackage } from "./asset-transfer";
 
@@ -30,6 +28,7 @@ export default function AssetsPage() {
     const { message } = App.useApp();
     const { t } = useTranslation();
     const copyText = useCopyText();
+    const downloadMedia = useMediaDownload();
     const [form] = Form.useForm<AssetFormValues>();
     const coverInputRef = useRef<HTMLInputElement>(null);
     const imageInputRef = useRef<HTMLInputElement>(null);
@@ -150,17 +149,8 @@ export default function AssetsPage() {
 
     const downloadImage = async (asset: Asset) => {
         if (asset.kind !== "image" && asset.kind !== "video") return;
-        try {
-            const blob = await readAssetMediaBlob(asset);
-            if (!blob) {
-                message.error(t("assets.downloadFailed"));
-                return;
-            }
-            const ext = asset.data.mimeType?.split("/")[1]?.split("+")[0] || (asset.kind === "video" ? "mp4" : "png");
-            saveAs(blob, `${asset.title || "asset"}.${ext}`);
-        } catch {
-            message.error(t("assets.downloadFailed"));
-        }
+        const ext = asset.data.mimeType?.split("/")[1]?.split("+")[0] || (asset.kind === "video" ? "mp4" : "png");
+        await downloadMedia({ url: asset.kind === "video" ? asset.data.url : asset.data.dataUrl || asset.coverUrl, storageKey: asset.data.storageKey, kind: asset.kind }, `${asset.title || "asset"}.${ext}`);
     };
 
     const exportAllAssets = async () => {
@@ -487,18 +477,6 @@ function AssetDrawer({ asset, onClose, onCopy, onDownload }: { asset: Asset | nu
             ) : null}
         </Drawer>
     );
-}
-
-async function readAssetMediaBlob(asset: Extract<Asset, { kind: "image" | "video" }>) {
-    const storageKey = asset.data.storageKey;
-    if (storageKey) {
-        const stored = asset.kind === "image" ? await getImageBlob(storageKey) : await getMediaBlob(storageKey);
-        if (stored) return stored;
-    }
-    const url = asset.kind === "video" ? asset.data.url : asset.data.dataUrl || asset.coverUrl;
-    if (!url) return null;
-    const response = await fetch(remoteMediaUrl(url));
-    return response.ok ? response.blob() : null;
 }
 
 function assetSummary(asset: Asset) {

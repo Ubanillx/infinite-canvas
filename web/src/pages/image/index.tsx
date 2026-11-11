@@ -2,7 +2,7 @@ import { BookOpen, CheckSquare, ClipboardPaste, Download, FolderPlus, History, I
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { App, Button, Checkbox, ConfigProvider, Drawer, Image, Input, Modal, Tag, Tooltip, Typography } from "antd";
 import localforage from "localforage";
-import { saveAs } from "file-saver";
+import { useMediaDownload } from "@/hooks/use-media-download";
 import { useTranslation } from "react-i18next";
 
 import { ReferenceOrderButtons } from "@/components/workbench/reference-order-buttons";
@@ -82,6 +82,7 @@ const logStore = localforage.createInstance({ name: "infinite-canvas", storeName
 export default function ImagePage() {
     const { message } = App.useApp();
     const { t } = useTranslation();
+    const downloadMedia = useMediaDownload();
     useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const dragDepthRef = useRef(0);
@@ -298,7 +299,7 @@ export default function ImagePage() {
     }, [autoRunToken]);
 
     const downloadImage = (image: GeneratedImage, index: number) => {
-        saveAs(image.dataUrl, `image-${index + 1}.png`);
+        void downloadMedia({ url: image.dataUrl, storageKey: image.storageKey, kind: "image" }, `image-${index + 1}.png`);
     };
 
     const addResultToReferences = async (image: GeneratedImage, index: number) => {
