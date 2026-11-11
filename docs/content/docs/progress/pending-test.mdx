@@ -5,6 +5,11 @@ description: Implemented changes that still need manual verification
 
 # Pending Tests
 
+## WebDAV backup upload stall
+
+- `putWebdavStream` now uploads with native `fetch` and a streamed body instead of Bun's `node:http` client. Bun 1.3.13 stops consuming a streamed request body once its write buffer fills and never emits `drain`, so media uploads stalled permanently at the same progress; the deployed backup stopped at media 37/46 and an earlier scheduled run hung for 15 hours until cancelled.
+- A regression test now requires a fake WebDAV server to receive a complete 5 MiB multi-chunk PUT; the focused WebDAV suite passes on Bun 1.3.13 (7 tests) and the full Web server test set passes (178 passed, 17 skipped). Real deployment acceptance is pending: rebuild and redeploy, cancel the stuck task, start a manual backup, and confirm both workspaces complete and a restorable snapshot appears.
+
 ## WebDAV cancellation and snapshot preservation
 
 - The standalone E2E server rejects missing/default configuration directories before starting services; both isolated startup rejection tests passed. Independent read-only QA found no remaining blocker in this scoped fix. Database cancellation is checked before commit but is not an atomic guarantee against cancellation racing with COMMIT.
@@ -548,6 +553,7 @@ description: Implemented changes that still need manual verification
 
 - The header clearly shows the current workspace. Long names and narrow screens should not crowd adjacent controls. Clicking opens a text-only, neutral popover beneath the header. The current row uses a subtle background, slim marker, and “Current” label. Counts and recent canvas names come only from the server; a refresh failure explains that cached entries are shown.
 - Selecting another workspace reloads the page with its data. “View all workspaces” opens the full-screen selector, while “New workspace” opens creation directly. Both footer actions should use equal-height neutral styling with readable 14px text, subtle hover and visible focus in either theme, without a bright blank block in dark mode. Check keyboard opening, tab order and Escape, and positioning with the Agent panel open.
+- Entering another workspace as a read-only admin must not trigger workspace save requests from canvas, assets or workbench autosave, and no “Workspace data was not saved” alert should appear. Save-error alerts now sit at the top center below the header and beneath the workspace switcher panel, so they cannot cover workspace switching. The header and canvas top bar show “Read-only · Back to my workspace”, collapsing to a return icon on narrow screens; returning picks a writable workspace or the workspace selector when none exists. Verify multi-page navigation, canvas zoom and drag before returning, and that real save errors in writable workspaces still appear.
 
 ## Canvas Creation
 
