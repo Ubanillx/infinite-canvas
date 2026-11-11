@@ -5,6 +5,13 @@ description: Implemented changes that still need manual verification
 
 # Pending Tests
 
+## Canvas automatic layout and collision avoidance
+
+- The top bar provides whole-canvas automatic layout; the selection toolbar arranges selected nodes, including their groups. Connected nodes flow from left to right and independent flows pack into rows. Layout fits the result into view and creates a separate undo entry, preserving connections and media proportions.
+- AI batch creation, local creation and derived results use shared collision avoidance. New nodes avoid existing content; media dimension updates move the affected node or group rather than moving unrelated content. Group containers follow their members. Manual dragging and resizing retain their existing behavior.
+- Focused validation passed 49 tests across layout, placement, Agent operations, generation, focus, templates and reverse prompts. An isolated browser with mocked APIs verified six overlap pairs becoming zero, exact undo/redo, fixed nodes outside the selection, group membership, media proportions and saved-position readback after reload. Independent visual/UX review covered light/dark themes and a 390px viewport; overlapping group toolbars, lingering multi-selection editors and connections obscuring group titles were corrected and rechecked. Mobile whole-canvas overview requires zooming in to read node contents. No build, type check, paid generation or real-workspace write was performed.
+- Acceptance should cover the real furniture canvas, long prompts, mixed media sizes, groups, selection, undo/redo and saved positions after reopening. No paid generation is required for layout acceptance.
+
 ## WebDAV backup upload stall
 
 - `putWebdavStream` now uploads with native `fetch` and a streamed body instead of Bun's `node:http` client. Bun 1.3.13 stops consuming a streamed request body once its write buffer fills and never emits `drain`, so media uploads stalled permanently at the same progress; the deployed backup stopped at media 37/46 and an earlier scheduled run hung for 15 hours until cancelled.
