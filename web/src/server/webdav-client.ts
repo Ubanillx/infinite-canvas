@@ -4,7 +4,6 @@ import https from "node:https";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { addAbortSignal, Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
 
 export type WebdavConfig = { target: URL; directory: string; authorization: string; signal?: AbortSignal };
 export type WebdavStream = { stream: IncomingMessage; contentLength?: number };
@@ -112,14 +111,22 @@ export async function listWebdavDirectory(config: WebdavConfig, path: string) {
 export async function putWebdavStream(config: WebdavConfig, path: string, body: Readable, contentType: string, contentLength: number) {
     try {
         await ensureWebdavDirectory(config, parentPath(path));
-        const response = await webdavRequest(config, path, {
+        // Bun 1.3 的 node:http 客户端在请求体缓冲写满后不再触发 drain，
+        // pipeline 会永久挂起，因此流式上传改用 fetch。
+        const response = await fetch(buildWebdavUrl(config, path), {
             method: "PUT",
-            headers: { "Content-Type": contentType, "Content-Length": String(contentLength) },
-            body,
-            timeoutMs: MEDIA_IDLE_TIMEOUT_MS,
-        });
-        if (!isOk(response)) await throwWebdavError(response, `无法上传 WebDAV 文件 ${path}`);
-        await discardResponse(response);
+            headers: { Authorization: config.authorization, "Content-Type": contentType, "Content-Length": String(contentLength) },
+            body: Readable.toWeb(body),
+            signal: config.signal,
+            duplex: "half",
+        } as RequestInit);
+        if (!response.ok) {
+            const detail = await response.text().catch(() => "");
+            if (response.status === 401 || response.status === 403) throw new Error("WebDAV 认证失败或无权限");
+            if (response.status === 404) throw new Error("WebDAV 路径不存在");
+            throw new Error(`无法上传 WebDAV 文件 ${path}（HTTP ${response.status}${detail ? `: ${detail.slice(0, 120)}` : ""}）`);
+        }
+        await response.arrayBuffer();
     } finally {
         if (!body.readableEnded) body.destroy();
     }
@@ -152,19 +159,17 @@ function parentPath(path: string) {
     return normalizeWebdavPath(path).split("/").slice(0, -1).join("/");
 }
 
-function webdavRequest(config: WebdavConfig, path: string, options: RequestOptions & { method: string; body?: Readable; timeoutMs?: number }) {
+function webdavRequest(config: WebdavConfig, path: string, options: RequestOptions & { method: string; timeoutMs?: number }) {
     config.signal?.throwIfAborted();
     const url = buildWebdavUrl(config, path);
     const requestOptions = { method: options.method, headers: { ...options.headers, Authorization: config.authorization } };
     return new Promise<IncomingMessage>((resolve, reject) => {
         let responseStream: IncomingMessage | undefined;
-        let upload = Promise.resolve();
         const onResponse = (response: IncomingMessage) => {
             responseStream = response;
             response.on("error", reject);
             if (config.signal) addAbortSignal(config.signal, response);
-            if (options.body && isOk(response)) void upload.then(() => resolve(response), reject);
-            else resolve(response);
+            resolve(response);
         };
         const request = url.protocol === "https:" ? https.request(url, requestOptions, onResponse) : http.request(url, requestOptions, onResponse);
         // Explicitly abort as well: Bun's node:http compatibility does not always
@@ -173,7 +178,6 @@ function webdavRequest(config: WebdavConfig, path: string, options: RequestOptio
             const error = config.signal?.reason instanceof Error ? config.signal.reason : new Error("任务已取消");
             reject(error);
             responseStream?.destroy(error);
-            options.body?.destroy(error);
             request.destroy(error);
         };
         config.signal?.addEventListener("abort", abort, { once: true });
@@ -182,12 +186,7 @@ function webdavRequest(config: WebdavConfig, path: string, options: RequestOptio
         if (config.signal?.aborted) { abort(); return; }
         request.setTimeout(options.timeoutMs || METADATA_TIMEOUT_MS, () => request.destroy(new Error("WebDAV 请求超时")));
         request.on("error", (error) => reject(error instanceof Error ? error : new Error(String(error))));
-        if (options.body) {
-            upload = pipeline(options.body, request, { signal: config.signal });
-            void upload.catch(reject);
-        } else {
-            request.end();
-        }
+        request.end();
     });
 }
 

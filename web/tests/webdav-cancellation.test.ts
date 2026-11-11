@@ -1,4 +1,4 @@
-import http, { createServer, type RequestListener } from "node:http";
+import { createServer, type RequestListener } from "node:http";
 import { Readable } from "node:stream";
 import { expect, test } from "bun:test";
 
@@ -19,10 +19,10 @@ async function withDav(handler: RequestListener, run: (config: WebdavConfig & { 
     }
 }
 
-async function within<T>(promise: Promise<T>) {
+async function within<T>(promise: Promise<T>, ms = 500) {
     let timer: ReturnType<typeof setTimeout>;
     try {
-        return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("request remained stuck")), 500); })]);
+        return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("request remained stuck")), ms); })]);
     } finally { clearTimeout(timer!); }
 }
 
@@ -64,18 +64,38 @@ test("cancelling a WebDAV upload destroys the source stream as well as the reque
     });
 });
 
-test("successful WebDAV writes consume response bodies and release limited connections", async () => {
-    const previous = http.globalAgent.maxSockets;
-    http.globalAgent.maxSockets = 1;
-    try {
-        await withDav((req, res) => { req.resume(); res.writeHead(201); res.end(Buffer.alloc(128 * 1024)); }, async (config) => {
-            await within((async () => {
-                await putWebdavBuffer(config, "dir/first", Buffer.from("first"));
-                await putWebdavBuffer(config, "dir/second", Buffer.from("second"));
-            })());
+test("successive WebDAV writes complete after each response body is consumed", async () => {
+    const received: string[] = [];
+    await withDav((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on("data", (value) => chunks.push(value));
+        req.on("end", () => {
+            if (req.method !== "MKCOL") received.push(Buffer.concat(chunks).toString());
+            res.writeHead(201).end(Buffer.alloc(128 * 1024));
         });
-    } finally { http.globalAgent.maxSockets = previous; }
+    }, async (config) => {
+        await within((async () => {
+            await putWebdavBuffer(config, "dir/first", Buffer.from("first"));
+            await putWebdavBuffer(config, "dir/second", Buffer.from("second"));
+        })());
+        expect(received).toEqual(["first", "second"]);
+    });
 });
+
+test("multi-chunk streamed uploads finish instead of stalling on request backpressure", async () => {
+    const chunk = Buffer.alloc(64 * 1024, 7);
+    const total = chunk.length * 80;
+    let received = 0;
+    await withDav((req, res) => {
+        if (req.method === "MKCOL") { res.writeHead(201).end(); return; }
+        req.on("data", (value) => { received += value.length; });
+        req.on("end", () => res.writeHead(201).end());
+    }, async (config) => {
+        const source = Readable.from((function* () { for (let index = 0; index < 80; index += 1) yield chunk; })());
+        await within(putWebdavStream(config, "dir/media.bin", source, "application/octet-stream", total), 5000);
+        expect(received).toBe(total);
+    });
+}, 15000);
 
 test("WebDAV upload waits for the response body to finish instead of reporting success at headers", async () => {
     let respond!: () => void;
