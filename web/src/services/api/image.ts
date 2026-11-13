@@ -1,7 +1,8 @@
 import axios from "axios";
 
-import { aiHeaders, apiMessage as apiText, readApiErrorMessage, readStatusError } from "./shared";
-import { buildAiRequestUrl, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
+import { aiHeaders, apiMessage as apiText, delay, readApiErrorMessage, readStatusError } from "./shared";
+import { buildAiRequestUrl, encodeChannelModel, modelOptionName, resolveModelChannel, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
+import { notifyImageRetry } from "@/lib/image-retry-notice";
 import { normalizePluginImages, runModelPlugin } from "./model-plugin";
 import { nanoid } from "nanoid";
 import { dataUrlToFile } from "@/lib/image-utils";
@@ -96,7 +97,7 @@ type GeminiPayload = {
     promptFeedback?: { blockReason?: string };
 };
 type GeminiStreamState = { buffer: string; text: string; toolCalls: ResponseToolCall[]; error?: string };
-type RequestOptions = { signal?: AbortSignal };
+type RequestOptions = { signal?: AbortSignal; retryDelaysMs?: number[] };
 
 const IMAGE_QUALITY_VALUES = ["low", "medium", "high", "xhigh", "max"];
 const DEFAULT_IMAGE_SHORT_SIDE = 1024;
@@ -108,6 +109,8 @@ const IMAGE_MAX_RATIO = 3;
 const IMAGE_OUTPUT_FORMAT = "png";
 // 与 image-storage 的下载超时保持一致，避免接口挂起时节点一直停在生成中。
 const IMAGE_REQUEST_TIMEOUT_MS = 10 * 60_000;
+const IMAGE_SUBMIT_ATTEMPTS = 3;
+const IMAGE_RETRY_DELAYS_MS = [1000, 2000];
 
 const GEMINI_SUPPORTED_RATIOS = ["1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9", "21:9"];
 
@@ -222,9 +225,9 @@ function resolveImageSource(item: unknown) {
 function parseImagePayload(payload: ImageApiResponse) {
     const record = isRecord(payload) ? payload : undefined;
     if (typeof record?.code === "number" && record.code !== 0) {
-        throw new Error(readApiErrorMessage(record) || apiText("requestFailed"));
+        throw markImageError(readApiErrorMessage(record) || apiText("requestFailed"));
     }
-    if (record?.error) throw new Error(readApiErrorMessage(record) || apiText("requestFailed"));
+    if (record?.error) throw markImageError(readApiErrorMessage(record) || apiText("requestFailed"));
     // Providers may return signed download URLs directly or inside an image list.
     const imageList = record?.data ?? record?.images ?? record?.results ?? payload;
     const images = (Array.isArray(imageList) ? imageList : [imageList])
@@ -235,9 +238,9 @@ function parseImagePayload(payload: ImageApiResponse) {
     if (images.length === 0) {
         // Check whether the response contains data in an unrecognized format.
         const rawKeys = Object.keys(record || {}).filter((k) => k !== "code" && k !== "msg" && k !== "error");
-        throw new Error(rawKeys.length > 0
+        throw markImageError(rawKeys.length > 0
             ? apiText("unknownImageResponse", { fields: rawKeys.join(", ") })
-            : apiText("noImageReturned"));
+            : apiText("noImageReturned"), "definitive");
     }
 
     return images;
@@ -260,6 +263,64 @@ function readAxiosError(error: unknown, fallback: string) {
     }
     if (error instanceof DOMException && error.name === "AbortError") return apiText("requestCanceled");
     return error instanceof Error ? readApiErrorMessage(error.message) || error.message : fallback;
+}
+
+type ImageFailureKind = "retryable" | "definitive" | "uncertain";
+type MarkedImageError = Error & { imageFailure?: ImageFailureKind };
+
+function markImageError(message: string, kind: ImageFailureKind = "retryable") {
+    const error = new Error(message) as MarkedImageError;
+    error.imageFailure = kind;
+    return error;
+}
+
+function imageFailureKind(error: unknown): ImageFailureKind {
+    if (axios.isCancel(error) || (error instanceof DOMException && error.name === "AbortError")) return "uncertain";
+    if (axios.isAxiosError(error)) {
+        if (!error.response) return "uncertain";
+        const proxyFailure = error.response.headers?.["x-infinite-canvas-ai-failure"];
+        if (proxyFailure === "transport") return "uncertain";
+        if (proxyFailure === "configuration") return "definitive";
+        const status = error.response.status;
+        return [401, 403, 404, 408, 409, 425, 429].includes(status) || status >= 500 ? "retryable" : "definitive";
+    }
+    const marked = (error as MarkedImageError | undefined)?.imageFailure;
+    if (marked) return marked;
+    const cause = (error as { cause?: unknown } | undefined)?.cause;
+    return cause && cause !== error ? imageFailureKind(cause) : "uncertain";
+}
+
+function imageRequestConfigs(config: AiConfig, model: string) {
+    const value = model || config.model || config.imageModel;
+    const modelName = modelOptionName(value);
+    const selected = resolveModelChannel(config, value);
+    const matches = (channel: ModelChannel) => Boolean(channel.baseUrl.trim()) && channel.models.some((item) => item.name === modelName && item.capability === "image");
+    const ordered = [selected, ...config.channels].filter((channel, index, list) => matches(channel) && list.findIndex((item) => item.id === channel.id) === index);
+    return (ordered.length ? ordered : [selected]).map((channel) => resolveModelRequestConfig(config, encodeChannelModel(channel.id, modelName)));
+}
+
+function resolveRequestScript(config: AiConfig) {
+    return resolveModelScript(config, config.channelId?.trim() ? encodeChannelModel(config.channelId, config.model) : config.model || config.imageModel);
+}
+
+async function withImageFailover<T>(config: AiConfig, model: string, options: RequestOptions | undefined, run: (config: AiConfig) => Promise<T>, attempts = IMAGE_SUBMIT_ATTEMPTS) {
+    const configs = imageRequestConfigs(config, model);
+    const delays = options?.retryDelaysMs?.length ? options.retryDelaysMs : IMAGE_RETRY_DELAYS_MS;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        try {
+            return await run(configs[(attempt - 1) % configs.length]);
+        } catch (error) {
+            if (options?.signal?.aborted || imageFailureKind(error) !== "retryable" || attempt >= attempts) throw error;
+            notifyImageRetry();
+            await delay(delays[Math.min(attempt - 1, delays.length - 1)], options?.signal);
+        }
+    }
+    throw new Error(apiText("requestFailed"));
+}
+
+/** Batched browser requests cannot prove which images already succeeded, so only single-image calls retry. */
+function browserImageAttempts(config: AiConfig) {
+    return Math.abs(Number(config.count)) > 1 ? 1 : IMAGE_SUBMIT_ATTEMPTS;
 }
 
 function withSystemPrompt(config: AiConfig, prompt: string) {
@@ -626,7 +687,8 @@ async function requestGeminiImagesOnce(config: AiConfig, prompt: string, referen
 }
 
 function parseGeminiImagePayload(payload: GeminiPayload) {
-    validateGeminiPayload(payload);
+    if (payload.error?.message) throw markImageError(payload.error.message);
+    if (payload.promptFeedback?.blockReason) throw markImageError(apiText("geminiRejected", { reason: payload.promptFeedback.blockReason }), "definitive");
     const images =
         payload.candidates
             ?.flatMap((candidate) => candidate.content?.parts || [])
@@ -637,143 +699,123 @@ function parseGeminiImagePayload(payload: GeminiPayload) {
             })
             .filter((value): value is string => Boolean(value))
             .map((dataUrl) => ({ id: nanoid(), dataUrl })) || [];
-    if (!images.length) throw new Error(apiText("geminiNoImage"));
+    if (!images.length) throw markImageError(apiText("geminiNoImage"), "definitive");
     return images;
 }
 
 export async function requestGeneration(config: AiConfig, prompt: string, options?: RequestOptions) {
-    const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
-    const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
-    const script = resolveModelScript(config, config.model || config.imageModel);
-    if (script) {
-        const quality = normalizeQuality(config.quality);
-        const requestSize = resolveRequestSize(config.size);
-        const background = normalizeBackground(config.background);
-        try {
-            const result = await runModelPlugin({
-                capability: "image",
-                script,
-                config: requestConfig,
-                prompt: withSystemPrompt(requestConfig, prompt),
-                images: [],
-                params: { size: requestSize, resolution: inferMediaScale(config.size), quality, count: n, ...(background ? { background } : {}) },
-                signal: options?.signal,
-            });
-            return normalizePluginImages(result).map((dataUrl) => ({ id: nanoid(), dataUrl }));
-        } catch (error) {
-            throw new Error(readAxiosError(error, apiText("requestFailed")));
-        }
-    }
-    if (requestConfig.apiFormat === "gemini") {
-        try {
-            return await requestGeminiImages(requestConfig, prompt, [], n, options);
-        } catch (error) {
-            throw new Error(readAxiosError(error, apiText("requestFailed")));
-        }
-    }
-    const quality = normalizeQuality(config.quality);
-    const requestSize = resolveRequestSize(config.size);
-    const background = normalizeBackground(config.background);
     try {
-        const response = await axios.post<ImageApiResponse>(
-            buildAiRequestUrl(requestConfig, "/images/generations"),
-            {
-                model: requestConfig.model,
-                prompt: withSystemPrompt(requestConfig, prompt),
-                n,
-                ...(quality ? { quality } : {}),
-                ...(requestSize ? { size: requestSize } : {}),
-                ...(background ? { background } : {}),
-                // gpt-image models reject response_format; they always return b64.
-                ...(/gpt-image/.test(requestConfig.model) ? {} : { response_format: "b64_json" }),
-                output_format: IMAGE_OUTPUT_FORMAT,
-            },
-            {
-                headers: aiHeaders(requestConfig, "application/json"),
-                signal: options?.signal,
-                timeout: IMAGE_REQUEST_TIMEOUT_MS,
-            },
-        );
-        const images = await parseImagePayload(response.data);
-        return images;
+        return await withImageFailover(config, config.model || config.imageModel, options, (requestConfig) => requestGenerationOnce(requestConfig, prompt, options), browserImageAttempts(config));
     } catch (error) {
         throw new Error(readAxiosError(error, apiText("requestFailed")));
     }
 }
 
+async function requestGenerationOnce(config: AiConfig, prompt: string, options?: RequestOptions) {
+    const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
+    const script = resolveRequestScript(config);
+    if (script) {
+        const background = normalizeBackground(config.background);
+        const result = await runModelPlugin({
+            capability: "image",
+            script,
+            config,
+            prompt: withSystemPrompt(config, prompt),
+            images: [],
+            params: { size: resolveRequestSize(config.size), resolution: inferMediaScale(config.size), quality: normalizeQuality(config.quality), count: n, ...(background ? { background } : {}) },
+            signal: options?.signal,
+        });
+        return normalizePluginImages(result).map((dataUrl) => ({ id: nanoid(), dataUrl }));
+    }
+    if (config.apiFormat === "gemini") return requestGeminiImages(config, prompt, [], n, options);
+    const quality = normalizeQuality(config.quality);
+    const requestSize = resolveRequestSize(config.size);
+    const background = normalizeBackground(config.background);
+    const response = await axios.post<ImageApiResponse>(
+        buildAiRequestUrl(config, "/images/generations"),
+        {
+            model: config.model,
+            prompt: withSystemPrompt(config, prompt),
+            n,
+            ...(quality ? { quality } : {}),
+            ...(requestSize ? { size: requestSize } : {}),
+            ...(background ? { background } : {}),
+            // gpt-image models reject response_format; they always return b64.
+            ...(/gpt-image/.test(config.model) ? {} : { response_format: "b64_json" }),
+            output_format: IMAGE_OUTPUT_FORMAT,
+        },
+        {
+            headers: aiHeaders(config, "application/json"),
+            signal: options?.signal,
+            timeout: IMAGE_REQUEST_TIMEOUT_MS,
+        },
+    );
+    return parseImagePayload(response.data);
+}
+
 export async function requestEdit(config: AiConfig, prompt: string, references: ReferenceImage[], options?: RequestOptions) {
-    const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
+    try {
+        return await withImageFailover(config, config.model || config.imageModel, options, (requestConfig) => requestEditOnce(requestConfig, prompt, references, options), browserImageAttempts(config));
+    } catch (error) {
+        throw new Error(readAxiosError(error, apiText("requestFailed")));
+    }
+}
+
+async function requestEditOnce(config: AiConfig, prompt: string, references: ReferenceImage[], options?: RequestOptions) {
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     const requestPrompt = buildImageReferencePromptText(prompt, references);
-    const script = resolveModelScript(config, config.model || config.imageModel);
+    const script = resolveRequestScript(config);
     if (script) {
+        const refs = await Promise.all(references.map((image) => imageToDataUrl(image)));
         const quality = normalizeQuality(config.quality);
         const requestSize = resolveRequestSize(config.size);
         const background = normalizeBackground(config.background);
-        const refs = await Promise.all(references.map((image) => imageToDataUrl(image)));
-        try {
-            const result = await runModelPlugin({
-                capability: "image",
-                script,
-                config: requestConfig,
-                prompt: withSystemPrompt(requestConfig, requestPrompt),
-                images: refs,
-                params: { size: requestSize, resolution: inferMediaScale(config.size), quality, count: n, ...(background ? { background } : {}) },
-                signal: options?.signal,
-            });
-            return normalizePluginImages(result).map((dataUrl) => ({ id: nanoid(), dataUrl }));
-        } catch (error) {
-            throw new Error(readAxiosError(error, apiText("requestFailed")));
-        }
+        const result = await runModelPlugin({
+            capability: "image",
+            script,
+            config,
+            prompt: withSystemPrompt(config, requestPrompt),
+            images: refs,
+            params: { size: requestSize, resolution: inferMediaScale(config.size), quality, count: n, ...(background ? { background } : {}) },
+            signal: options?.signal,
+        });
+        return normalizePluginImages(result).map((dataUrl) => ({ id: nanoid(), dataUrl }));
     }
-    if (requestConfig.apiFormat === "gemini") {
-        try {
-            return await requestGeminiImages(requestConfig, requestPrompt, references, n, options);
-        } catch (error) {
-            throw new Error(readAxiosError(error, apiText("requestFailed")));
-        }
-    }
-
-    if (requestConfig.apiFormat === "ark") {
-        const quality = normalizeQuality(config.quality);
-        const requestSize = resolveRequestSize(config.size);
-        const background = normalizeBackground(config.background);
-        const refs = await Promise.all(references.map((image) => imageToDataUrl(image)));
-        try {
-            const response = await axios.post<ImageApiResponse>(
-                buildAiRequestUrl(requestConfig, "/images/generations"),
-                {
-                    model: requestConfig.model,
-                    prompt: withSystemPrompt(requestConfig, requestPrompt),
-                    n,
-                    response_format: "b64_json",
-                    output_format: IMAGE_OUTPUT_FORMAT,
-                    image: refs,
-                    ...(quality ? { quality } : {}),
-                    ...(requestSize ? { size: requestSize } : {}),
-                    ...(background ? { background } : {}),
-                },
-                {
-                    headers: aiHeaders(requestConfig, "application/json"),
-                    signal: options?.signal,
-                    timeout: IMAGE_REQUEST_TIMEOUT_MS,
-                },
-            );
-            return await parseImagePayload(response.data);
-        } catch (error) {
-            throw new Error(readAxiosError(error, apiText("requestFailed")));
-        }
-    }
+    if (config.apiFormat === "gemini") return requestGeminiImages(config, requestPrompt, references, n, options);
 
     const quality = normalizeQuality(config.quality);
     const requestSize = resolveRequestSize(config.size);
     const background = normalizeBackground(config.background);
+    if (config.apiFormat === "ark") {
+        const refs = await Promise.all(references.map((image) => imageToDataUrl(image)));
+        const response = await axios.post<ImageApiResponse>(
+            buildAiRequestUrl(config, "/images/generations"),
+            {
+                model: config.model,
+                prompt: withSystemPrompt(config, requestPrompt),
+                n,
+                response_format: "b64_json",
+                output_format: IMAGE_OUTPUT_FORMAT,
+                image: refs,
+                ...(quality ? { quality } : {}),
+                ...(requestSize ? { size: requestSize } : {}),
+                ...(background ? { background } : {}),
+            },
+            {
+                headers: aiHeaders(config, "application/json"),
+                signal: options?.signal,
+                timeout: IMAGE_REQUEST_TIMEOUT_MS,
+            },
+        );
+        return parseImagePayload(response.data);
+    }
+
     const formData = new FormData();
-    formData.set("model", requestConfig.model);
-    formData.set("prompt", withSystemPrompt(requestConfig, requestPrompt));
+    formData.set("model", config.model);
+    formData.set("prompt", withSystemPrompt(config, requestPrompt));
     formData.set("n", String(n));
     // gpt-image models reject response_format; they always return b64.
-    if (!/gpt-image/.test(requestConfig.model)) {
+    if (!/gpt-image/.test(config.model)) {
         formData.set("response_format", "b64_json");
     }
     formData.set("output_format", IMAGE_OUTPUT_FORMAT);
@@ -790,13 +832,8 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     const imageField = files.length > 1 ? "image[]" : "image";
     files.forEach((file) => formData.append(imageField, file));
 
-    try {
-        const response = await axios.post<ImageApiResponse>(buildAiRequestUrl(requestConfig, "/images/edits"), formData, { headers: aiHeaders(requestConfig), signal: options?.signal, timeout: IMAGE_REQUEST_TIMEOUT_MS });
-        const images = await parseImagePayload(response.data);
-        return images;
-    } catch (error) {
-        throw new Error(readAxiosError(error, apiText("requestFailed")));
-    }
+    const response = await axios.post<ImageApiResponse>(buildAiRequestUrl(config, "/images/edits"), formData, { headers: aiHeaders(config), signal: options?.signal, timeout: IMAGE_REQUEST_TIMEOUT_MS });
+    return parseImagePayload(response.data);
 }
 
 export async function requestImageQuestion(config: AiConfig, messages: AiTextMessage[], onDelta: (text: string) => void, options?: RequestOptions) {

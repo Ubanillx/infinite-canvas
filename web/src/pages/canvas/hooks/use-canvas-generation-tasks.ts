@@ -13,6 +13,7 @@ import type { CanvasConnection, CanvasGenerationTaskBinding, CanvasNodeData } fr
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 import { isGenerationTaskActive, type GenerationTask, type GenerationTaskReference } from "@/types/generation-task";
+import { notifyImageTaskRetry } from "@/lib/image-retry-notice";
 
 type Options = { projectId: string; loaded: boolean; nodes: CanvasNodeData[]; nodesRef: MutableRefObject<CanvasNodeData[]>; connectionsRef: MutableRefObject<CanvasConnection[]>; setNodes: Dispatch<SetStateAction<CanvasNodeData[]>> };
 type RunInput = { requestId?: string; requestFingerprint?: string; nodeId: string; kind: CanvasGenerationTaskBinding["kind"]; config: AiConfig; prompt: string; images?: ReferenceImage[]; videos?: ReferenceVideo[]; audios?: ReferenceAudio[]; slotIds?: string[]; preservePrimary?: boolean; signal: AbortSignal; originNodeId?: string };
@@ -21,6 +22,7 @@ export function useCanvasGenerationTasks({ projectId, loaded, nodes, nodesRef, c
     const workspaceId = useRef(getActiveWorkspace()?.id).current;
     const active = useRef(true);
     const watches = useRef(new Map<string, { stop: () => void; binding: CanvasGenerationTaskBinding; originNodeId: string }>());
+    const taskRetryCounts = useRef(new Map<string, number>());
     const submissions = useRef(new Map<string, CanvasGenerationTaskBinding>());
     const invalidated = useRef(new Set<string>());
     const current = useCallback(() => active.current && Boolean(workspaceId) && getActiveWorkspace()?.id === workspaceId, [workspaceId]);
@@ -66,6 +68,7 @@ export function useCanvasGenerationTasks({ projectId, loaded, nodes, nodesRef, c
             watches.current.set(binding.nodeId, { stop, binding, originNodeId });
             signal?.addEventListener("abort", stop, { once: true });
             let latest = initial;
+            let firstApply = true;
             const dimensions = new Map<string, { width?: number; height?: number; durationMs?: number }>();
             const decoding = new Set<string>();
             const decoded = new Set<string>();
@@ -79,6 +82,10 @@ export function useCanvasGenerationTasks({ projectId, loaded, nodes, nodesRef, c
                 if (!nodesRef.current.some((node) => matchesCanvasTask(node, binding, task))) return stop();
                 if (task.revision < latest.revision) return;
                 latest = task;
+                if (firstApply) {
+                    firstApply = false;
+                    taskRetryCounts.current.set(task.id, task.retryCount || 0);
+                } else notifyImageTaskRetry(taskRetryCounts.current, task);
                 // Metadata decoding must not occupy the GET polling slot or hide a stable result.
                 publish();
                 for (const output of task.outputs) {

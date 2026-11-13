@@ -29,6 +29,7 @@ import { readWorkspaceLogs } from "@/services/workspace-logs";
 import { getActiveWorkspace } from "@/lib/workspace";
 import { hideGenerationTask, listGenerationTasks, resumeGenerationTask, submitWorkbenchGenerationTask } from "@/services/api/generation-tasks";
 import { isGenerationTaskActive, type GenerationTask } from "@/types/generation-task";
+import { notifyImageTaskRetry } from "@/lib/image-retry-notice";
 import { taskReferencesToWorkbench } from "@/pages/generation-task-references";
 
 type GeneratedImage = {
@@ -121,6 +122,8 @@ export default function ImagePage() {
     const submittingRef = useRef(false);
     const selectedTaskIdRef = useRef<string | null>(null);
     const refreshSequenceRef = useRef(0);
+    const taskRetryCountsRef = useRef(new Map<string, number>());
+    const taskRetryCountsSeededRef = useRef(false);
     const pageWorkspaceIdRef = useRef(getActiveWorkspace()?.id);
     const workspaceChangedRef = useRef(false);
     const pageWorkspaceIsCurrent = () => getActiveWorkspace()?.id === pageWorkspaceIdRef.current;
@@ -390,6 +393,8 @@ export default function ImagePage() {
             if (!workspaceChangedRef.current) {
                 workspaceChangedRef.current = true;
                 selectedTaskIdRef.current = null;
+                taskRetryCountsRef.current.clear();
+                taskRetryCountsSeededRef.current = false;
                 setPrompt(""); setReferences([]); setResults([]); setLogs([]); setPreviewLog(null);
                 setRunning(false); setSelectedLogIds([]); setSelectedResultIndex(0);
             }
@@ -399,6 +404,11 @@ export default function ImagePage() {
         const workspaceId = getActiveWorkspace()?.id;
         const [legacy, tasks] = await Promise.all([readStoredLogs(preferRemote), workspaceId ? listGenerationTasks(workspaceId, "image") : Promise.resolve([])]);
         if (!pageWorkspaceIsCurrent()) return [];
+        tasks.forEach((task) => {
+            if (taskRetryCountsSeededRef.current) notifyImageTaskRetry(taskRetryCountsRef.current, task);
+            else taskRetryCountsRef.current.set(task.id, task.retryCount || 0);
+        });
+        taskRetryCountsSeededRef.current = true;
         const next = [...await Promise.all(tasks.map(imageTaskLog)), ...legacy].sort((a, b) => b.createdAt - a.createdAt);
         if (sequence !== refreshSequenceRef.current || !pageWorkspaceIsCurrent() || getActiveWorkspace()?.id !== workspaceId) return next;
         setLogs(next);
@@ -710,7 +720,12 @@ function imageTaskResults(task: GenerationTask): GenerationResult[] {
     }));
     const results: GenerationResult[] = images.map((image) => ({ id: image.id, status: "success", image }));
     if (isGenerationTaskActive(task)) results.push({ id: task.id, status: "pending" });
-    else if (task.status === "failed" || task.status === "needs_attention" || task.status === "partial" && task.failCount) results.push({ id: task.id, status: "failed", error: task.error || task.status });
+    else if (task.status === "failed" || task.status === "needs_attention" || task.status === "partial" && task.failCount) {
+        const error = task.errorCode === "provider_failed"
+            ? i18n.t("workbench.generationFailed")
+            : task.error || (task.status === "partial" ? i18n.t("canvas.projectPage.partialFailed") : i18n.t("workbench.generationFailed"));
+        results.push({ id: task.id, status: "failed", error });
+    }
     return results;
 }
 

@@ -11,6 +11,7 @@ import { useTranslation } from "react-i18next";
 
 import { ClientRootInit } from "@/components/layout/client-root-init";
 import { AppLoadingOverlay } from "@/components/layout/app-loading-overlay";
+import { ImageRetryNotice } from "@/components/layout/image-retry-notice";
 import { WorkspaceGate } from "@/components/layout/workspace-gate";
 import type { AppLocale } from "@/i18n";
 import { getAntThemeConfig } from "@/lib/app-theme";
@@ -51,6 +52,7 @@ export function AppProviders({ children }: { children: ReactNode }) {
         <ConfigProvider locale={locale === "zh-CN" ? zhCN : enUS} theme={antTheme} wave={{ disabled: true }}>
             <ProConfigProvider dark={dark}>
                 <App>
+                    <ImageRetryNotice />
                     <QueryClientProvider client={queryClient}>
                         <div inert={loading} aria-hidden={loading}>
                             <WorkspaceGate><ClientRootInit>{children}</ClientRootInit></WorkspaceGate>

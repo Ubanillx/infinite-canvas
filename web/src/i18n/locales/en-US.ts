@@ -43,7 +43,7 @@ export default {
         text: { title: "Text settings", reasoning: "Reasoning effort", count: "Generation count" },
         model: { select: "Select model", assign: "Assign a model for {{capability}} in the provider settings", noMatch: "No matching {{capability}} models", addFirst: "Add a provider and models in Settings first", capabilities: { image: "image generation", video: "video", text: "text", audio: "audio" } },
     },
-    generation: { pending: ["Creating image", "Almost there", "Just a little longer", "Refining details"] },
+    generation: { pending: ["Creating image", "Almost there", "Just a little longer", "Refining details"], retryingImage: "A small issue occurred; retrying image generation" },
     imageReferences: { label: "Image {{index}}", separator: ", ", promptPrefix: "Reference image labels: {{labels}}. Use these labels to interpret image references in the prompt.\n\n{{prompt}}" },
     seedance: {
         autoMatch: "Auto match",
