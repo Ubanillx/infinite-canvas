@@ -115,12 +115,70 @@ test("image editing accepts URL results and keeps base64 support", async () => {
 });
 
 test("invalid image responses report missing images or the provider error", async () => {
+    const options = { retryDelaysMs: [0, 0] };
     for (const payload of [null, { data: {} }]) {
+        calls.length = 0;
         response = payload;
-        await expect(requestGeneration(configured("openai", "image"), "prompt")).rejects.toThrow(/接口.*(没有返回图片|未知格式)/);
+        await expect(requestGeneration(configured("openai", "image"), "prompt", options)).rejects.toThrow(/接口.*(没有返回图片|未知格式)/);
+        expect(calls).toHaveLength(1);
     }
+    calls.length = 0;
     response = { error: { message: "provider failed" } };
-    await expect(requestGeneration(configured("openai", "image"), "prompt")).rejects.toThrow("provider failed");
+    await expect(requestGeneration(configured("openai", "image"), "prompt", options)).rejects.toThrow("provider failed");
+    expect(calls).toHaveLength(3);
+});
+
+test("image provider failures retry on the same model in another channel", async () => {
+    const dual = {
+        ...configured("openai", "image"),
+        model: "primary::model",
+        imageModel: "primary::model",
+        channels: [
+            { id: "primary", name: "Primary", baseUrl: "https://primary.example", apiKey: "", hasApiKey: true, apiFormat: "openai" as const, models: [{ name: "model", capability: "image" as const }] },
+            { id: "backup", name: "Backup", baseUrl: "https://backup.example", apiKey: "", hasApiKey: true, apiFormat: "openai" as const, models: [{ name: "model", capability: "image" as const }] },
+        ],
+    };
+    axios.post = (async (url: string, data: unknown, options: unknown) => {
+        calls.push({ method: "post", url, data, options });
+        if (calls.length === 1) throw Object.assign(new Error("provider busy"), { isAxiosError: true, response: { status: 503, data: { error: { message: "provider busy" } } } });
+        return { data: { data: [{ b64_json: "aA==" }] } };
+    }) as typeof axios.post;
+    const images = await requestGeneration(dual, "prompt", { retryDelaysMs: [0, 0] });
+    expect(images.map((image) => image.dataUrl)).toEqual(["data:image/png;base64,aA=="]);
+    expect(calls.map((call) => call.url)).toEqual(["/api/ai/primary/images/generations", "/api/ai/backup/images/generations"]);
+});
+
+test("network failures are not retried after an uncertain request", async () => {
+    axios.post = (async (url: string, data: unknown, options: unknown) => {
+        calls.push({ method: "post", url, data, options });
+        throw new TypeError("network failed");
+    }) as typeof axios.post;
+    await expect(requestGeneration(configured("openai", "image"), "prompt")).rejects.toThrow("network failed");
+    expect(calls).toHaveLength(1);
+});
+
+test("proxy transport failures are not retried", async () => {
+    axios.post = (async (url: string, data: unknown, options: unknown) => {
+        calls.push({ method: "post", url, data, options });
+        throw Object.assign(new Error("AI provider connection failed or was interrupted"), {
+            isAxiosError: true,
+            response: { status: 502, headers: { "x-infinite-canvas-ai-failure": "transport" }, data: { error: "AI provider connection failed or was interrupted" } },
+        });
+    }) as typeof axios.post;
+    await expect(requestGeneration(configured("openai", "image"), "prompt")).rejects.toThrow("AI provider connection failed");
+    expect(calls).toHaveLength(1);
+});
+
+test("proxy configuration failures are not retried", async () => {
+    axios.post = (async (url: string, data: unknown, options: unknown) => {
+        calls.push({ method: "post", url, data, options });
+        throw Object.assign(new Error("AI channel is not configured"), {
+            isAxiosError: true,
+            response: { status: 503, headers: { "x-infinite-canvas-ai-failure": "configuration" }, data: { error: "AI channel is not configured" } },
+        });
+    }) as typeof axios.post;
+    await expect(requestGeneration(configured("openai", "image"), "prompt")).rejects.toThrow("AI channel is not configured");
+    expect(calls).toHaveLength(1);
 });
 
 test("Gemini video script template downloads through its request helper", async () => {

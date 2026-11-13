@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { test, expect, registerTestAccount } from "./auth";
 import { execute, getPool, queryOne } from "../src/server/db";
 import { createGenerationTask, createGenerationWorker, hideGenerationTask, readGenerationTask, resumeGenerationTask, type GenerationTaskOptions } from "../src/server/generation-tasks";
+import { ProviderRequestError } from "../src/server/generation-provider";
 
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=", "base64");
 const imageOutput = { kind: "inline" as const, dataUrl: `data:image/png;base64,${png.toString("base64")}` };
@@ -103,6 +104,51 @@ test("uncertain image submission remains inspectable and never resubmits after r
     try { await restarted.tick(); } finally { await restarted.stop(); }
     expect(submits).toBe(1);
     expect((await readGenerationTask(context.id, created.id)).status).toBe("needs_attention");
+});
+
+test("retryable image failure switches channels and exposes the retry count", async ({ request }) => {
+    const context = await contextFor(request);
+    const channels = ["primary", "backup"].map((id) => ({ ...channel, id }));
+    const attempts: string[] = [];
+    const deps = {
+        ...options({
+            submitImage: async (resolved) => {
+                attempts.push(resolved.id);
+                if (resolved.id === "primary") throw new ProviderRequestError("provider busy", 503, "retryable");
+                return [imageOutput];
+            },
+        }),
+        resolveChannels: async () => channels,
+        retryDelaysMs: [0, 0],
+    };
+    const created = await createGenerationTask(context, payload("image"), deps);
+    const worker = createGenerationWorker(deps);
+    try {
+        await worker.tick();
+        await expect.poll(async () => (await readGenerationTask(context.id, created.id)).status).toBe("succeeded");
+    } finally { await worker.stop(); }
+    const task = await readGenerationTask(context.id, created.id);
+    expect(attempts).toEqual(["primary", "backup"]);
+    expect(task.retryCount).toBe(1);
+});
+
+test("definitive image rejection fails without repeating the request", async ({ request }) => {
+    const context = await contextFor(request);
+    let submits = 0;
+    const deps = options({
+        submitImage: async () => {
+            submits += 1;
+            throw new ProviderRequestError("invalid request", 400, "definitive");
+        },
+    });
+    const created = await createGenerationTask(context, payload("image"), deps);
+    const worker = createGenerationWorker(deps);
+    try {
+        await worker.tick();
+        await expect.poll(async () => (await readGenerationTask(context.id, created.id)).status).toBe("failed");
+    } finally { await worker.stop(); }
+    expect(submits).toBe(1);
+    expect((await readGenerationTask(context.id, created.id)).retryCount).toBe(0);
 });
 
 test("two workers elect a single submitter for one idempotent request", async ({ request }) => {
