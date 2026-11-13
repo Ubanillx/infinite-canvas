@@ -44,7 +44,7 @@ export function useAgentBridge(params: AgentBridgeParams) {
     const setAgentCanvasContext = useAgentStore((state) => state.setCanvasContext);
     const instanceId = useRef(crypto.randomUUID()).current;
     const [agentUndoSnapshot, setAgentUndoSnapshot] = useState<CanvasAgentSnapshot | null>(null);
-    const pendingTurnRef = useRef<{ key: string; scope: AgentCanvasTurnScope; before: CanvasAgentSnapshot; changedIds: Set<string>; allocating: number; waitingIds: Set<string>; finished: boolean; resolve?: (result: CanvasAgentSnapshot | null) => void } | null>(null);
+    const pendingTurnRef = useRef<{ key: string; scope: AgentCanvasTurnScope; before: CanvasAgentSnapshot; changedIds: Set<string>; pinnedIds: Set<string>; allocating: number; waitingIds: Set<string>; finished: boolean; resolve?: (result: CanvasAgentSnapshot | null) => void } | null>(null);
     const settleGenerationRef = useRef<(scope: AgentCanvasTurnScope | undefined, ids: string[]) => void>(() => undefined);
     const projectTitle = title || i18n.t("canvas.project.untitled");
     const turnKey = useCallback((scope: AgentCanvasTurnScope) => `${scope.workspaceId}\0${scope.engine}\0${scope.threadId}\0${scope.turnId}`, []);
@@ -53,15 +53,16 @@ export function useAgentBridge(params: AgentBridgeParams) {
         const state = useAgentStore.getState();
         return state.engine === scope.engine && state.activeThreadId === scope.threadId && state.activeTurnId === scope.turnId;
     }, []);
-    const recordTurnNodes = useCallback((scope: AgentCanvasTurnScope | undefined, before: CanvasAgentSnapshot, ids: string[], prepare = false) => {
+    const recordTurnNodes = useCallback((scope: AgentCanvasTurnScope | undefined, before: CanvasAgentSnapshot, ids: string[], prepare = false, pinnedIds: string[] = []) => {
         if ((!ids.length && !prepare) || !isActiveTurn(scope)) return false;
         const key = turnKey(scope!);
         const firstWrite = pendingTurnRef.current?.key !== key;
         if (firstWrite) {
             pendingTurnRef.current?.resolve?.(null);
-            pendingTurnRef.current = { key, scope: scope!, before, changedIds: new Set(), allocating: 0, waitingIds: new Set(), finished: false };
+            pendingTurnRef.current = { key, scope: scope!, before, changedIds: new Set(), pinnedIds: new Set(), allocating: 0, waitingIds: new Set(), finished: false };
         }
         ids.forEach((id) => pendingTurnRef.current!.changedIds.add(id));
+        pinnedIds.forEach((id) => pendingTurnRef.current!.pinnedIds.add(id));
         return firstWrite;
     }, [isActiveTurn, turnKey]);
 
@@ -77,8 +78,10 @@ export function useAgentBridge(params: AgentBridgeParams) {
             );
             const oldNodes = new Map(before.nodes.map((node) => [node.id, node]));
             const changedIds = next.nodes.filter((node) => !oldNodes.has(node.id) || safeOps.some((op) => op.type === "update_node" && op.id === node.id && oldNodes.get(node.id) !== node)).map((node) => node.id);
+            // Agent 显式写入的坐标优先于轮次结束后的自动排版。
+            const pinnedIds = safeOps.flatMap((op) => op.type === "update_node" && op.patch?.position ? [op.id] : []);
             const mutates = next.nodes !== before.nodes || next.connections !== before.connections || generationOps.length > 0;
-            const firstTurnWrite = recordTurnNodes(scope, before, changedIds, mutates);
+            const firstTurnWrite = recordTurnNodes(scope, before, changedIds, mutates, pinnedIds);
             if (scope && pendingTurnRef.current?.key === turnKey(scope)) {
                 const pending = pendingTurnRef.current;
                 pending.allocating += generationOps.length;
@@ -136,10 +139,15 @@ export function useAgentBridge(params: AgentBridgeParams) {
         pendingTurnRef.current = null;
         const state = useAgentStore.getState();
         if (getActiveWorkspace()?.id !== scope.workspaceId || pending.before.projectId !== projectId || state.engine !== scope.engine || state.activeThreadId !== scope.threadId || state.activeTurnId && state.activeTurnId !== scope.turnId || state.canvasContext?.instanceId !== instanceId || state.canvasContext.snapshot.projectId !== projectId) { pending.resolve?.(null); return; }
-        const next = autoLayoutCanvasChanges(nodesRef.current, connectionsRef.current, [...pending.changedIds]);
-        const moved = next !== nodesRef.current && next.some((node, index) => node !== nodesRef.current[index]);
+        const before = nodesRef.current;
+        const next = autoLayoutCanvasChanges(before, connectionsRef.current, [...pending.changedIds], pending.pinnedIds);
+        const moved = next !== before && next.some((node, index) => node !== before[index]);
         if (moved) { nodesRef.current = next; setNodes(next); }
-        const changed = next.filter((node) => pending.changedIds.has(node.id));
+        // 显式定位的节点不触发视口聚焦，其余本轮节点保持原有聚焦行为。
+        const laidOut = new Set(next.filter((node, index) => node !== before[index] && (node.position.x !== before[index].position.x || node.position.y !== before[index].position.y)).map((node) => node.id));
+        const focusIds = new Set([...pending.changedIds].filter((id) => !pending.pinnedIds.has(id)));
+        laidOut.forEach((id) => focusIds.add(id));
+        const changed = next.filter((node) => focusIds.has(node.id));
         const { width, height } = sizeRef.current;
         let focused = false;
         if (changed.length && width > 0 && height > 0) {

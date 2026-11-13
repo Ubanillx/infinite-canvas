@@ -158,10 +158,10 @@ export function autoLayoutCanvas(nodes: CanvasNodeData[], connections: CanvasCon
     return nodes.map((node) => next.get(node.id)!);
 }
 
-/** Arrange one Agent turn while keeping every unrelated node and group member in place. */
-export function autoLayoutCanvasChanges(nodes: CanvasNodeData[], connections: CanvasConnection[], changedIds: string[]): CanvasNodeData[] {
-    if (!changedIds.length) return nodes;
-    const changed = new Set(changedIds);
+/** Arrange one Agent turn while keeping every unrelated node, pinned node and group member in place. */
+export function autoLayoutCanvasChanges(nodes: CanvasNodeData[], connections: CanvasConnection[], changedIds: string[], pinnedIds?: ReadonlySet<string>): CanvasNodeData[] {
+    const changed = new Set(pinnedIds ? changedIds.filter((id) => !pinnedIds.has(id)) : changedIds);
+    if (!changed.size) return nodes;
     const byId = new Map(nodes.map((node) => [node.id, node]));
     const moving = nodes.filter((node) => changed.has(node.id) && node.type !== CanvasNodeType.Group);
     if (!moving.length) return nodes;
@@ -251,5 +251,6 @@ export function autoLayoutCanvasChanges(nodes: CanvasNodeData[], connections: Ca
         }
     }
     const result = nodes.map((node) => next.get(node.id)!);
-    return affectedGroups.size ? expandCanvasGroups(result, affectedGroups) : result;
+    const expandedGroups = pinnedIds ? new Set([...affectedGroups].filter((id) => !pinnedIds.has(id))) : affectedGroups;
+    return expandedGroups.size ? expandCanvasGroups(result, expandedGroups) : result;
 }

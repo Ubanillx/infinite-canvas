@@ -117,6 +117,28 @@ test("an Agent turn arranges only its new chain after a fixed source", () => {
     expect(autoLayoutCanvasChanges(placed, edges, ["config", "result"]).map((item) => item.position)).toEqual(placed.map((item) => item.position));
 });
 
+test("explicitly positioned nodes keep their coordinates while other changes still lay out", () => {
+    const nodes = [node("source", 0, 0), node("moved", 1200, -80), node("extra", 0, 0)];
+    const edges: CanvasConnection[] = [{ id: "sm", fromNodeId: "source", toNodeId: "moved" }, { id: "me", fromNodeId: "moved", toNodeId: "extra" }];
+    const placed = autoLayoutCanvasChanges(nodes, edges, ["moved", "extra"], new Set(["moved"]));
+    expect(placed[1]).toBe(nodes[1]);
+    expect(placed[1].position).toEqual({ x: 1200, y: -80 });
+    expect(placed[2].position.x).toBeGreaterThan(nodes[1].position.x + nodes[1].width);
+});
+
+test("a turn that only writes explicit positions leaves the layout untouched", () => {
+    const nodes = [node("a", 2700, -180), node("b", 0, 0)];
+    const edges: CanvasConnection[] = [{ id: "ab", fromNodeId: "a", toNodeId: "b" }];
+    expect(autoLayoutCanvasChanges(nodes, edges, ["a", "b"], new Set(["a", "b"]))).toBe(nodes);
+});
+
+test("an explicitly positioned group container is not rewrapped around a moved member", () => {
+    const group = { ...node("group", 2000, 1000, CanvasNodeType.Group), width: 300, height: 200 };
+    const member = node("member", 1900, 900, CanvasNodeType.Text, "group");
+    const placed = autoLayoutCanvasChanges([group, member], [], ["group", "member"], new Set(["group"]));
+    expect(placed[0]).toBe(group);
+});
+
 test("new independent nodes pack around fixed content without moving it", () => {
     const nodes = [node("fixed", 0, 0), node("one", 0, 0), node("two", 0, 0), node("three", 0, 0)];
     const placed = autoLayoutCanvasChanges(nodes, [], ["one", "two", "three"]);
