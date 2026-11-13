@@ -186,7 +186,10 @@ function validateRestoreData(workspaceId: string, domains: Map<string, LoadedDom
         for (const ref of task.request_snapshot.references) if (!mediaVersions.has(`${ref.storageKey}\0${ref.objectVersion}`)) throw new SystemBackupError(`生成任务 ${task.id} 的参考媒体版本缺失`);
         for (const output of task.outputs) if (!mediaKeys.has(output.storageKey)) throw new SystemBackupError(`生成任务 ${task.id} 的结果媒体缺失`);
         if (task.submissions.some((slot) => "outputs" in slot)) throw new SystemBackupError("生成任务清单包含未归档的供应商结果");
-        if (task.submissions.some((slot) => !["queued", "completed", "uncertain"].includes(slot.status) || Object.keys(slot).some((key) => key !== "status" && (key !== "content" || task.kind !== "text")) || slot.content !== undefined && typeof slot.content !== "string")) throw new SystemBackupError("生成任务候选进度格式无效");
+        if (task.submissions.some((slot) => !["queued", "completed", "uncertain", "failed"].includes(slot.status)
+            || Object.keys(slot).some((key) => key !== "status" && key !== "attempts" && (key !== "content" || task.kind !== "text"))
+            || slot.content !== undefined && typeof slot.content !== "string"
+            || slot.attempts !== undefined && (!Number.isSafeInteger(slot.attempts) || slot.attempts < 1))) throw new SystemBackupError("生成任务候选进度格式无效");
         taskIds.add(task.id); requestIds.add(task.request_id);
     }
     for (const [domain, item] of domains) {

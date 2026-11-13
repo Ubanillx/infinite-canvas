@@ -35,6 +35,20 @@ export type OutputDescriptor = { kind: "inline"; dataUrl: string } | { kind: "re
 export type UpstreamVideoTask = { id: string; provider: "openai" | "gemini" | "seedance" | "custom"; model: string; channelId: string };
 export type VideoPollResult = { status: "pending" } | { status: "failed"; error: string } | { status: "completed"; output: OutputDescriptor };
 export type ProviderRequest = (url: URL, init: { method: "GET" | "POST"; headers: Record<string, string>; body?: Buffer; signal?: AbortSignal }) => Promise<{ status: number; headers: Record<string, string>; bytes: Buffer }>;
+export type ProviderFailureKind = "retryable" | "definitive" | "uncertain";
+export class ProviderRequestError extends Error {
+    constructor(message: string, readonly status: number, readonly failureKind: ProviderFailureKind) {
+        super(message);
+        this.name = "ProviderRequestError";
+    }
+}
+function failureKindForStatus(status: number): ProviderFailureKind {
+    return [401, 403, 404, 408, 409, 425, 429].includes(status) || status >= 500 ? "retryable" : "definitive";
+}
+/** Only provider responses prove the request did not produce a result; transport errors stay uncertain. */
+export function providerFailureKind(error: unknown): ProviderFailureKind {
+    return error instanceof ProviderRequestError ? error.failureKind : "uncertain";
+}
 
 /** The channel URL is an administrator-configured endpoint; provider redirects are never followed. */
 export const requestGenerationProvider: ProviderRequest = async (url, init) => {
@@ -78,15 +92,15 @@ async function call(channel: GenerationChannel, path: string, method: "GET" | "P
     const contentType = serialized?.headers.get("content-type") || "application/json";
     const encoded = body === undefined ? undefined : serialized ? Buffer.from(await serialized.arrayBuffer()) : Buffer.from(JSON.stringify(body));
     const response = await request(target(channel, path), { method, headers: headers(channel, contentType), body: encoded, signal });
-    if (response.status < 200 || response.status >= 300) throw new Error(errorText(response));
+    if (response.status < 200 || response.status >= 300) throw new ProviderRequestError(errorText(response), response.status, failureKindForStatus(response.status));
     return response;
 }
 
 function dataUrl(reference: GenerationReference) { return `data:${reference.mimeType};base64,${reference.bytes.toString("base64")}`; }
 function json(response: { bytes: Buffer }): any { return JSON.parse(response.bytes.toString("utf8")); }
 function unwrap(payload: any) {
-    if (payload?.code !== undefined && payload.code !== 0 && payload.code !== "0") throw new Error(payload.msg || payload.error?.message || "供应商返回错误");
-    if (payload?.error?.message) throw new Error(payload.error.message);
+    if (payload?.code !== undefined && payload.code !== 0 && payload.code !== "0") throw new ProviderRequestError(payload.msg || payload.error?.message || "供应商返回错误", 200, "retryable");
+    if (payload?.error?.message) throw new ProviderRequestError(payload.error.message, 200, "retryable");
     return payload?.data && !Array.isArray(payload.data) ? payload.data : payload;
 }
 
@@ -105,7 +119,7 @@ function imageOutput(value: unknown): OutputDescriptor {
     if (item?.b64_json) return { kind: "inline", dataUrl: `data:image/png;base64,${item.b64_json}` };
     if (item?.url?.startsWith("data:image/")) return { kind: "inline", dataUrl: item.url };
     if (item?.url?.startsWith("https://")) return { kind: "remote", url: item.url };
-    throw new Error("供应商未返回可保存的图片");
+    throw new ProviderRequestError("供应商未返回可保存的图片", 200, "definitive");
 }
 
 export async function downloadOutput(channel: ResolvedGenerationChannel, output: OutputDescriptor, signal?: AbortSignal, request: ProviderRequest = requestGenerationProvider): Promise<GenerationMedia> {
@@ -201,10 +215,11 @@ export async function submitImage(resolved: ResolvedGenerationChannel, job: Gene
             contents: [{ role: "user", parts }], ...(input.systemPrompt?.trim() ? { systemInstruction: { parts: [{ text: input.systemPrompt.trim() }] } } : {}), generationConfig: { responseModalities: ["TEXT", "IMAGE"], ...geminiImageConfig(input.size) },
         }, request, imageSignal);
         const payload = json(response);
-        if (payload.error?.message || payload.promptFeedback?.blockReason) throw new Error(payload.error?.message || payload.promptFeedback.blockReason);
+        if (payload.promptFeedback?.blockReason) throw new ProviderRequestError(payload.promptFeedback.blockReason, 200, "definitive");
+        if (payload.error?.message) throw new ProviderRequestError(payload.error.message, 200, "retryable");
         const items = payload.candidates?.flatMap((candidate: any) => candidate.content?.parts || []) || [];
         const media = items.map((part: any) => part.inlineData || part.inline_data).filter(Boolean);
-        if (!media.length) throw new Error("供应商未返回图片");
+        if (!media.length) throw new ProviderRequestError("供应商未返回图片", 200, "definitive");
         return media.map((item: any) => ({ kind: "inline", dataUrl: `data:${item.mimeType || item.mime_type || "image/png"};base64,${item.data}` }));
     }
     const common = { model: channel.model, prompt, n: 1, ...(/gpt-image/.test(channel.model) && !(images.length && channel.apiFormat === "ark") ? {} : { response_format: "b64_json" }), output_format: "png", ...(quality ? { quality } : {}), ...(size ? { size } : {}), ...(input.background?.trim().toLowerCase() === "transparent" ? { background: "transparent" } : {}) };
@@ -219,7 +234,7 @@ export async function submitImage(resolved: ResolvedGenerationChannel, job: Gene
     const payload = unwrap(json(response));
     const list = payload.data || payload.images || payload.results || payload.url || payload;
     const items = Array.isArray(list) ? list : [list];
-    if (!items.length) throw new Error("供应商未返回图片");
+    if (!items.length) throw new ProviderRequestError("供应商未返回图片", 200, "definitive");
     return items.map(imageOutput);
 }
 

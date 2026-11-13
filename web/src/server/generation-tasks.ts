@@ -4,12 +4,14 @@ import { databaseUrl, execute, getPool, queryMany, queryOne, toIso, withTransact
 import { completeMediaIntent, createMediaIntent, failMediaIntent } from "./media-intents";
 import { getMediaObject, mediaObjectKey, putMediaBuffer } from "./object-storage";
 import { GENERATION_IMAGE_LIMIT, GENERATION_MEDIA_LIMIT_BYTES, readGenerationBytes } from "./generation-media";
-import { submitImage, submitVideo, pollVideo, downloadOutput, type ResolvedGenerationChannel, type OutputDescriptor, type UpstreamVideoTask, type GenerationRequest } from "./generation-provider";
+import { submitImage, submitVideo, pollVideo, downloadOutput, providerFailureKind, type ProviderFailureKind, type ResolvedGenerationChannel, type OutputDescriptor, type UpstreamVideoTask, type GenerationRequest } from "./generation-provider";
 import { submitText, submitAudio } from "./generation-text-audio-provider";
 import type { CreateGenerationTask, GenerationTask, GenerationTaskCanvasTarget, GenerationTaskFilter, GenerationTaskKind, GenerationTaskOutput, GenerationTaskStatus } from "../types/generation-task";
 
 // Reuse the existing video polling cadence/window and existing media-upload size boundary.
 export const GENERATION_POLL_MS = 2500;
+export const IMAGE_SUBMIT_ATTEMPTS = 3;
+const IMAGE_RETRY_DELAYS_MS = [1000, 2000];
 const SEEDANCE_POLL_MS = 5000;
 const VIDEO_POLL_ATTEMPTS = 120;
 const MEDIA_LIMIT_BYTES = GENERATION_MEDIA_LIMIT_BYTES;
@@ -17,7 +19,7 @@ type Context = { id: string; userId: string; role: "owner" | "editor" | "viewer"
 type ProviderSnapshot = Omit<ResolvedGenerationChannel, "apiKey" | "script">;
 type ReferenceSnapshot = CreateGenerationTask["references"][number] & { objectVersion: string; mimeType: string };
 type Snapshot = Omit<CreateGenerationTask, "requestId" | "references"> & { references: ReferenceSnapshot[] };
-type ImageSubmission = { status: "queued" | "submitting" | "completed" | "uncertain"; outputs?: OutputDescriptor[]; content?: string };
+type ImageSubmission = { status: "queued" | "submitting" | "completed" | "uncertain" | "failed"; outputs?: OutputDescriptor[]; content?: string; attempts?: number };
 export type GenerationTaskRow = {
     id: string; workspace_id: string; actor_user_id: string; request_id: string; request_hash: string; kind: GenerationTaskKind;
     request_snapshot: Snapshot; provider_snapshot: ProviderSnapshot; status: GenerationTaskStatus; upstream: UpstreamVideoTask | null;
@@ -27,6 +29,8 @@ export type GenerationTaskRow = {
 };
 export type GenerationTaskOptions = {
     resolveChannel: (model: string, kind: GenerationTaskKind, snapshot?: ProviderSnapshot) => Promise<ResolvedGenerationChannel>;
+    resolveChannels?: (model: string, kind: GenerationTaskKind, snapshot?: ProviderSnapshot) => Promise<ResolvedGenerationChannel[]>;
+    retryDelaysMs?: number[];
     provider?: { submitImage: typeof submitImage; submitVideo: typeof submitVideo; pollVideo: typeof pollVideo; downloadOutput: typeof downloadOutput; submitText?: typeof submitText; submitAudio?: typeof submitAudio };
 };
 export class GenerationTaskError extends Error {
@@ -42,12 +46,23 @@ const messages: Record<string, string> = {
     configuration_changed: "原渠道配置不可用或已变化，请恢复原配置后核对任务",
 };
 const activeStatuses = ["queued", "submitting", "running", "archiving"];
+const retryDelays = (options: GenerationTaskOptions) => options.retryDelaysMs?.length ? options.retryDelaysMs : IMAGE_RETRY_DELAYS_MS;
+function waitForRetry(ms: number, signal: AbortSignal) {
+    return new Promise<void>((resolve, reject) => {
+        const abort = () => { clearTimeout(timer); reject(signal.reason || new Error("生成执行器已停止")); };
+        const timer = setTimeout(() => { signal.removeEventListener("abort", abort); resolve(); }, ms);
+        if (signal.aborted) abort();
+        else signal.addEventListener("abort", abort, { once: true });
+    });
+}
 export function publicGenerationTask(row: GenerationTaskRow): GenerationTask {
     const snapshot = row.request_snapshot;
+    const submissions = row.submissions || [];
     const expected = row.kind === "image" || row.kind === "text" ? Number(snapshot.settings.count || 1) : 1;
-    const textOutputs = row.kind === "text" ? row.submissions.map((slot, slotIndex) => ({ id: `${row.id}-${slotIndex}`, slotIndex, content: slot.content || "", status: slot.status === "completed" ? "succeeded" as const : slot.status === "uncertain" || !activeStatuses.includes(row.status) ? "needs_attention" as const : "running" as const })) : [];
+    const textOutputs = row.kind === "text" ? submissions.map((slot, slotIndex) => ({ id: `${row.id}-${slotIndex}`, slotIndex, content: slot.content || "", status: slot.status === "completed" ? "succeeded" as const : slot.status === "uncertain" || !activeStatuses.includes(row.status) ? "needs_attention" as const : "running" as const })) : [];
     const successes = row.kind === "text" ? textOutputs.filter((output) => output.status === "succeeded").length : row.outputs.length;
-    return { id: row.id, workspaceId: row.workspace_id, requestId: row.request_id, kind: row.kind, prompt: snapshot.prompt, model: snapshot.model, settings: snapshot.settings,
+    const retryCount = submissions.reduce((total, slot) => total + Math.max(0, (slot.attempts || 0) - 1), 0);
+    return { id: row.id, workspaceId: row.workspace_id, requestId: row.request_id, kind: row.kind, prompt: snapshot.prompt, model: snapshot.model, settings: snapshot.settings, retryCount,
         references: snapshot.references.map(({ kind, storageKey, name, mimeType, width, height, durationMs }) => ({ kind, storageKey, ...(name ? { name } : {}), mimeType, ...(width !== undefined ? { width } : {}), ...(height !== undefined ? { height } : {}), ...(durationMs !== undefined ? { durationMs } : {}) })),
         ...(snapshot.canvasTarget ? { canvasTarget: normalizeCanvasTarget(snapshot.canvasTarget) } : {}),
         status: row.status, phase: row.status, outputs: row.outputs, textOutputs, successCount: successes,
@@ -135,7 +150,9 @@ export async function createGenerationTask(context: Context, body: unknown, opti
             try { payload = canvas ? JSON.parse(canvas.payload) : null; } catch { throw new GenerationTaskError("画布数据无效", 409); }
             assertCanvasGenerationBinding(payload, input.canvasTarget, input.requestId);
         }
-        const channel = await options.resolveChannel(input.model, input.kind);
+        const channels = options.resolveChannels ? await options.resolveChannels(input.model, input.kind) : [await options.resolveChannel(input.model, input.kind)];
+        const channel = channels[0];
+        if (!channel) throw new GenerationTaskError("生成渠道未配置或模型能力不匹配", 422);
         if (channel.script) throw new GenerationTaskError("脚本模型使用浏览器执行，不支持服务端持久生成");
         if (input.kind === "audio" && channel.apiFormat === "gemini") throw new GenerationTaskError("Gemini 音频生成暂不支持，请使用现有脚本模型");
         const snapshot: ProviderSnapshot = { id: channel.id, baseUrl: channel.baseUrl, apiFormat: channel.apiFormat, model: channel.model };
@@ -262,7 +279,7 @@ export function createGenerationWorker(options: GenerationTaskOptions) {
             }
         }
         const expected = row.kind === "image" ? Number(row.request_snapshot.settings.count || 1) : 1;
-        const uncertain = row.submissions.some((slot) => slot.status === "uncertain");
+        const uncertain = row.submissions.some((slot) => slot.status === "uncertain" || slot.status === "submitting");
         await change(row.id, { status: uncertain ? "needs_attention" : outputs.length >= expected ? "succeeded" : outputs.length ? "partial" : "failed", error_code: uncertain ? "submission_uncertain" : outputs.length ? null : "provider_failed" });
     }
     async function processTask(id: string, revision: number) {
@@ -273,7 +290,11 @@ export function createGenerationWorker(options: GenerationTaskOptions) {
             AND NOT EXISTS (SELECT 1 FROM backup_runs b WHERE b.workspace_id = t.workspace_id AND b.kind = 'restore' AND b.status = 'running') RETURNING *`, [id, workerId, revision])).rows[0] || null;
         if (!row || !owned()) return;
         try {
-            const channel = await options.resolveChannel(row.request_snapshot.model, row.kind, row.provider_snapshot);
+            const channels = row.kind === "image" && options.resolveChannels
+                ? await options.resolveChannels(row.request_snapshot.model, row.kind, row.provider_snapshot)
+                : [await options.resolveChannel(row.request_snapshot.model, row.kind, row.provider_snapshot)];
+            const channel = channels[0];
+            if (!channel) throw new GenerationTaskError("生成渠道未配置或模型能力不匹配", 422);
             if (row.status === "queued") {
                 const permission = await queryOne<{ role: string }>(await getPool(), "SELECT role FROM workspace_members WHERE workspace_id = $1 AND user_id = $2", row.workspace_id, row.actor_user_id);
                 if (!permission || permission.role === "viewer") { await change(id, { status: "failed", error_code: "permission_revoked" }); return; }
@@ -288,32 +309,51 @@ export function createGenerationWorker(options: GenerationTaskOptions) {
                 if (row.kind === "image" || row.kind === "text") {
                     row = await change(id, { status: "submitting", error_code: null });
                     const slots = row.submissions;
-                    await Promise.allSettled(slots.map(async (slot, index) => {
-                        if (slot.status !== "queued") return;
-                        let content = slot.content || "";
-                        const setSlot = async (value: ImageSubmission) => {
-                            if (!owned()) throw new Error("生成执行器已失去所有权");
-                            const save = (tx: SqlExecutor) => queryOne(tx, "UPDATE generation_tasks SET submissions = jsonb_set(submissions, $3::text[], $4::jsonb), revision = revision + 1, updated_at = now() WHERE id = $1 AND worker_id = $2 RETURNING id", id, workerId, [String(index)], JSON.stringify(value));
-                            const written = value.status === "submitting" ? await writeScope({ id: row!.workspace_id, userId: row!.actor_user_id, role: "editor" }, save) : await save(await getPool());
-                            if (!written || !owned()) throw new Error("生成执行器已失去所有权");
-                        };
-                        await setSlot({ status: "submitting" });
-                        try {
-                            if (row!.kind === "text") {
+                    const setSlot = async (index: number, value: ImageSubmission) => {
+                        if (!owned()) throw new Error("生成执行器已失去所有权");
+                        const save = (tx: SqlExecutor) => queryOne(tx, "UPDATE generation_tasks SET submissions = jsonb_set(submissions, $3::text[], $4::jsonb), revision = revision + 1, updated_at = now() WHERE id = $1 AND worker_id = $2 RETURNING id", id, workerId, [String(index)], JSON.stringify(value));
+                        const written = value.status === "submitting" ? await writeScope({ id: row!.workspace_id, userId: row!.actor_user_id, role: "editor" }, save) : await save(await getPool());
+                        if (!written || !owned()) throw new Error("生成执行器已失去所有权");
+                    };
+                    if (row.kind === "text") {
+                        await Promise.allSettled(slots.map(async (slot, index) => {
+                            if (slot.status !== "queued") return;
+                            let content = slot.content || "";
+                            await setSlot(index, { status: "submitting" });
+                            try {
                                 const answer = await provider.submitText(channel, { ...request, settings: { ...request.settings, count: 1 } }, async (delta) => {
                                     content = delta;
-                                    await setSlot({ status: "submitting", content });
+                                    await setSlot(index, { status: "submitting", content });
                                 }, controller.signal);
                                 if (!answer) throw new Error("文本供应商未返回内容");
-                                await setSlot({ status: "completed", content: answer });
-                            } else {
-                                const outputs = await provider.submitImage(channel, { ...request, settings: { ...request.settings, count: 1 } }, controller.signal);
-                                await setSlot({ status: "completed", outputs });
+                                await setSlot(index, { status: "completed", content: answer });
+                            } catch {
+                                if (owned()) await setSlot(index, { status: "uncertain", content });
                             }
-                        } catch {
-                            if (owned()) await setSlot({ status: "uncertain", ...(row!.kind === "text" ? { content } : {}) });
-                        }
-                    }));
+                        }));
+                    } else {
+                        const delays = retryDelays(options);
+                        await Promise.allSettled(slots.map(async (slot, index) => {
+                            if (slot.status !== "queued") return;
+                            let attempt = slot.attempts || 0;
+                            let failure: ProviderFailureKind = "uncertain";
+                            for (;;) {
+                                attempt += 1;
+                                await setSlot(index, { status: "submitting", attempts: attempt });
+                                try {
+                                    const outputs = await provider.submitImage(channels[(attempt - 1) % channels.length], { ...request, settings: { ...request.settings, count: 1 } }, controller.signal);
+                                    await setSlot(index, { status: "completed", outputs, attempts: attempt });
+                                    return;
+                                } catch (error) {
+                                    if (!owned()) throw error;
+                                    failure = providerFailureKind(error);
+                                    if (failure !== "retryable" || attempt >= IMAGE_SUBMIT_ATTEMPTS) break;
+                                    await waitForRetry(delays[Math.min(attempt - 1, delays.length - 1)], controller.signal);
+                                }
+                            }
+                            await setSlot(index, { status: failure === "uncertain" ? "uncertain" : "failed", attempts: attempt });
+                        }));
+                    }
                     if (!owned()) return;
                     row = (await queryOne<GenerationTaskRow>(await getPool(), "SELECT * FROM generation_tasks WHERE id = $1 AND worker_id = $2", id, workerId))!;
                     if (row.kind === "text") {
@@ -323,7 +363,8 @@ export function createGenerationWorker(options: GenerationTaskOptions) {
                         return;
                     }
                     const sources = row.submissions.flatMap((slot, slotIndex) => (slot.outputs || []).map((output, outputIndex) => ({ ...output, resultId: `${id}-${slotIndex}-${outputIndex}` })));
-                    row = await change(id, sources.length ? { status: "archiving", raw_result: sources } : { status: "needs_attention", error_code: "submission_uncertain" });
+                    const uncertain = row.submissions.some((slot) => ["queued", "submitting", "uncertain"].includes(slot.status));
+                    row = await change(id, sources.length ? { status: "archiving", raw_result: sources } : uncertain ? { status: "needs_attention", error_code: "submission_uncertain" } : { status: "failed", error_code: "provider_failed" });
                 } else {
                     row = await writeScope({ id: row.workspace_id, userId: row.actor_user_id, role: "editor" }, async (tx) => {
                         const written = await queryOne<GenerationTaskRow>(tx, "UPDATE generation_tasks SET status = 'submitting', error_code = NULL, revision = revision + 1, updated_at = now() WHERE id = $1 AND worker_id = $2 RETURNING *", id, workerId);

@@ -414,28 +414,41 @@ function canWriteWorkspace(context: WorkspaceContext) {
     return context.role === "owner" || context.role === "editor";
 }
 
-async function resolveGenerationChannel(model: string, kind: "image" | "video" | "text" | "audio", original?: Omit<ResolvedGenerationChannel, "apiKey" | "script">): Promise<ResolvedGenerationChannel> {
+async function resolveGenerationChannels(model: string, kind: "image" | "video" | "text" | "audio", original?: Omit<ResolvedGenerationChannel, "apiKey" | "script">): Promise<ResolvedGenerationChannel[]> {
     const stored = asRecord(await readStoredServerConfig());
     const config = asRecord(stored?.config);
-    const channels = Array.isArray(config?.channels) ? config.channels.map(asRecord).filter((channel) => channel) : [];
+    const channels = Array.isArray(config?.channels) ? config.channels.map(asRecord).filter((channel): channel is Record<string, unknown> => Boolean(channel)) : [];
     const separator = model.indexOf("::");
     const modelName = separator < 0 ? model : model.slice(separator + 2);
-    const channelId = separator < 0 ? original?.id : model.slice(0, separator);
-    const channel = channels.find((candidate) => (!channelId || candidate!.id === channelId) && Array.isArray(candidate!.models) && candidate!.models.some((item: unknown) => {
-        const entry = asRecord(item);
-        return entry?.name === modelName && entry.capability === kind;
-    }));
-    if (!channel || typeof channel.apiKey !== "string" || !channel.apiKey || typeof channel.baseUrl !== "string") throw new GenerationTaskError("生成渠道未配置或模型能力不匹配", 422);
-    const entry = (channel.models as unknown[]).map(asRecord).find((item) => item?.name === modelName);
-    if (entry?.script) throw new GenerationTaskError("脚本模型尚不支持持久化执行，请选择内建渠道模型", 422);
-    const baseUrl = providerBaseUrl(channel.baseUrl, channel.apiFormat);
-    const resolved: ResolvedGenerationChannel = { id: String(channel.id), baseUrl, apiKey: channel.apiKey, apiFormat: channel.apiFormat as ResolvedGenerationChannel["apiFormat"], model: modelName };
-    if (original && (original.id !== resolved.id || original.baseUrl !== resolved.baseUrl || original.apiFormat !== resolved.apiFormat || original.model !== resolved.model)) throw new GenerationTaskError("原生成渠道已变化，请恢复原配置后核对任务", 409);
-    return resolved;
+    const selectedId = separator < 0 ? undefined : model.slice(0, separator);
+    const entryOf = (channel: Record<string, unknown> | undefined) => Array.isArray(channel?.models)
+        ? channel.models.map(asRecord).find((item) => item?.name === modelName && item.capability === kind)
+        : undefined;
+    if (entryOf(channels.find((channel) => channel.id === selectedId))?.script) throw new GenerationTaskError("脚本模型尚不支持持久化执行，请选择内建渠道模型", 422);
+    const candidates = channels.flatMap((channel) => {
+        const entry = entryOf(channel);
+        if (!entry || entry.script) return [];
+        try {
+            if (typeof channel.apiKey !== "string" || !channel.apiKey || typeof channel.baseUrl !== "string") return [];
+            const resolved: ResolvedGenerationChannel = { id: String(channel.id), baseUrl: providerBaseUrl(channel.baseUrl, channel.apiFormat), apiKey: channel.apiKey, apiFormat: channel.apiFormat as ResolvedGenerationChannel["apiFormat"], model: modelName };
+            return [resolved];
+        } catch {
+            return [];
+        }
+    });
+    if (!candidates.length) throw new GenerationTaskError("生成渠道未配置或模型能力不匹配", 422);
+    if (!original && kind !== "image" && selectedId && !candidates.some((candidate) => candidate.id === selectedId)) throw new GenerationTaskError("生成渠道未配置或模型能力不匹配", 422);
+    const exact = original ? candidates.find((candidate) => candidate.id === original.id && candidate.baseUrl === original.baseUrl && candidate.apiFormat === original.apiFormat && candidate.model === original.model) : undefined;
+    if (original && !exact && kind !== "image") throw new GenerationTaskError("原生成渠道已变化，请恢复原配置后核对任务", 409);
+    const first = exact || candidates.find((candidate) => candidate.id === selectedId);
+    return first ? [first, ...candidates.filter((candidate) => candidate !== first)] : candidates;
+}
+async function resolveGenerationChannel(model: string, kind: "image" | "video" | "text" | "audio", original?: Omit<ResolvedGenerationChannel, "apiKey" | "script">): Promise<ResolvedGenerationChannel> {
+    return (await resolveGenerationChannels(model, kind, original))[0];
 }
 
 function generationTaskAccess(): Plugin {
-    const options = { resolveChannel: resolveGenerationChannel };
+    const options = { resolveChannel: resolveGenerationChannel, resolveChannels: resolveGenerationChannels };
     const worker = createGenerationWorker(options);
     const middleware = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
         const url = new URL(req.url || "/", "http://localhost");
@@ -1280,7 +1293,7 @@ function aiProviderProxy(): Plugin {
             if (!channel) return sendJson(res, 404, { error: "AI channel not found" });
             const apiKey = typeof channel.apiKey === "string" ? channel.apiKey : "";
             const baseUrl = typeof channel.baseUrl === "string" ? channel.baseUrl : "";
-            if (!apiKey || !baseUrl) return sendJson(res, 503, { error: "AI channel is not configured" });
+            if (!apiKey || !baseUrl) { res.setHeader("X-Infinite-Canvas-Ai-Failure", "configuration"); return sendJson(res, 503, { error: "AI channel is not configured" }); }
             const providerBase = new URL(`${providerBaseUrl(baseUrl, channel.apiFormat)}/`);
             const target = new URL(providerPath.replace(/^\/+/, ""), providerBase);
             if (target.origin !== providerBase.origin || !target.pathname.startsWith(providerBase.pathname)) return sendJson(res, 403, { error: "AI endpoint is not allowed" });

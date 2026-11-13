@@ -42,6 +42,7 @@ export type GenerationTask = {
     textOutputs?: GenerationTaskTextOutput[];
     successCount: number;
     failCount: number;
+    retryCount?: number;
     error?: string;
     errorCode?: string;
     createdAt: string;

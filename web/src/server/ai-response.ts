@@ -18,5 +18,7 @@ export function failAiResponse(res: ServerResponse) {
     res.removeHeader("content-encoding");
     res.statusCode = 502;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
+    // Upstream transport failures cannot prove the request was not billed; clients must not retry them.
+    res.setHeader("X-Infinite-Canvas-Ai-Failure", "transport");
     res.end(JSON.stringify({ error: "AI provider connection failed or was interrupted" }));
 }

@@ -43,7 +43,7 @@ export async function backupGenerationTasks(config: WebdavConfig, workspaceId: s
             const url = new URL(provider.baseUrl);
             if (url.username || url.password || url.search || url.hash || !["http:", "https:"].includes(url.protocol)) throw new Error("渠道地址含凭据或查询参数");
             if (!provider.id || !provider.model || !["openai", "gemini", "ark", "custom"].includes(provider.apiFormat)) throw new Error("渠道元数据无效");
-            const submissions = row.submissions.map((slot) => ({ status: slot.status === "submitting" ? "uncertain" as const : slot.status, ...(row.kind === "text" && typeof slot.content === "string" ? { content: slot.content } : {}) }));
+            const submissions = row.submissions.map((slot) => ({ status: slot.status === "submitting" ? "uncertain" as const : slot.status, ...(row.kind === "text" && typeof slot.content === "string" ? { content: slot.content } : {}), ...(slot.attempts ? { attempts: slot.attempts } : {}) }));
             const outputs = [...row.outputs];
             const known = row.raw_result?.length ? row.raw_result : row.submissions.flatMap((slot, i) => (slot.outputs || []).map((output, j) => ({ ...output, resultId: `${row.id}-${i}-${j}` })));
             for (let i = 0; i < known.length; i++) {
