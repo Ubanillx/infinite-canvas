@@ -36,13 +36,23 @@ type PiRuntime = { agent: Agent; threadId: string; skillsFingerprint: string };
 
 const runtimes = new Map<string, PiRuntime>();
 const skillDrafts = new Map<string, AbortController>();
+/** 每轮从受理开始登记停止信号，覆盖准备运行时和等待首个 token 的阶段。 */
+const activeTurns = new Map<string, AbortController>();
 let piQueue: Promise<unknown> = Promise.resolve();
 
 /** 串行执行一次 pi turn，事件形状与 Codex 引擎保持一致。 */
 export async function runPiTurn(prompt: string, emit: AgentEmit, attachments: AgentAttachment[], options: PiRunOptions) {
     if (!prompt.trim()) return;
-    piQueue = piQueue.catch(() => undefined).then(() => runPiTurnNow(prompt, emit, attachments, options));
-    await piQueue;
+    const controller = new AbortController();
+    const key = normalizeCwd(options.cwd);
+    activeTurns.set(key, controller);
+    const queued = piQueue.catch(() => undefined).then(() => runPiTurnNow(prompt, emit, attachments, options, controller));
+    piQueue = queued;
+    try {
+        await queued;
+    } finally {
+        if (activeTurns.get(key) === controller) activeTurns.delete(key);
+    }
 }
 
 /** 使用独立的只读上下文提炼草稿，不调用画布工具、不改写聊天历史。 */
@@ -92,15 +102,18 @@ export async function generatePiSkillDraft(cwd: string, input: SkillDraftSource 
 
 /** 中断指定工作区正在运行的 pi turn。 */
 export function interruptPiTurn(cwd?: string) {
-    const draft = cwd ? skillDrafts.get(normalizeCwd(cwd)) : skillDrafts.values().next().value;
-    if (draft) {
-        draft.abort();
+    const prefix = cwd ? `${normalizeCwd(cwd)}\0` : "";
+    // 聊天 turn 优先于 Skill 草稿，避免停止按钮只取消了另一项任务。
+    const active = [...runtimes.entries()].find(([key, runtime]) => key.startsWith(prefix) && Boolean(runtime.agent.signal));
+    const activeTurn = cwd ? activeTurns.get(normalizeCwd(cwd)) : activeTurns.values().next().value;
+    if (active || activeTurn) {
+        activeTurn?.abort();
+        active?.[1].agent.abort();
         return true;
     }
-    const prefix = cwd ? `${normalizeCwd(cwd)}\0` : "";
-    const active = [...runtimes.entries()].find(([key, runtime]) => key.startsWith(prefix) && runtime.agent.state.isStreaming);
-    if (!active) return false;
-    active[1].agent.abort();
+    const draft = cwd ? skillDrafts.get(normalizeCwd(cwd)) : skillDrafts.values().next().value;
+    if (!draft) return false;
+    draft.abort();
     return true;
 }
 
@@ -109,7 +122,7 @@ export function releasePiRuntime(cwd: string, threadId: string) {
     runtimes.delete(runtimeKey(cwd, threadId));
 }
 
-async function runPiTurnNow(prompt: string, emit: AgentEmit, attachments: AgentAttachment[], options: PiRunOptions) {
+async function runPiTurnNow(prompt: string, emit: AgentEmit, attachments: AgentAttachment[], options: PiRunOptions, controller: AbortController) {
     const turnId = crypto.randomUUID();
     const display: PiDisplayMessage[] = [{ itemId: "synthetic:user", turnId, role: "user", text: options.messageText || prompt }];
     const turn: PiStoredTurn = { turnId, userText: options.messageText || prompt, startedAt: Date.now(), status: "running", messages: display };
@@ -117,12 +130,14 @@ async function runPiTurnNow(prompt: string, emit: AgentEmit, attachments: AgentA
     let runtime: PiRuntime | undefined;
     let threadId = options.threadId || "";
     try {
+        controller.signal.throwIfAborted();
         options.onStart?.();
         if (threadId) {
             options.onThread?.(threadId);
             options.onTurn?.(turnId);
         }
         runtime = await ensureRuntime(emit, options, store);
+        controller.signal.throwIfAborted();
         if (!threadId) {
             threadId = runtime.threadId;
             options.onThread?.(threadId);
@@ -137,6 +152,7 @@ async function runPiTurnNow(prompt: string, emit: AgentEmit, attachments: AgentA
         const skills = await loadPiSkills(options.cwd).then((result) => result.skills);
         // 用户点名的 Skill 无条件加载，等价于 Codex 的 {type:"skill"} 输入。
         const explicit = options.skill ? await resolveExplicitSkill(options.cwd, options.skill) : "";
+        controller.signal.throwIfAborted();
         const unsubscribe = owner.agent.subscribe((event) => {
             if (event.type === "message_end" && event.message.role === "assistant") {
                 const message = event.message as AssistantMessage;
