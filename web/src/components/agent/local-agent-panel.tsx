@@ -70,6 +70,7 @@ import {
 import { AgentHistoryView } from "./agent-history-view";
 import { AgentLogView } from "./agent-log-view";
 import { AgentPanelTabs } from "./agent-panel-tabs";
+import { AgentQueuedMessages } from "./agent-queued-messages";
 import { AgentSkillsView } from "./agent-skills-view";
 
 const MAX_ATTACHMENTS = 6;
@@ -145,7 +146,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     // canvasContext is intentionally excluded because project updates it every frame during dragging and resizing.
     // The panel uses it only for ref synchronization and debounced postState calls, never during rendering.
     // Subscribing here would rerender the panel every frame and amplify the #185 crash, so it is observed imperatively below.
-    const { width, url, token, connected, enabled, prompt, attachments, sending, waiting, queue, tokenUsage, eventLogs, threads, activeThreadId, workspacePath, loadingThreads, activeTab, engine, confirmTools, permissionMode, models, model, reasoningEffort, activity, conversation, connectError, pendingTool, pendingApprovals } = useAgentStore(
+    const { width, url, token, connected, enabled, prompt, attachments, sending, waiting, queue, queuePaused, tokenUsage, eventLogs, threads, activeThreadId, workspacePath, loadingThreads, activeTab, engine, confirmTools, permissionMode, models, model, reasoningEffort, activity, conversation, connectError, pendingTool, pendingApprovals } = useAgentStore(
         useShallow((state) => ({
             width: state.width,
             url: state.url,
@@ -157,6 +158,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             sending: state.sending,
             waiting: state.waiting,
             queue: state.queue,
+            queuePaused: state.queuePaused,
             tokenUsage: state.tokenUsage,
             eventLogs: state.eventLogs,
             threads: state.threads,
@@ -226,10 +228,21 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     const promptInputRef = useRef<AgentChatPromptInputRef>(null);
     const dispatchRef = useRef<(message: AgentQueuedMessage) => Promise<void>>(async () => undefined);
     const drainQueueRef = useRef<() => void>(() => undefined);
-    /** 用户主动停止后暂停自动排队，直到下一次手动发送。 */
-    const queuePausedRef = useRef(false);
     /** 正在排空队列，避免同一帧重复发出队首消息。 */
     const drainInFlightRef = useRef(false);
+    /** 插队发送或打断发送期间暂停自动排空，避免剩余队列抢先发出。 */
+    const drainHoldRef = useRef(false);
+    /** 插队与「打断并发送」共用互斥，避免两条路径同时中断和发送。 */
+    const jumpInFlightRef = useRef(false);
+    const [queueActionId, setQueueActionId] = useState("");
+    /** 只释放输入框自己创建的图片 URL，画布引用可能复用节点正在使用的图片地址。 */
+    const releaseQueuedImages = useCallback((items: AgentQueuedMessage[]) => {
+        items.forEach((item) => item.attachments.forEach((attachment) => {
+            if (attachment.kind !== "image" || !attachmentUrlsRef.current.has(attachment.url)) return;
+            URL.revokeObjectURL(attachment.url);
+            attachmentUrlsRef.current.delete(attachment.url);
+        }));
+    }, []);
     const focusNewConversationRef = useRef("");
     useEffect(() => {
         if (!focusNewConversationRef.current || composerDisabled || sending || waiting || activeTab !== "chat") return;
@@ -315,7 +328,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                     : current.messages;
         pendingToolRef.current = null;
         // 切换会话或新建后队列清空，暂停标记也要一起复位，否则新会话无法自动排空。
-        if (threadChanged || emptyThread) queuePausedRef.current = false;
+        if (threadChanged || emptyThread) releaseQueuedImages(current.queue);
         setAgentState({
             activeThreadId: nextThreadId,
             activeTurnId: threadChanged || emptyThread ? "" : current.activeTurnId,
@@ -323,11 +336,11 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             tokenUsage: threadChanged || emptyThread ? null : current.tokenUsage,
             pendingTool: null,
             // 队列属于某个会话，切换会话或新建后不能再自动发出旧消息。
-            ...(threadChanged || emptyThread ? { queue: [] } : {}),
+            ...(threadChanged || emptyThread ? { queue: [], queuePaused: false } : {}),
             pendingApprovals: threadChanged || emptyThread ? [] : current.pendingApprovals,
         });
         return loadThreadsSequenceRef.current;
-    }, [setAgentState]);
+    }, [releaseQueuedImages, setAgentState]);
     const applyConversationState = useCallback((next: AgentConversationState, force = false) => {
         const current = useAgentStore.getState();
         if (next.engine !== current.engine) return false;
@@ -775,11 +788,13 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         setAgentState({ prompt: "", attachments: [], canvasReferences: [] });
         if (queueing) {
             setAgentStoreQueue([...useAgentStore.getState().queue, outgoing]);
+            // 手动加入队列同样恢复自动排空，避免暂停标记让新消息一直等待。
+            if (useAgentStore.getState().queuePaused) setAgentState({ queuePaused: false });
             addEventLog(rt("queueAdded"), compactText(userText) || rt("queuedMessageOnly"));
             return;
         }
         // 手动发送会恢复自动排空。
-        queuePausedRef.current = false;
+        setAgentState({ queuePaused: false });
         await dispatchMessage(outgoing);
     };
 
@@ -830,7 +845,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             threadId = accepted.threadId || threadId;
             if (!threadId) throw new Error(rt("startConversationFailed"));
             files.forEach((item) => {
-                if (item.kind !== "image") return;
+                if (item.kind !== "image" || !attachmentUrlsRef.current.has(item.url)) return;
                 URL.revokeObjectURL(item.url);
                 attachmentUrlsRef.current.delete(item.url);
             });
@@ -868,10 +883,10 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
 
     /** 当前 turn 结束后按顺序发送队首消息。 */
     const drainQueue = useCallback(() => {
-        if (queuePausedRef.current) return;
         // effect 触发与 setState 生效之间存在一帧窗口，用同步标记防止同一条消息被发出两次。
-        if (drainInFlightRef.current) return;
+        if (drainInFlightRef.current || drainHoldRef.current) return;
         const state = useAgentStore.getState();
+        if (state.queuePaused) return;
         if (!state.connected || state.sending || state.waiting || state.loadingThreads) return;
         if (!["ready", "warning"].includes(state.conversation.status)) return;
         const [next, ...rest] = state.queue;
@@ -886,16 +901,32 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     // 排队消息等 turn 真正结束（不再是 sending/waiting/loadingThreads）后再发下一条。
     // 事件回调里直接排空会被随后的 loadThreads 置为 loadingThreads 而跳过，因此改为状态驱动。
     useEffect(() => {
-        if (!queue.length || sending || waiting || loadingThreads) return;
+        if (queuePaused || !queue.length || sending || waiting || loadingThreads) return;
         if (conversation.status !== "ready" && conversation.status !== "warning") return;
         drainQueueRef.current();
-    }, [conversation.status, loadingThreads, queue.length, sending, waiting]);
+    }, [conversation.status, loadingThreads, queue.length, queuePaused, sending, waiting]);
+
+    /** turn 真正结束：没有发送/等待、历史已读完且会话回到可发送状态。 */
+    const turnIsIdle = useCallback(() => {
+        const state = useAgentStore.getState();
+        return state.connected && !state.sending && !state.waiting && !state.loadingThreads && !state.activeTurnId && ["ready", "warning"].includes(state.conversation.status);
+    }, []);
+
+    /** 发出中断后等待后端 turn 真正结束，避免下一次发送被判定为并发 turn。 */
+    const waitForTurnIdle = async () => {
+        await waitUntil(turnIsIdle, INTERRUPT_WAIT_TIMEOUT_MS);
+        return turnIsIdle();
+    };
+
+    /** 首次发送后 turn id 可能还没返回，先等 turn 真正开始再请求中断。 */
+    const waitForTurnStarted = async () => {
+        if (!useAgentStore.getState().activeTurnId) await waitUntil(() => Boolean(useAgentStore.getState().activeTurnId) || (!useAgentStore.getState().sending && !useAgentStore.getState().waiting), INTERRUPT_WAIT_TIMEOUT_MS);
+    };
 
     const stopTurn = async () => {
         if (!connected || (!sending && !waiting)) return;
         // 用户主动停止时暂停队列，避免刚停下又自动发出下一条。
-        queuePausedRef.current = true;
-        setAgentState({ activity: rt("stopping") });
+        setAgentState({ queuePaused: true, activity: rt("stopping") });
         try {
             if (engine === "pi") await interruptPiTurn(endpoint, token);
             else await interruptCodexTurn(endpoint, token, useAgentStore.getState().activeThreadId || undefined);
@@ -906,36 +937,94 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         }
     };
 
-    /** 立刻中断当前回复，并把输入框里的草稿直接发出，跳过已有队列。 */
+    /** 把输入框里的草稿插到现有队列之前，立即打断当前回复并发送。 */
     const interruptAndSend = async () => {
-        if (!connected || (!sending && !waiting)) return;
+        if (jumpInFlightRef.current || !connected || (!sending && !waiting)) return;
+        jumpInFlightRef.current = true;
+        drainHoldRef.current = true;
+        setQueueActionId("draft");
         setAgentState({ activity: rt("interrupting") });
         try {
-            if (engine === "pi") await interruptPiTurn(endpoint, token);
-            else await interruptCodexTurn(endpoint, token, useAgentStore.getState().activeThreadId || undefined);
-            addEventLog(rt("interruptReply"), rt("replyInterrupted"));
-            // 中断是异步生效的，等 wait 状态回落再发送新消息，避免被后端判定为并发 turn。
-            await waitUntil(() => !useAgentStore.getState().waiting, INTERRUPT_WAIT_TIMEOUT_MS);
-            if (useAgentStore.getState().waiting) {
+            if (!useAgentStore.getState().activeTurnId) await waitForTurnStarted();
+            try {
+                if (engine === "pi") await interruptPiTurn(endpoint, token);
+                else await interruptCodexTurn(endpoint, token, useAgentStore.getState().activeThreadId || undefined);
+                addEventLog(rt("interruptReply"), rt("replyInterrupted"));
+            } catch (error) {
+                if (!turnIsIdle()) addEventLog(rt("stopFailed"), error);
+            }
+            if (!await waitForTurnIdle()) {
                 addEventLog(rt("interruptTimeout"), rt("interruptTimeoutDetail"));
                 return;
             }
-            // 没有可发的新输入时只打断，保留队列（暂停自动排空），避免排队消息凭空丢失。
             const latest = useAgentStore.getState();
-            const hasDraft = Boolean(latest.prompt.trim() || latest.attachments.length || latest.canvasReferences.length);
-            if (!hasDraft) {
-                queuePausedRef.current = true;
+            // 没有可发的新输入时只打断，暂停自动排队，避免剩余消息紧接着发出。
+            if (!latest.prompt.trim() && !latest.attachments.length && !latest.canvasReferences.length) {
+                setAgentState({ queuePaused: true });
                 addEventLog(rt("queuePaused"), rt("queuePausedDetail", { count: latest.queue.length }));
                 return;
             }
-            // 用户希望新输入优先，跳过已排队的消息。
-            useAgentStore.setState({ queue: [] });
-            queuePausedRef.current = false;
+            // 新输入优先，但保留其余排队消息，发送完继续排队。
+            setAgentState({ queuePaused: false });
             await sendPrompt();
-        } catch (error) {
-            setAgentState({ activity: rt("stopFailed") });
-            addEventLog(rt("stopFailed"), error);
+        } finally {
+            setQueueActionId("");
+            jumpInFlightRef.current = false;
+            drainHoldRef.current = false;
+            drainQueueRef.current();
         }
+    };
+
+    /** 把指定排队消息插到队首立即发送；运行中先中断当前回复。 */
+    const sendQueuedMessageNow = async (item: AgentQueuedMessage) => {
+        if (jumpInFlightRef.current) return;
+        const state = useAgentStore.getState();
+        if (!state.queue.some((entry) => entry.id === item.id)) return;
+        const busy = state.sending || state.waiting || state.conversation.status === "running";
+        jumpInFlightRef.current = true;
+        drainHoldRef.current = true;
+        setQueueActionId(item.id);
+        try {
+            if (busy) {
+                setAgentState({ activity: rt("interrupting") });
+                if (!useAgentStore.getState().activeTurnId) await waitForTurnStarted();
+                try {
+                    if (engine === "pi") await interruptPiTurn(endpoint, token);
+                    else await interruptCodexTurn(endpoint, token, useAgentStore.getState().activeThreadId || undefined);
+                    addEventLog(rt("interruptReply"), rt("replyInterrupted"));
+                } catch (error) {
+                    if (!turnIsIdle()) addEventLog(rt("stopFailed"), error);
+                }
+                if (!await waitForTurnIdle()) {
+                    addEventLog(rt("interruptTimeout"), rt("interruptTimeoutDetail"));
+                    return;
+                }
+            }
+            const latest = useAgentStore.getState();
+            if (!latest.queue.some((entry) => entry.id === item.id)) return;
+            setAgentState({ queue: latest.queue.filter((entry) => entry.id !== item.id), queuePaused: false });
+            await dispatchMessage(item);
+        } finally {
+            setQueueActionId("");
+            jumpInFlightRef.current = false;
+            drainHoldRef.current = false;
+            drainQueueRef.current();
+        }
+    };
+
+    const removeQueuedMessage = (id: string) => {
+        const state = useAgentStore.getState();
+        const item = state.queue.find((entry) => entry.id === id);
+        if (!item || jumpInFlightRef.current) return;
+        releaseQueuedImages([item]);
+        const queue = state.queue.filter((entry) => entry.id !== id);
+        setAgentState({ queue, ...(queue.length ? {} : { queuePaused: false }) });
+        addEventLog(rt("queueRemoved"), compactText(item.draftText || item.text) || rt("queuedMessageOnly"));
+    };
+
+    const resumeQueue = () => {
+        setAgentState({ queuePaused: false });
+        drainQueueRef.current();
     };
     const addAttachments = async (files: FileList | File[] | null) => {
         if (!files) return;
@@ -1007,7 +1096,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
 
     const removeAttachment = (id: string) => {
         const removed = attachments.find((item) => item.id === id);
-        if (removed?.kind === "image") {
+        if (removed?.kind === "image" && attachmentUrlsRef.current.has(removed.url)) {
             URL.revokeObjectURL(removed.url);
             attachmentUrlsRef.current.delete(removed.url);
         }
@@ -1690,6 +1779,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                     <AgentChatTimeline theme={theme} pendingTool={pendingTool} pendingApprovals={pendingApprovals} sending={sending} waiting={waiting} onRejectTool={rejectPendingTool} onApproveTool={approvePendingTool} onApprovalDecision={decideApproval} />
                     <AgentTaskProgress theme={theme} busy={sending || waiting} />
                     {tokenUsage ? <AgentUsageBar usage={tokenUsage} theme={theme} /> : null}
+                    <AgentQueuedMessages theme={theme} jumpingId={queueActionId} disabled={!connected || !conversationSendable} onSendNow={(item) => void sendQueuedMessageNow(item)} onRemove={removeQueuedMessage} onResume={resumeQueue} />
                     <AgentChatComposer
                         ref={promptInputRef}
                         prompt={prompt}
@@ -1697,7 +1787,6 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                         disabled={composerDisabled}
                         sending={sending || waiting}
                         queueable={!composerDisabled}
-                        queuedCount={queue.length}
                         placeholder={!connected
                             ? connectError || t("agent.status.disconnected")
                             : conversation.status === "failed"
@@ -1712,8 +1801,8 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                         theme={theme}
                         onPromptChange={(prompt) => setAgentState({ prompt })}
                         onSubmit={sendPrompt}
-                        onStop={stopTurn}
-                        onInterruptAndSend={interruptAndSend}
+                        onStop={queueActionId ? undefined : stopTurn}
+                        onInterruptAndSend={queueActionId ? undefined : interruptAndSend}
                         onAddFiles={addAttachments}
                         onRemoveAttachment={removeAttachment}
                         fileUploadsEnabled={engine !== "pi"}

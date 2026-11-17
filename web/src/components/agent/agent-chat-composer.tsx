@@ -16,7 +16,6 @@ export function AgentChatComposer({
     disabled,
     sending,
     queueable,
-    queuedCount,
     placeholder,
     theme,
     onPromptChange,
@@ -44,7 +43,6 @@ export function AgentChatComposer({
     sending?: boolean;
     /** 运行中的 turn 允许把新消息加入队列，而不是禁用输入。 */
     queueable?: boolean;
-    queuedCount?: number;
     placeholder: string;
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
     onPromptChange: (value: string) => void;
@@ -140,9 +138,6 @@ export function AgentChatComposer({
                             {left}
                         </div>
                         <div className="ml-auto flex shrink-0 items-center gap-1.5">
-                            {queuedCount ? (
-                                <span className="shrink-0 text-[11px] tabular-nums" style={{ color: theme.node.muted }}>{t("agent.composer.queued", { count: queuedCount })}</span>
-                            ) : null}
                             {sending && onStop ? (
                                 <Tooltip title={t("agent.composer.stop")} placement="top"><Button danger type="text" shape="circle" className="!h-8 !w-8 !min-w-8" icon={<Square className="size-4" strokeWidth={1.6} />} onClick={() => void onStop()} aria-label={t("agent.composer.stop")} /></Tooltip>
                             ) : null}

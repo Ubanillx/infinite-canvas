@@ -87,6 +87,8 @@ type AgentStore = {
     waiting: boolean;
     /** 待发送队列，仅在当前 turn 运行时累积，完成后按顺序自动发出。 */
     queue: AgentQueuedMessage[];
+    /** 用户主动停止后暂停自动排空，手动发送或恢复后继续。 */
+    queuePaused: boolean;
     messages: AgentChatItem[];
     tokenUsage: AgentTokenUsage | null;
     eventLogs: AgentEventLog[];
@@ -162,6 +164,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     sending: false,
     waiting: false,
     queue: [],
+    queuePaused: false,
     messages: [],
     tokenUsage: null,
     eventLogs: [],
@@ -188,7 +191,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         ...patch,
         messages: [], threads: [], activeThreadId: "", activeTurnId: "", tokenUsage: null,
         models: [], model: "", reasoningEffort: "", loadingThreads: false,
-        queue: [],
+        queue: [], queuePaused: false,
         pendingTool: null, pendingApprovals: [], bootstrapStatus: null, mcpStartupStatuses: {},
         conversation: { engine: patch.engine, revision: 0, conversationId: "", threadId: "", status: state.connected ? "preparing" : "idle", mcpStatuses: {} },
     } : patch),
