@@ -392,12 +392,14 @@ description: Implemented changes that still need manual verification
 
 ## Agent Message Queue and Reply Interrupt
 
-- The composer is no longer disabled while Codex or Pi is replying: sending during a run appends the message to the queue, the composer shows "N queued", and the next message is sent automatically when the current reply finishes.
-- While a reply runs, Send becomes "Add to queue" and the red Stop button stays available. When the composer has content, an extra "Interrupt and send" action interrupts the current reply, waits for the backend turn to really end, then skips the queue and sends that new input first.
-- Stop only interrupts the current reply and pauses automatic draining; queued messages remain. The next manual send resumes automatic draining so nothing fires immediately after a stop.
+- The composer is no longer disabled while Codex or Pi is replying: sending during a run appends the message to the queue, queued messages appear in a compact list above the composer, and the next message is sent automatically when the current reply finishes.
+- While a reply runs, Send becomes "Add to queue" and the red Stop button stays available. When the composer has content, an extra "Interrupt and send" action interrupts the current reply, waits for the backend turn to really end, then sends that new input ahead of the remaining queue without discarding queued messages.
+- Every queue row supports "send now" and remove. Sending a queued item while a reply is running interrupts the current reply first, then sends that item ahead of the others; when idle, it is sent immediately and the remaining queue continues afterwards. Removing or switching away from a queued item only releases composer-created image object URLs, never the shared image URL behind a referenced canvas node.
+- A paused queue shows a "resume sending" action in the queue header. Stop only interrupts the current reply and pauses automatic draining; queued messages remain. Manual send or resume continues automatic draining so nothing fires immediately after a stop.
 - Each queued message keeps the text, image attachments, file attachments, canvas references, and Skill captured at send time, so later edits to the composer or a new Skill selection never leak into it; a successful send only clears that message's own Skill selection.
 - Switching or creating a conversation clears the queue so messages cannot cross threads. A refresh does not restore the queue, which is expected.
 - When a queued message fails to send, its content returns to the composer instead of re-entering the queue, preventing an automatic retry loop; an existing draft in the composer is left untouched.
+- Interrupt waiting now requires the full turn to settle: no sending/waiting flag, no active turn, history loading finished, and the conversation back in a sendable state. This covers both Codex and Pi, and waits for the turn id when a reply was just submitted. Pi can also be interrupted while tools are running or before the first streamed token, not only during streaming output.
 - If the reply has not stopped within 10 seconds after an interrupt, the log records an interrupt timeout and no new message is forced through, avoiding concurrent-turn conflicts.
 
 ## Agent File Attachments and Artifacts
