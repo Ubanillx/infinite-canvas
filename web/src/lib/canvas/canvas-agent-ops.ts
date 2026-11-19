@@ -1,6 +1,7 @@
 import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
+import type { AgentGenerationPreferences } from "@/lib/agent/agent-generation-preferences";
 import { expandCanvasGroups, placeCanvasNodes } from "@/lib/canvas/canvas-node-placement";
 import { getNodeSpec, isRegisteredNodeType } from "@/lib/canvas/node-registry";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasNodeMetadata, type CanvasNodeTypeId, type ViewportTransform } from "@/types/canvas";
@@ -22,6 +23,7 @@ export type CanvasAgentSnapshot = {
     connections: CanvasConnection[];
     selectedNodeIds: string[];
     viewport: ViewportTransform;
+    generationPreferences?: AgentGenerationPreferences;
 };
 
 export function summarizeCanvasAgentOps(ops?: CanvasAgentOp[]) {

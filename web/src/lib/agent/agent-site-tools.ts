@@ -6,7 +6,7 @@ import { fetchPrompts } from "@/services/api/prompts";
 import { imageAspectOptions, imageQualityOptions, imageScaleOptions } from "@/components/image-settings-panel";
 import { videoResolutionOptions, videoSecondsRange, videoSizeOptions } from "@/components/video-settings-panel";
 import type { CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
-import { clampVideoSeconds } from "@/lib/media-size";
+import { clampVideoSeconds, inferMediaRatio, inferMediaScale } from "@/lib/media-size";
 import { isSeedanceVideoConfig, normalizeSeedanceDuration, seedanceDurationOptions, seedanceRatioOptions, seedanceResolutionOptions } from "@/lib/seedance-video";
 import { getActiveWorkspace } from "@/lib/workspace";
 import { requireAgentWorkspace } from "@/lib/agent/agent-tool-context";
@@ -224,8 +224,9 @@ function compactPrompt(prompt: unknown) {
 function getImageConfig() {
     const { config } = useConfigStore.getState();
     const model = config.imageModel || config.model;
+    const size = config.size || "1:1";
     return {
-        current: { model, modelName: modelOptionName(model), execution: resolveModelScript(config, model) ? "browser" : "server", durable: !resolveModelScript(config, model), quality: config.quality || "auto", size: config.size || "1:1", count: config.count || "1" },
+        current: { model, modelName: modelOptionName(model), execution: resolveModelScript(config, model) ? "browser" : "server", durable: !resolveModelScript(config, model), quality: config.quality || "auto", size, resolution: inferMediaScale(size), aspectRatio: inferMediaRatio(size), count: config.count || "1", canvasCount: config.canvasImageCount || config.count || "1", background: config.background === "transparent" ? "transparent" : "default" },
         models: selectableModelsByCapability(config, "image").map((value) => ({ value, label: modelOptionLabel(config, value), execution: resolveModelScript(config, value) ? "browser" : "server", durable: !resolveModelScript(config, value) })),
         qualityOptions: imageQualityOptions,
         scaleOptions: imageScaleOptions,

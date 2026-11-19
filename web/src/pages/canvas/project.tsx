@@ -90,6 +90,7 @@ import { positionTemplateContent } from "@/lib/canvas/canvas-template";
 import { createReversePromptWorkflow, type CanvasReversePromptOptions } from "@/lib/canvas/canvas-reverse-prompt";
 import { copyCanvasTemplateContent, requireTemplateWorkspace } from "@/services/canvas-templates";
 import { getActiveWorkspace } from "@/lib/workspace";
+import { buildAgentGenerationPreferences } from "@/lib/agent/agent-generation-preferences";
 import type { CanvasTemplateContent } from "@/types/canvas-template";
 import { CanvasTemplateEditorDialog, type TemplateSource } from "@/components/canvas/canvas-template-editor-dialog";
 import { ConnectionCreateMenu, NodeCreateMenu, type PendingConnectionCreate } from "@/components/canvas/canvas-create-menus";
@@ -338,6 +339,7 @@ function InfiniteCanvasPage() {
     const generationRequestsRef = useRef(new Map<string, CanvasGenerationRequest>());
     const videoPollIdsRef = useRef(new Set<string>());
     const canvasTasks = useCanvasGenerationTasks({ projectId, loaded: projectLoaded, nodes, nodesRef, connectionsRef, setNodes });
+    const agentGenerationPreferences = useMemo(() => buildAgentGenerationPreferences(effectiveConfig), [effectiveConfig]);
 
     const createHistoryEntry = useCallback(
         (): CanvasHistoryEntry => ({
@@ -898,6 +900,7 @@ function InfiniteCanvasPage() {
         connections,
         selectedNodeIds,
         viewport,
+        generationPreferences: agentGenerationPreferences,
         nodesRef,
         connectionsRef,
         selectedNodeIdsRef,

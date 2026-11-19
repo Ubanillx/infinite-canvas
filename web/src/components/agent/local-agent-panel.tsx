@@ -9,6 +9,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import i18n from "@/i18n";
 import { readAgentUrlBootstrap } from "@/lib/agent/agent-url-bootstrap";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { buildAgentGenerationPreferences, formatAgentGenerationPreferences } from "@/lib/agent/agent-generation-preferences";
 import { upscaleDataUrl } from "@/lib/canvas/canvas-image-data";
 import { imageMetadata } from "@/lib/canvas/canvas-node-factory";
 import { fitNodeSize } from "@/lib/canvas/canvas-node-size";
@@ -21,6 +22,7 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import { useAgentSkillStore } from "@/stores/use-agent-skill-store";
 import { useShallow } from "zustand/react/shallow";
 import { useAgentStore, type AgentAttachment, type AgentBootstrapStatus, type AgentCanvasContext, type AgentCanvasReference, type AgentCanvasTurnScope, type AgentChatItem, type AgentConversationState, type AgentEngine, type AgentFileAttachment, type AgentImageAttachment, type AgentModel, type AgentPendingApproval, type AgentPendingToolCall, type AgentPermissionMode, type AgentQueuedMessage, type AgentReasoningEffort, type AgentThreadSummary } from "@/stores/use-agent-store";
+import { useConfigStore } from "@/stores/use-config-store";
 import { type CanvasAgentOp, type CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import { isSiteTool, runSiteTool } from "@/lib/agent/agent-site-tools";
 import { acknowledgeCodexHistory, activateAgentClient, AgentApiError, createPiThread, deleteAgentFile, deletePiThread, discoverAgentConfig, exportCanvasImage, fetchAgentAttachment, fetchAgentFile, fetchAgentJson, fetchPiModels, fetchPiThread, fetchPiThreads, interruptCodexTurn, interruptPiTurn, postCodexApproval, postState, postToolResult, resumePiThread, uploadAgentFile } from "@/services/api/canvas-agent";
@@ -747,7 +749,11 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             setAgentState({ canvasReferences });
             message.warning(rt(canvasReferences.length ? "someCanvasReferencesMissing" : "canvasReferencesMissing"));
         }
-        const requestPrompt = promptWithCanvasReferences(promptWithAttachments(text, files), canvasReferences);
+        const baseRequestPrompt = promptWithCanvasReferences(promptWithAttachments(text, files), canvasReferences);
+        if (!baseRequestPrompt) return;
+        const config = useConfigStore.getState().config;
+        const generationPreferences = buildAgentGenerationPreferences(config);
+        const requestPrompt = `${baseRequestPrompt}${formatAgentGenerationPreferences(generationPreferences, config)}`;
         // 运行中允许排队：turn 进行时会话状态是 running，不能只认 ready/warning。
         const queueing = currentState.sending || currentState.waiting;
         const canSendNow = ["ready", "warning"].includes(currentState.conversation.status);

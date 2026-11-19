@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 
 import i18n from "@/i18n";
 import { getActiveWorkspace } from "@/lib/workspace";
+import type { AgentGenerationPreferences } from "@/lib/agent/agent-generation-preferences";
 import { useAgentStore, type AgentCanvasTurnScope } from "@/stores/use-agent-store";
 import { autoLayoutCanvasChanges } from "@/lib/canvas/canvas-auto-layout";
 import { applyCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
@@ -20,6 +21,7 @@ type AgentBridgeParams = {
     connections: CanvasConnection[];
     selectedNodeIds: Set<string>;
     viewport: ViewportTransform;
+    generationPreferences: AgentGenerationPreferences;
     nodesRef: MutableRefObject<CanvasNodeData[]>;
     connectionsRef: MutableRefObject<CanvasConnection[]>;
     selectedNodeIdsRef: MutableRefObject<Set<string>>;
@@ -39,7 +41,7 @@ type AgentBridgeParams = {
  * to the Agent store for the local Codex panel. All members except applyAgentOps are internal.
  */
 export function useAgentBridge(params: AgentBridgeParams) {
-    const { projectId, title, nodes, connections, selectedNodeIds, viewport, nodesRef, connectionsRef, selectedNodeIdsRef, viewportRef, sizeRef, generateNodeRef, setNodes, setConnections, setSelectedNodeIds, setSelectedConnectionId, setViewport, setContextMenu } =
+    const { projectId, title, nodes, connections, selectedNodeIds, viewport, generationPreferences, nodesRef, connectionsRef, selectedNodeIdsRef, viewportRef, sizeRef, generateNodeRef, setNodes, setConnections, setSelectedNodeIds, setSelectedConnectionId, setViewport, setContextMenu } =
         params;
     const setAgentCanvasContext = useAgentStore((state) => state.setCanvasContext);
     const instanceId = useRef(crypto.randomUUID()).current;
@@ -66,11 +68,11 @@ export function useAgentBridge(params: AgentBridgeParams) {
         return firstWrite;
     }, [isActiveTurn, turnKey]);
 
-    const agentSnapshot = useMemo<CanvasAgentSnapshot>(() => ({ projectId, title: projectTitle, nodes, connections, selectedNodeIds: Array.from(selectedNodeIds), viewport }), [connections, projectTitle, nodes, projectId, selectedNodeIds, viewport]);
+    const agentSnapshot = useMemo<CanvasAgentSnapshot>(() => ({ projectId, title: projectTitle, nodes, connections, selectedNodeIds: Array.from(selectedNodeIds), viewport, generationPreferences }), [connections, generationPreferences, projectTitle, nodes, projectId, selectedNodeIds, viewport]);
     const applyAgentOps = useCallback(
         (ops?: CanvasAgentOp[], scope?: AgentCanvasTurnScope) => {
             const safeOps = Array.isArray(ops) ? ops.filter((op) => op?.type) : [];
-            const before = { projectId, title: projectTitle, nodes: nodesRef.current, connections: connectionsRef.current, selectedNodeIds: Array.from(selectedNodeIdsRef.current), viewport: viewportRef.current };
+            const before = { projectId, title: projectTitle, nodes: nodesRef.current, connections: connectionsRef.current, selectedNodeIds: Array.from(selectedNodeIdsRef.current), viewport: viewportRef.current, generationPreferences };
             const generationOps = safeOps.filter((op): op is Extract<CanvasAgentOp, { type: "run_generation" }> => op.type === "run_generation" && Boolean(op.nodeId));
             const next = applyCanvasAgentOps(
                 before,
@@ -131,7 +133,7 @@ export function useAgentBridge(params: AgentBridgeParams) {
             }
             return { ...next, projectId, title: projectTitle };
         },
-        [projectTitle, projectId, instanceId, recordTurnNodes],
+        [projectTitle, projectId, generationPreferences, instanceId, recordTurnNodes],
     );
     const completePendingTurn = useCallback((scope: AgentCanvasTurnScope) => {
         const pending = pendingTurnRef.current;
@@ -161,8 +163,8 @@ export function useAgentBridge(params: AgentBridgeParams) {
                 focused = true;
             }
         }
-        pending.resolve?.(moved || focused ? { projectId, title: projectTitle, nodes: next, connections: connectionsRef.current, selectedNodeIds: [...selectedNodeIdsRef.current], viewport: viewportRef.current } : null);
-    }, [connectionsRef, nodesRef, selectedNodeIdsRef, viewportRef, sizeRef, projectId, projectTitle, instanceId, setNodes, setViewport, turnKey]);
+        pending.resolve?.(moved || focused ? { projectId, title: projectTitle, nodes: next, connections: connectionsRef.current, selectedNodeIds: [...selectedNodeIdsRef.current], viewport: viewportRef.current, generationPreferences } : null);
+    }, [connectionsRef, nodesRef, selectedNodeIdsRef, viewportRef, sizeRef, projectId, projectTitle, generationPreferences, instanceId, setNodes, setViewport, turnKey]);
     const settleGeneration = useCallback((scope: AgentCanvasTurnScope | undefined, ids: string[]) => {
         if (!scope || pendingTurnRef.current?.key !== turnKey(scope)) return;
         const pending = pendingTurnRef.current;
@@ -207,8 +209,8 @@ export function useAgentBridge(params: AgentBridgeParams) {
         setViewport(agentUndoSnapshot.viewport);
         setContextMenu(null);
         setAgentUndoSnapshot(null);
-        return { ...agentUndoSnapshot, projectId, title: projectTitle };
-    }, [agentUndoSnapshot, projectTitle, projectId, discardTurn]);
+        return { ...agentUndoSnapshot, projectId, title: projectTitle, generationPreferences };
+    }, [agentUndoSnapshot, projectTitle, projectId, generationPreferences, discardTurn]);
 
     useEffect(() => {
         setAgentCanvasContext({ instanceId, snapshot: agentSnapshot, applyOps: applyAgentOps, finishTurn, discardTurn, undoOps: undoAgentOps, canUndo: Boolean(agentUndoSnapshot), get templateCanvas() {
@@ -216,13 +218,13 @@ export function useAgentBridge(params: AgentBridgeParams) {
             return canvas && { ...canvas, insert: async (...args: Parameters<typeof canvas.insert>) => {
                 const state = useAgentStore.getState();
                 const scope = { engine: state.engine, threadId: state.activeThreadId, turnId: state.activeTurnId, workspaceId: getActiveWorkspace()?.id || "" };
-                const before = { projectId, title: projectTitle, nodes: nodesRef.current, connections: connectionsRef.current, selectedNodeIds: [...selectedNodeIdsRef.current], viewport: viewportRef.current };
+                const before = { projectId, title: projectTitle, nodes: nodesRef.current, connections: connectionsRef.current, selectedNodeIds: [...selectedNodeIdsRef.current], viewport: viewportRef.current, generationPreferences };
                 const result = await canvas.insert(...args);
                 if (recordTurnNodes(scope, before, result.insertedNodeIds)) setAgentUndoSnapshot(before);
                 return result;
             } };
         } });
-    }, [instanceId, agentSnapshot, applyAgentOps, finishTurn, discardTurn, agentUndoSnapshot, setAgentCanvasContext, undoAgentOps, params.templateCanvasRef, projectId, projectTitle, nodesRef, connectionsRef, selectedNodeIdsRef, viewportRef, recordTurnNodes]);
+    }, [instanceId, agentSnapshot, applyAgentOps, finishTurn, discardTurn, agentUndoSnapshot, setAgentCanvasContext, undoAgentOps, params.templateCanvasRef, projectId, projectTitle, generationPreferences, nodesRef, connectionsRef, selectedNodeIdsRef, viewportRef, recordTurnNodes]);
     useEffect(() => useAgentStore.subscribe((state, previous) => {
         if (state.engine !== previous.engine || state.activeThreadId !== previous.activeThreadId) discardTurn();
     }), [discardTurn]);
