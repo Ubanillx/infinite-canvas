@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Button, Modal, Tooltip } from "antd";
 import { RotateCcw, RotateCw, X, ZoomIn, ZoomOut } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -17,13 +17,33 @@ export function CanvasImageLightbox({ open, src, alt, onClose }: CanvasImageLigh
     const { t } = useTranslation();
     const [zoom, setZoom] = useState(1);
     const [rotation, setRotation] = useState(0);
+    const [pan, setPan] = useState({ x: 0, y: 0 });
+    const [isDragging, setIsDragging] = useState(false);
+    const dragRef = useRef<{ pointerId: number; x: number; y: number; panX: number; panY: number } | null>(null);
 
     useEffect(() => {
         if (open) {
             setZoom(1);
             setRotation(0);
+            setPan({ x: 0, y: 0 });
+            setIsDragging(false);
+            dragRef.current = null;
         }
     }, [open, src]);
+
+    useEffect(() => {
+        if (zoom > 1) return;
+        dragRef.current = null;
+        setIsDragging(false);
+        setPan((value) => value.x || value.y ? { x: 0, y: 0 } : value);
+    }, [zoom]);
+
+    const endDrag = (event: ReactPointerEvent<HTMLImageElement>) => {
+        if (dragRef.current?.pointerId !== event.pointerId) return;
+        dragRef.current = null;
+        setIsDragging(false);
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    };
 
     useEffect(() => {
         if (!open) return;
@@ -41,6 +61,7 @@ export function CanvasImageLightbox({ open, src, alt, onClose }: CanvasImageLigh
                 event.preventDefault();
                 setZoom(1);
                 setRotation(0);
+                setPan({ x: 0, y: 0 });
             }
         };
         window.addEventListener("keydown", onKeyDown);
@@ -87,8 +108,22 @@ export function CanvasImageLightbox({ open, src, alt, onClose }: CanvasImageLigh
                         src={src}
                         alt={alt}
                         draggable={false}
-                        className="max-h-[calc(100dvh-48px)] max-w-[calc(100vw-48px)] select-none object-contain"
-                        style={{ transform: `rotate(${rotation}deg) scale(${zoom})`, transition: "transform 160ms ease-out" }}
+                        className={`max-h-[calc(100dvh-48px)] max-w-[calc(100vw-48px)] select-none object-contain ${zoom > 1 ? "cursor-grab touch-none active:cursor-grabbing" : ""}`}
+                        style={{ transform: `translate(${pan.x}px, ${pan.y}px) rotate(${rotation}deg) scale(${zoom})`, transition: isDragging ? "none" : "transform 160ms ease-out" }}
+                        onPointerDown={(event) => {
+                            if (zoom <= 1 || event.button !== 0 || dragRef.current) return;
+                            event.preventDefault();
+                            dragRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y };
+                            event.currentTarget.setPointerCapture(event.pointerId);
+                            setIsDragging(true);
+                        }}
+                        onPointerMove={(event) => {
+                            const drag = dragRef.current;
+                            if (drag?.pointerId === event.pointerId) setPan({ x: drag.panX + event.clientX - drag.x, y: drag.panY + event.clientY - drag.y });
+                        }}
+                        onPointerUp={endDrag}
+                        onPointerCancel={endDrag}
+                        onLostPointerCapture={endDrag}
                     />
                     <div className="absolute bottom-5 left-1/2 z-10 flex max-w-[calc(100vw-32px)] -translate-x-1/2 flex-wrap items-center justify-center gap-1 rounded-full border border-white/35 bg-black/65 px-2.5 py-1.5 text-white shadow-[0_8px_28px_rgba(0,0,0,0.28)] backdrop-blur-xl">
                         <Tooltip title={t("canvas.projectPage.imageLightbox.zoomOut")}>
@@ -106,7 +141,7 @@ export function CanvasImageLightbox({ open, src, alt, onClose }: CanvasImageLigh
                             <Button type="text" className="!text-white hover:!bg-white/20 hover:!text-white" icon={<RotateCw className="size-4" />} onClick={() => setRotation((value) => value + 90)} aria-label={t("canvas.projectPage.imageLightbox.rotateRight")} />
                         </Tooltip>
                         <Tooltip title={t("canvas.projectPage.imageLightbox.reset")}>
-                            <Button type="text" className="!text-white hover:!bg-white/20 hover:!text-white" onClick={() => { setZoom(1); setRotation(0); }} aria-label={t("canvas.projectPage.imageLightbox.reset")}>{t("canvas.projectPage.imageLightbox.reset")}</Button>
+                            <Button type="text" className="!text-white hover:!bg-white/20 hover:!text-white" onClick={() => { setZoom(1); setRotation(0); setPan({ x: 0, y: 0 }); }} aria-label={t("canvas.projectPage.imageLightbox.reset")}>{t("canvas.projectPage.imageLightbox.reset")}</Button>
                         </Tooltip>
                         <span className="ml-1 hidden text-xs text-white/80 sm:inline">{t("canvas.projectPage.imageLightbox.hint")}</span>
                     </div>
