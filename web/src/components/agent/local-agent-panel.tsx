@@ -25,10 +25,11 @@ import { useAgentStore, type AgentAttachment, type AgentBootstrapStatus, type Ag
 import { useConfigStore } from "@/stores/use-config-store";
 import { type CanvasAgentOp, type CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import { isSiteTool, runSiteTool } from "@/lib/agent/agent-site-tools";
-import { acknowledgeCodexHistory, activateAgentClient, AgentApiError, createPiThread, deleteAgentFile, deletePiThread, discoverAgentConfig, exportCanvasImage, fetchAgentAttachment, fetchAgentFile, fetchAgentJson, fetchPiModels, fetchPiThread, fetchPiThreads, interruptCodexTurn, interruptPiTurn, postCodexApproval, postState, postToolResult, resumePiThread, uploadAgentFile } from "@/services/api/canvas-agent";
+import { acknowledgeCodexHistory, activateAgentClient, AgentApiError, compactCodexThread, createPiThread, deleteAgentFile, deletePiThread, discoverAgentConfig, exportCanvasImage, fetchAgentAttachment, fetchAgentFile, fetchAgentJson, fetchPiModels, fetchPiThread, fetchPiThreads, interruptCodexTurn, interruptPiTurn, postCodexApproval, postState, postToolResult, resumePiThread, uploadAgentFile } from "@/services/api/canvas-agent";
 import { workspaceHeaders } from "@/lib/workspace";
 import { AgentChatTimeline, AgentTaskProgress, AgentUsageBar } from "./agent-chat";
 import { AgentChatComposer } from "./agent-chat-composer";
+import { selectAgentModel } from "./agent-model-selection";
 import type { AgentChatPromptInputRef } from "./agent-chat-prompt-input";
 import { AgentConnectView } from "./agent-connect-view";
 import {
@@ -88,6 +89,7 @@ const HISTORY_RETRY_DELAYS_MS = [0, 150, 350, 700, 1200];
 const AGENT_INIT_TIMEOUT_MS = 60_000;
 const AGENT_REASONING_EFFORTS = new Set<AgentReasoningEffort>(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 const INTERRUPT_WAIT_TIMEOUT_MS = 10_000;
+const agentDefaultModelStorageKey = (engine: AgentEngine) => `canvas-agent-default-model-${engine}`;
 const rt = (key: string, options?: Record<string, unknown>) => i18n.t(`agent.runtime.${key}`, options);
 
 type AgentWorkspace = { workspacePath: string; activeThreadId?: string };
@@ -148,7 +150,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     // canvasContext is intentionally excluded because project updates it every frame during dragging and resizing.
     // The panel uses it only for ref synchronization and debounced postState calls, never during rendering.
     // Subscribing here would rerender the panel every frame and amplify the #185 crash, so it is observed imperatively below.
-    const { width, url, token, connected, enabled, prompt, attachments, sending, waiting, queue, queuePaused, tokenUsage, eventLogs, threads, activeThreadId, workspacePath, loadingThreads, activeTab, engine, confirmTools, permissionMode, models, model, reasoningEffort, activity, conversation, connectError, pendingTool, pendingApprovals } = useAgentStore(
+    const { width, url, token, connected, enabled, prompt, attachments, sending, waiting, queue, queuePaused, tokenUsage, eventLogs, threads, activeThreadId, workspacePath, loadingThreads, activeTab, engine, confirmTools, permissionMode, models, model, defaultModel, reasoningEffort, activity, conversation, connectError, pendingTool, pendingApprovals } = useAgentStore(
         useShallow((state) => ({
             width: state.width,
             url: state.url,
@@ -173,6 +175,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             permissionMode: state.permissionMode,
             models: state.models,
             model: state.model,
+            defaultModel: state.defaultModel,
             reasoningEffort: state.reasoningEffort,
             activity: state.activity,
             conversation: state.conversation,
@@ -189,6 +192,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     // 会话长时间停在 preparing/idle 时给出可见提示，避免只显示「MCP 初始化中」让人一直等。
     const [initStalled, setInitStalled] = useState(false);
     const [modelsRevision, setModelsRevision] = useState(0);
+    const modelListLoadedRef = useRef(false);
     useEffect(() => subscribeServerConfigSaveStatus(() => {
         const status = getServerConfigSaveStatus();
         if (!status.saving && !status.error) setModelsRevision((revision) => revision + 1);
@@ -228,6 +232,8 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     const threadOperationRef = useRef(0);
     const threadOperationSequenceRef = useRef(0);
     const promptInputRef = useRef<AgentChatPromptInputRef>(null);
+    const compactContextInFlightRef = useRef(false);
+    const [compactingContext, setCompactingContext] = useState(false);
     const dispatchRef = useRef<(message: AgentQueuedMessage) => Promise<void>>(async () => undefined);
     const drainQueueRef = useRef<() => void>(() => undefined);
     /** 正在排空队列，避免同一帧重复发出队首消息。 */
@@ -694,30 +700,40 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     }, [connected, endpoint, engine, loadSkills, token]);
 
     useEffect(() => {
-        if (!connected) return;
+        if (!connected) {
+            modelListLoadedRef.current = false;
+            return;
+        }
+        const preferDefault = !modelListLoadedRef.current;
         let disposed = false;
         setAgentState({ models: [] });
         const request = engine === "pi" ? fetchPiModels(endpoint, token) : fetchAgentJson<AgentModelsResponse>(endpoint, token, "/agent/codex/models");
         void request.then(({ data = [] }) => {
             if (disposed) return;
+            modelListLoadedRef.current = true;
             const names = new Set<string>();
             const models = data.flatMap((item) => {
                 const name = item.displayName || item.model;
                 const efforts = item.supportedReasoningEfforts.filter(({ reasoningEffort }) => AGENT_REASONING_EFFORTS.has(reasoningEffort) && (engine === "pi" || reasoningEffort !== "none"));
                 if (item.model === "codex-auto-review" || names.has(name) || !efforts.length) return [];
                 names.add(name);
+                const rawContextWindow = Number(item.contextWindow ?? (item as AgentModel & { context_window?: number }).context_window);
+                const contextWindow = Number.isFinite(rawContextWindow) && rawContextWindow > 0 ? rawContextWindow : undefined;
                 const defaultReasoningEffort = efforts.some((effort) => effort.reasoningEffort === item.defaultReasoningEffort) ? item.defaultReasoningEffort : efforts[0].reasoningEffort;
-                return [{ ...item, supportedReasoningEfforts: efforts, defaultReasoningEffort }];
+                return [{ ...item, ...(contextWindow ? { contextWindow } : {}), supportedReasoningEfforts: efforts, defaultReasoningEffort }];
             });
-            if (!models.length) return setAgentState({ models: [], model: "", reasoningEffort: "" });
+            if (!models.length) return setAgentState({ models: [], model: "", defaultModel: "", reasoningEffort: "" });
+            const configuredDefault = localStorage.getItem(agentDefaultModelStorageKey(engine)) || "";
             const savedModel = useAgentStore.getState().model;
-            const current = models.find((item) => item.model === savedModel) || models.find((item) => item.isDefault) || models[0];
+            const selectedModel = selectAgentModel(models, configuredDefault, savedModel, preferDefault);
+            const current = models.find((item) => item.model === selectedModel)!;
+            const defaultModel = models.find((item) => item.model === configuredDefault)?.model || models.find((item) => item.isDefault)?.model || "";
             const savedEffort = useAgentStore.getState().reasoningEffort;
             const efforts = current.supportedReasoningEfforts.map((item) => item.reasoningEffort);
             const nextEffort = efforts.includes(savedEffort as AgentReasoningEffort) ? savedEffort as AgentReasoningEffort : current.defaultReasoningEffort || efforts[0];
             localStorage.setItem("canvas-agent-model", current.model);
             localStorage.setItem("canvas-agent-reasoning-effort", nextEffort);
-            setAgentState({ models, model: current.model, reasoningEffort: nextEffort });
+            setAgentState({ models, model: current.model, defaultModel, reasoningEffort: nextEffort });
         }).catch((error) => addEventLog(rt("modelListFailed"), error));
         return () => { disposed = true; };
     }, [connected, endpoint, engine, modelsRevision, setAgentState, token]);
@@ -735,6 +751,36 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             document.removeEventListener("visibilitychange", activateVisible);
         };
     }, [connected, endpoint, token]);
+    const compactContext = async () => {
+        if (compactContextInFlightRef.current) return;
+        const current = useAgentStore.getState();
+        if (engine !== "codex" || !activeThreadId || !["ready", "warning"].includes(current.conversation.status) || current.waiting || current.sending || current.queue.length) return;
+        compactContextInFlightRef.current = true;
+        setCompactingContext(true);
+        const threadId = activeThreadId;
+        const conversationId = current.conversation.conversationId;
+        const previousUsage = current.tokenUsage;
+        setAgentState({ tokenUsage: null });
+        try {
+            await compactCodexThread(endpoint, token, {
+                threadId,
+                clientId: clientIdRef.current,
+                conversationId,
+                expectedRevision: current.conversation.revision,
+            });
+            const latest = useAgentStore.getState();
+            if (latest.engine === "codex" && latest.activeThreadId === threadId && latest.conversation.conversationId === conversationId) message.success(t("agent.composer.contextCompacted"));
+        } catch (error) {
+            const latest = useAgentStore.getState();
+            const sameConversation = latest.engine === "codex" && latest.activeThreadId === threadId && latest.conversation.conversationId === conversationId;
+            if (sameConversation && latest.tokenUsage === null) setAgentState({ tokenUsage: previousUsage });
+            if (sameConversation) message.error(error instanceof Error ? error.message : t("agent.composer.contextCompactFailed"));
+        } finally {
+            compactContextInFlightRef.current = false;
+            setCompactingContext(false);
+        }
+    };
+
     const sendPrompt = async () => {
         // 以 store 为准读取当前输入，避免 await 之后使用过期的闭包值。
         const snapshot = useAgentStore.getState();
@@ -1574,7 +1620,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     };
 
     const handleAgentEvent = async (event: AgentEventPayload) => {
-        if (event.type === "usage.updated") setAgentState({ tokenUsage: eventUsage(event) });
+        if (event.type === "usage.updated") setAgentState({ tokenUsage: eventUsage(event, models.find((item) => item.model === model)?.contextWindow) });
         const log = event.replayed ? null : formatAgentEventLog(event);
         const activity = formatAgentActivity(event);
         if (log) addEventLog(log.title, log.text);
@@ -1784,7 +1830,13 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                 <>
                     <AgentChatTimeline theme={theme} pendingTool={pendingTool} pendingApprovals={pendingApprovals} sending={sending} waiting={waiting} onRejectTool={rejectPendingTool} onApproveTool={approvePendingTool} onApprovalDecision={decideApproval} />
                     <AgentTaskProgress theme={theme} busy={sending || waiting} />
-                    {tokenUsage ? <AgentUsageBar usage={tokenUsage} theme={theme} /> : null}
+                    {tokenUsage || engine === "codex" && activeThreadId ? <AgentUsageBar
+                        usage={tokenUsage}
+                        theme={theme}
+                        onCompactContext={engine === "codex" && activeThreadId ? () => void compactContext() : undefined}
+                        compactingContext={compactingContext}
+                        compactContextDisabled={compactingContext || !connected || sending || waiting || loadingThreads || queue.length > 0 || conversationBusy || !["ready", "warning"].includes(conversation.status)}
+                    /> : null}
                     <AgentQueuedMessages theme={theme} jumpingId={queueActionId} disabled={!connected || !conversationSendable} onSendNow={(item) => void sendQueuedMessageNow(item)} onRemove={removeQueuedMessage} onResume={resumeQueue} />
                     <AgentChatComposer
                         ref={promptInputRef}
@@ -1818,6 +1870,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                         onPermissionModeChange={engine === "pi" ? undefined : changePermissionMode}
                         models={models}
                         model={model}
+                        defaultModel={defaultModel}
                         reasoningEffort={reasoningEffort}
                         onModelChange={(model) => {
                             const selected = models.find((item) => item.model === model);
@@ -1826,6 +1879,11 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                             localStorage.setItem("canvas-agent-model", model);
                             if (effort) localStorage.setItem("canvas-agent-reasoning-effort", effort);
                             setAgentState({ model, ...(effort ? { reasoningEffort: effort } : {}) });
+                        }}
+                        onSetDefaultModel={(model) => {
+                            localStorage.setItem(agentDefaultModelStorageKey(engine), model);
+                            setAgentState({ defaultModel: model });
+                            message.success(t("agent.composer.defaultModelUpdated"));
                         }}
                         onReasoningEffortChange={(reasoningEffort) => {
                             localStorage.setItem("canvas-agent-reasoning-effort", reasoningEffort);

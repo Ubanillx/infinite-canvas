@@ -41,6 +41,7 @@ export type AgentModel = {
     displayName: string;
     defaultReasoningEffort: AgentReasoningEffort;
     supportedReasoningEfforts: Array<{ reasoningEffort: AgentReasoningEffort; description?: string }>;
+    contextWindow?: number;
     isDefault?: boolean;
 };
 export type AgentApprovalDecision = "accept" | "acceptForSession" | "decline";
@@ -48,7 +49,7 @@ export type AgentPendingApproval = { requestId: string; method: string; threadId
 export type AgentCanvasTurnScope = { engine: AgentEngine; threadId: string; turnId: string; workspaceId: string };
 export type AgentCanvasContext = { instanceId: string; snapshot: CanvasAgentSnapshot; applyOps: (ops?: CanvasAgentOp[], scope?: AgentCanvasTurnScope) => CanvasAgentSnapshot; finishTurn: (scope: AgentCanvasTurnScope) => Promise<CanvasAgentSnapshot | null>; discardTurn: () => void; undoOps: () => CanvasAgentSnapshot | null; canUndo: boolean; templateCanvas?: TemplateCanvasContext };
 export type AgentThreadSummary = { id: string; preview: string; name?: string | null; cwd?: string; status?: string; source?: unknown; createdAt?: number; updatedAt?: number };
-export type AgentTokenUsage = { input: number; cached: number; output: number };
+export type AgentTokenUsage = { input: number; cached: number; output: number; contextTokens: number; contextWindow?: number };
 export type AgentBootstrapStatus = { key: string; text: string; detail: string; status: "running" | "ready" | "error" };
 export type AgentConversationState = {
     engine: "codex" | "pi";
@@ -103,6 +104,7 @@ type AgentStore = {
     permissionMode: AgentPermissionMode;
     models: AgentModel[];
     model: string;
+    defaultModel: string;
     reasoningEffort: AgentReasoningEffort | "";
     activity: string;
     conversation: AgentConversationState;
@@ -179,6 +181,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     permissionMode: typeof window === "undefined" ? "request" : (localStorage.getItem("canvas-agent-permission-mode") as AgentPermissionMode) || "request",
     models: [],
     model: typeof window === "undefined" ? "" : localStorage.getItem("canvas-agent-model") || "",
+    defaultModel: "",
     reasoningEffort: typeof window === "undefined" ? "" : (localStorage.getItem("canvas-agent-reasoning-effort") as AgentReasoningEffort) || "",
     activity: i18n.t("agent.state.ready"),
     conversation: { engine: "codex", revision: 0, conversationId: "", threadId: "", status: "idle", mcpStatuses: {} },
@@ -190,7 +193,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     setAgentState: (patch) => set((state) => patch.engine && patch.engine !== state.engine ? {
         ...patch,
         messages: [], threads: [], activeThreadId: "", activeTurnId: "", tokenUsage: null,
-        models: [], model: "", reasoningEffort: "", loadingThreads: false,
+        models: [], model: "", defaultModel: "", reasoningEffort: "", loadingThreads: false,
         queue: [], queuePaused: false,
         pendingTool: null, pendingApprovals: [], bootstrapStatus: null, mcpStartupStatuses: {},
         conversation: { engine: patch.engine, revision: 0, conversationId: "", threadId: "", status: state.connected ? "preparing" : "idle", mcpStatuses: {} },

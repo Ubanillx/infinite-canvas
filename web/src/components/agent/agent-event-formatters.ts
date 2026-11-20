@@ -6,6 +6,7 @@ import { randomId } from "@/lib/utils";
 import { resolveAgentMessageAssetUrl } from "@/services/api/canvas-agent";
 import { useAgentStore, type AgentAttachment, type AgentChatItem, type AgentEventLog, type AgentMessageAttachment, type AgentTokenUsage } from "@/stores/use-agent-store";
 import type { AgentChatAttachment } from "./agent-chat-message";
+import { contextTokenCount } from "./agent-usage";
 export const REASONING_PLACEHOLDER = i18n.t("agent.events.analyzing");
 
 export type AgentEventPayload = {
@@ -21,6 +22,8 @@ export type AgentEventPayload = {
     error?: { message?: string };
     message?: string;
     status?: string;
+    model_context_window?: number;
+    modelContextWindow?: number;
     explanation?: unknown;
     plan?: unknown;
     usage?: Record<string, unknown>;
@@ -313,12 +316,27 @@ export function agentErrorView(value: unknown) {
     return { title: tr("taskFailed"), text: text || tr("taskFailedDescription") };
 }
 
-export function eventUsage(event: AgentEventPayload): AgentTokenUsage {
+export function eventUsage(event: AgentEventPayload, fallbackContextWindow?: number): AgentTokenUsage {
+    const input = numberField(event.usage, "input_tokens");
+    const cached = numberField(event.usage, "cached_input_tokens");
+    const contextWindow = positiveNumber(event.usage, "model_context_window")
+        || positiveNumber(event.usage, "context_window")
+        || positiveNumber(event.usage, "contextWindow")
+        || positiveNumber(event, "model_context_window")
+        || positiveNumber(event, "modelContextWindow")
+        || fallbackContextWindow;
     return {
-        input: numberField(event.usage, "input_tokens"),
-        cached: numberField(event.usage, "cached_input_tokens"),
+        input,
+        cached,
         output: numberField(event.usage, "output_tokens"),
+        contextTokens: contextTokenCount(input, cached, event.agent || "", positiveNumber(event.usage, "context_tokens") || undefined),
+        ...(contextWindow ? { contextWindow } : {}),
     };
+}
+
+function positiveNumber(value: unknown, key: string) {
+    const number = Number(value && typeof value === "object" ? (value as Record<string, unknown>)[key] : 0);
+    return Number.isFinite(number) && number > 0 ? number : 0;
 }
 
 function shortId(value?: string) {

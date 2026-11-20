@@ -53,7 +53,7 @@ export type AgentSkillsResponse = { ok?: boolean; data?: AgentSkillSummary[]; er
 export type AgentSkillResponse = { ok?: boolean; data?: AgentSkillDetail };
 export type AgentSkillImportFile = { path: string; content: string };
 export type AgentSkillDraftResponse = { ok?: boolean; data?: AgentSkillDraft };
-export type AgentModelsResponse = { ok?: boolean; data?: Array<{ id: string; model: string; displayName: string; defaultReasoningEffort: AgentReasoningEffort; supportedReasoningEfforts: Array<{ reasoningEffort: AgentReasoningEffort; description?: string }>; isDefault?: boolean }> };
+export type AgentModelsResponse = { ok?: boolean; data?: Array<{ id: string; model: string; displayName: string; defaultReasoningEffort: AgentReasoningEffort; supportedReasoningEfforts: Array<{ reasoningEffort: AgentReasoningEffort; description?: string }>; contextWindow?: number; isDefault?: boolean }> };
 export type AgentPiThread = { id: string; preview: string; name: string | null; cwd: string; status: string; createdAt: number; updatedAt: number };
 export type AgentPiThreadsResponse = { ok?: boolean; workspace?: { workspacePath: string; activeThreadId?: string }; conversation?: AgentConversationStatePayload; data?: AgentPiThread[]; thread?: AgentPiThread; messages?: unknown[] };
 export type AgentPiThreadResponse = { ok?: boolean; workspace?: { workspacePath: string; activeThreadId?: string }; conversation?: AgentConversationStatePayload; thread?: AgentPiThread; messages?: unknown[]; settledTurnIds?: string[] };
@@ -88,6 +88,10 @@ export async function postCodexApproval(endpoint: string, token: string, request
 
 export async function interruptCodexTurn(endpoint: string, token: string, threadId?: string) {
     await fetchAgentJson(endpoint, token, "/agent/codex/interrupt", jsonPost({ threadId }));
+}
+
+export async function compactCodexThread(endpoint: string, token: string, body: { threadId: string; clientId: string; conversationId: string; expectedRevision: number }) {
+    return await fetchAgentJson<{ ok?: boolean; threadId?: string }>(endpoint, token, "/agent/codex/compact", jsonPost(body));
 }
 
 export async function interruptPiTurn(endpoint: string, token: string) {

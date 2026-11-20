@@ -1,6 +1,6 @@
 import { useImperativeHandle, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
 import { Button, Dropdown, Tooltip } from "antd";
-import { ArrowUp, Check, Cpu, FileText, FolderUp, Gauge, Hand, ImagePlus, LayoutGrid, LoaderCircle, RefreshCw, ShieldAlert, ShieldCheck, ShieldOff, Square, X, Zap } from "lucide-react";
+import { ArrowUp, Check, Cpu, FileText, FolderUp, Gauge, Hand, ImagePlus, LayoutGrid, LoaderCircle, RefreshCw, ShieldAlert, ShieldCheck, ShieldOff, Square, Star, X, Zap } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
@@ -31,8 +31,10 @@ export function AgentChatComposer({
     onPermissionModeChange,
     models,
     model,
+    defaultModel,
     reasoningEffort,
     onModelChange,
+    onSetDefaultModel,
     onReasoningEffortChange,
     left,
 }: {
@@ -58,8 +60,10 @@ export function AgentChatComposer({
     onPermissionModeChange?: (permissionMode: AgentPermissionMode) => void;
     models?: AgentModel[];
     model?: string;
+    defaultModel?: string;
     reasoningEffort?: AgentReasoningEffort | "";
     onModelChange?: (model: string) => void;
+    onSetDefaultModel?: (model: string) => void;
     onReasoningEffortChange?: (effort: AgentReasoningEffort) => void;
     left?: ReactNode;
 }) {
@@ -105,7 +109,7 @@ export function AgentChatComposer({
                 ) : null}
                 <AgentChatPromptInput ref={inputRef} value={prompt} disabled={disabled} placeholder={placeholder} theme={theme} onChange={onPromptChange} onSubmit={() => { if (canSubmit) void onSubmit(); }} onAddFiles={onAddFiles} />
                 <div className="@container mt-2" style={{ color: theme.node.muted }}>
-                    {models?.length && model && reasoningEffort && onModelChange && onReasoningEffortChange ? <AgentModelControls models={models} model={model} reasoningEffort={reasoningEffort} onModelChange={onModelChange} onReasoningEffortChange={onReasoningEffortChange} /> : null}
+                    {models?.length && model && reasoningEffort && onModelChange && onSetDefaultModel && onReasoningEffortChange ? <AgentModelControls models={models} model={model} defaultModel={defaultModel || ""} reasoningEffort={reasoningEffort} theme={theme} onModelChange={onModelChange} onSetDefaultModel={onSetDefaultModel} onReasoningEffortChange={onReasoningEffortChange} /> : null}
                     <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
                         <div className="flex min-w-0 flex-wrap items-center gap-0.5">
                             <Tooltip title={t("agent.composer.mentions.skillShortcut")}>
@@ -157,7 +161,7 @@ function formatSize(bytes: number) {
     return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)}MB` : `${Math.max(1, Math.ceil(bytes / 1024))}KB`;
 }
 
-function AgentModelControls({ models, model, reasoningEffort, onModelChange, onReasoningEffortChange }: { models: AgentModel[]; model: string; reasoningEffort: AgentReasoningEffort; onModelChange: (model: string) => void; onReasoningEffortChange: (effort: AgentReasoningEffort) => void }) {
+function AgentModelControls({ models, model, defaultModel, reasoningEffort, theme, onModelChange, onSetDefaultModel, onReasoningEffortChange }: { models: AgentModel[]; model: string; defaultModel: string; reasoningEffort: AgentReasoningEffort; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onModelChange: (model: string) => void; onSetDefaultModel: (model: string) => void; onReasoningEffortChange: (effort: AgentReasoningEffort) => void }) {
     const { t } = useTranslation();
     const current = models.find((item) => item.model === model) || models[0];
     const modelLabel = (item: AgentModel) => item.model.includes("::") ? item.model.slice(item.model.indexOf("::") + 2) : item.displayName || item.model;
@@ -178,6 +182,9 @@ function AgentModelControls({ models, model, reasoningEffort, onModelChange, onR
                         </SelectContent>
                     </Select>
                 </span>
+            </Tooltip>
+            <Tooltip title={t(current.model === defaultModel ? "agent.composer.modelIsDefault" : "agent.composer.setDefaultModel")}>
+                <Button type="text" shape="circle" size="small" disabled={current.model === defaultModel} className="!h-7 !w-7 !min-w-7" style={{ color: current.model === defaultModel ? theme.node.text : theme.node.muted }} icon={<Star className="size-3.5" fill={current.model === defaultModel ? "currentColor" : "none"} strokeWidth={1.6} />} onClick={() => onSetDefaultModel(current.model)} aria-label={t(current.model === defaultModel ? "agent.composer.modelIsDefault" : "agent.composer.setDefaultModel")} />
             </Tooltip>
             {current.supportedReasoningEfforts.some((item) => item.reasoningEffort !== "none") && <Tooltip title={t("agent.composer.reasoning", { effort: effortLabel(reasoningEffort) })} placement="top" open={reasoningOpen ? false : undefined}>
                 <span className="inline-flex shrink-0">

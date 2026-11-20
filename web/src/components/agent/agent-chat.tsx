@@ -1,7 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, useSpring, useTransform } from "motion/react";
+import { Button } from "antd";
 import { useTranslation } from "react-i18next";
-import { MessageSquare } from "lucide-react";
+import { LoaderCircle, MessageSquare, Minimize2 } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { summarizeCanvasAgentOps } from "@/lib/canvas/canvas-agent-ops";
@@ -9,6 +10,7 @@ import { useAgentStore, type AgentChatItem, type AgentPendingApproval, type Agen
 import { AgentApprovalCard, AgentChatMessage, AgentCommandGroup, AgentPendingToolCard, AgentToolCard, AgentWorkingMessage } from "./agent-chat-message";
 import { agentMessageToChatMessage, currentPlanMessage, isPlanMessage, latestPlanMessage, toolCallDetail, toolName, workingActivity } from "./agent-event-formatters";
 import { AgentScrollToBottom } from "./agent-scroll-to-bottom";
+import { contextUsagePercent } from "./agent-usage";
 
 const SCROLL_BOTTOM_THRESHOLD = 48;
 const historyMessageStyle = { contentVisibility: "auto", containIntrinsicSize: "0 80px" } as const;
@@ -171,14 +173,42 @@ function isCommandMessage(item: AgentChatItem) {
     return item.role === "tool" && item.detail && typeof item.detail === "object" && (item.detail as { kind?: unknown }).kind === "command";
 }
 
-export function AgentUsageBar({ usage, theme }: { usage: AgentTokenUsage; theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
+export function AgentUsageBar({ usage, theme, onCompactContext, compactContextDisabled, compactingContext }: { usage: AgentTokenUsage | null; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onCompactContext?: () => void; compactContextDisabled?: boolean; compactingContext?: boolean }) {
     const { t } = useTranslation();
+    const percent = contextUsagePercent(usage);
+    if (!usage && !onCompactContext) return null;
     return (
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-x-3 gap-y-1 px-6 pt-2 text-[10px] tabular-nums" style={{ color: theme.node.muted }}>
-            <span className="opacity-70">{t("agent.chat.latestCall")}</span>
-            <UsageNumber label={t("agent.chat.input")} value={usage.input} color={theme.node.text} />
-            <UsageNumber label={t("agent.chat.cached")} value={usage.cached} color={theme.node.text} />
-            <UsageNumber label={t("agent.chat.output")} value={usage.output} color={theme.node.text} />
+        <div className="shrink-0 px-6 pt-2 text-[10px] tabular-nums" style={{ color: theme.node.muted }}>
+            <div className="flex min-h-7 items-center justify-between gap-2">
+                {usage ? (
+                    <div className="flex min-w-0 flex-1 items-center gap-2" aria-label={percent === null
+                        ? t("agent.chat.contextTokensOnly", { count: usage.contextTokens.toLocaleString() })
+                        : t("agent.chat.contextUsage", { used: usage.contextTokens.toLocaleString(), total: usage.contextWindow?.toLocaleString(), percent })}>
+                        <span className="shrink-0">{t("agent.chat.contextUsageLabel")}</span>
+                        {percent !== null ? (
+                            <div className="h-1 min-w-8 flex-1 overflow-hidden rounded-full" style={{ background: theme.node.stroke }} role="meter" aria-valuemin={0} aria-valuemax={usage.contextWindow} aria-valuenow={Math.min(usage.contextTokens, usage.contextWindow || 0)}>
+                                <div className="h-full rounded-full" style={{ width: `${percent}%`, background: theme.node.text }} />
+                            </div>
+                        ) : null}
+                        <span className="shrink-0 font-medium" style={{ color: theme.node.text }}>
+                            {percent === null
+                                ? t("agent.chat.contextTokensOnly", { count: usage.contextTokens.toLocaleString() })
+                                : t("agent.chat.contextUsage", { used: usage.contextTokens.toLocaleString(), total: usage.contextWindow?.toLocaleString(), percent })}
+                        </span>
+                    </div>
+                ) : null}
+                {onCompactContext ? (
+                    <Button type="text" size="small" disabled={compactContextDisabled} icon={compactingContext ? <LoaderCircle className="size-3.5 animate-spin" strokeWidth={1.6} /> : <Minimize2 className="size-3.5" strokeWidth={1.6} />} style={{ color: theme.node.text }} className="!h-7 !shrink-0 !px-1.5 !text-[11px]" onClick={onCompactContext}>
+                        {t(compactingContext ? "agent.composer.compactingContext" : "agent.composer.compactContext")}
+                    </Button>
+                ) : null}
+            </div>
+            {usage ? <div className="mt-1 flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+                <span className="opacity-70">{t("agent.chat.latestCall")}</span>
+                <UsageNumber label={t("agent.chat.input")} value={usage.input} color={theme.node.text} />
+                <UsageNumber label={t("agent.chat.cached")} value={usage.cached} color={theme.node.text} />
+                <UsageNumber label={t("agent.chat.output")} value={usage.output} color={theme.node.text} />
+            </div> : null}
         </div>
     );
 }
