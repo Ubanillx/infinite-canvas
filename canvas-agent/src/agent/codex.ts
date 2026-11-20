@@ -96,6 +96,11 @@ export async function listCodexModels(emit: AgentEmit, cwd?: string) {
     return await (await getCodexApp(emit, cwd)).listModels();
 }
 
+/** 压缩现有 Codex 线程，等待 contextCompaction 轮次结束后返回。 */
+export async function compactCodexThread(emit: AgentEmit, threadId: string, cwd?: string, onTurn?: (turnId: string) => void) {
+    await (await getCodexApp(emit, cwd)).compactThread(threadId, onTurn);
+}
+
 /** 查询当前工作空间的原生 Skill 列表。 */
 export async function listCodexSkills(emit: AgentEmit, cwd: string, forceReload = false): Promise<CodexSkillsListEntry> {
     const result = await (await getCodexApp(emit, cwd)).listSkills(cwd, forceReload);

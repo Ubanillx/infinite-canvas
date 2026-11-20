@@ -101,6 +101,10 @@ type CodexRequestSpec = {
         params: { threadId: string; cursor?: string; sortDirection: "asc"; itemsView: "full" };
         result: { data: CodexTurn[]; nextCursor?: string | null };
     };
+    "thread/compact/start": {
+        params: { threadId: string };
+        result: Record<string, never>;
+    };
     "thread/archive": {
         params: { threadId: string };
         result: Record<string, never>;

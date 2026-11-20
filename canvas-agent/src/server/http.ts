@@ -10,7 +10,7 @@ import { generatePiSkillDraft, interruptPiTurn, releasePiRuntime, runPiTurn } fr
 import { piModelOptions, readPiChannels } from "../agent/pi/model.js";
 import { loadPiSkills, PiSkillError, piSkillSummaries, setPiSkillEnabled } from "../agent/pi/skills.js";
 import { PiThreadStore, readPiThread } from "../agent/pi/store.js";
-import { archiveCodexThread, CodexSkillLookupError, configureCodexSkill, generateCodexSkillDraft, interruptCodexTurn, isRecoverableThreadError, listCodexModels, listCodexSkills, listCodexThreads, readCodexThread, resolveCodexApproval, resolveCodexSkill, resumeCodexThread, runCodexTurn, startCodexThread, summarizeCodexThread } from "../agent/codex.js";
+import { archiveCodexThread, CodexSkillLookupError, compactCodexThread, configureCodexSkill, generateCodexSkillDraft, interruptCodexTurn, isRecoverableThreadError, listCodexModels, listCodexSkills, listCodexThreads, readCodexThread, resolveCodexApproval, resolveCodexSkill, resumeCodexThread, runCodexTurn, startCodexThread, summarizeCodexThread } from "../agent/codex.js";
 import type { CodexReasoningEffort, CodexSkillSelector } from "../agent/codex-protocol.js";
 import { messageMetadataStoreForWorkspace } from "../agent/message-metadata.js";
 import type { AgentAttachment, AgentPermissionMode } from "../agent/types.js";
@@ -716,6 +716,31 @@ export function startHttpServer() {
             session.setCodexState({ busy: false, threadId, turnId: "" });
             session.finishConversationRun(threadId);
             throw error;
+        }
+    }));
+    app.post("/agent/codex/compact", codexMutation(async (req, res) => {
+        const workspace = requestWorkspace(config, req);
+        const clientId = String(req.body?.clientId || "");
+        const requestedThreadId = String(req.body?.threadId || "");
+        const activeThreadId = workspace.activeThreadId || "";
+        const conversation = session.conversationStateSnapshot;
+        const requestedConversationId = String(req.body?.conversationId || "");
+        const expectedRevision = Number(req.body?.expectedRevision || 0);
+        if (!clientId || !session.hasClient(clientId)) return res.status(409).json({ ok: false, error: "发起压缩的网页已断开，请重新连接后再试" });
+        if (conversation.engine !== "codex" || requestedThreadId !== activeThreadId || conversation.threadId !== activeThreadId || (requestedConversationId && requestedConversationId !== conversation.conversationId) || (expectedRevision && expectedRevision !== conversation.revision)) {
+            return res.status(409).json({ ok: false, code: "CONVERSATION_STALE", error: "当前会话已切换，请确认后重试", state: conversation });
+        }
+        if (!activeThreadId || !["ready", "warning"].includes(conversation.status)) return res.status(409).json({ ok: false, code: "CONVERSATION_NOT_READY", error: "当前对话无法压缩，请等待任务结束" });
+        session.bindClient(clientId);
+        session.markConversationRunning(activeThreadId);
+        session.setCodexState({ busy: true, threadId: activeThreadId, turnId: "" });
+        try {
+            await compactCodexThread(emit, activeThreadId, workspace.workspacePath, (turnId) => session.setCodexState({ busy: true, threadId: activeThreadId, turnId }));
+            res.json({ ok: true, threadId: activeThreadId });
+        } finally {
+            session.releaseClient(clientId);
+            session.setCodexState({ busy: false, threadId: activeThreadId, turnId: "" });
+            session.finishConversationRun(activeThreadId);
         }
     }));
 

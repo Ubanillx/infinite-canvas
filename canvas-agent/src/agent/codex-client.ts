@@ -18,6 +18,7 @@ type ItemDeltaParams = { threadId: string; turnId: string; itemId: string; delta
 type PendingDelta = { delta: string; itemType: string; params: ItemDeltaParams; timer: ReturnType<typeof setTimeout> };
 type ApprovalRequest = { id: number; method: string; params: JsonRecord; decision?: string };
 type PendingTurnStart = { threadId: string; prompt: string; messageText?: string; turnId?: string; onTurn?: (turnId: string) => void };
+type PendingCompaction = { turnId?: string; onTurn?: (turnId: string) => void; resolve: () => void; reject: (error: Error) => void };
 
 const canvasAgentMcp = canvasAgentMcpCommand();
 const require = createRequire(import.meta.url);
@@ -43,6 +44,7 @@ export class CodexAppClient {
     private lastUsage: unknown = null;
     private pending = new Map<number, PendingRequest>();
     private activeTurns = new Map<string, ActiveTurn>();
+    private pendingCompactions = new Map<string, PendingCompaction>();
     private completedTurns = new Map<string, Error | null>();
     private completedTurnResults = new Map<string, unknown>();
     private pendingDeltas = new Map<string, PendingDelta>();
@@ -221,6 +223,28 @@ export class CodexAppClient {
         return this.request("model/list", { limit: 100, includeHidden: false });
     }
 
+    /** 压缩线程，并等待服务端压缩轮次结束。 */
+    async compactThread(threadId: string, onTurn?: (turnId: string) => void) {
+        if (this.isThreadActive(threadId)) throw new Error("Codex 正在运行，请等待当前任务结束后再压缩上下文");
+        let resolve!: () => void;
+        let reject!: (error: Error) => void;
+        const completion = new Promise<void>((resolvePromise, rejectPromise) => {
+            resolve = resolvePromise;
+            reject = rejectPromise;
+        });
+        void completion.catch(() => undefined);
+        const pending: PendingCompaction = { onTurn, resolve, reject };
+        this.pendingCompactions.set(threadId, pending);
+        this.lastUsage = null;
+        try {
+            await this.request("thread/compact/start", { threadId });
+            await completion;
+        } catch (error) {
+            if (this.pendingCompactions.get(threadId) === pending) this.pendingCompactions.delete(threadId);
+            throw error;
+        }
+    }
+
     /** 查询指定工作空间可发现的 Codex Skills。 */
     listSkills(cwd: string, forceReload = false) {
         if (!forceReload) return this.request("skills/list", { cwds: [cwd] });
@@ -300,7 +324,7 @@ export class CodexAppClient {
 
     /** 判断当前 app-server 是否正在处理指定线程。 */
     isThreadActive(threadId: string) {
-        return this.currentThreadId === threadId || [...this.activeTurns.values()].some((turn) => turn.threadId === threadId);
+        return this.pendingCompactions.has(threadId) || this.currentThreadId === threadId || [...this.activeTurns.values()].some((turn) => turn.threadId === threadId);
     }
 
     /** 中断当前正在运行且属于指定线程的 Codex turn。 */
@@ -440,6 +464,11 @@ export class CodexAppClient {
             if (method === "turn/started") {
                 this.currentThreadId = threadId;
                 this.currentTurnId = turnId;
+                const compaction = this.pendingCompactions.get(threadId);
+                if (compaction && !compaction.turnId) {
+                    compaction.turnId = turnId;
+                    compaction.onTurn?.(turnId);
+                }
                 this.notifyTurnStarted(threadId, turnId);
             }
             params = { ...params, ...(threadId ? { threadId } : {}), ...(turnId ? { turnId } : {}) };
@@ -610,7 +639,10 @@ export class CodexAppClient {
     private completeTurn(event: AgentEvent, params: JsonRecord, eventScope: ReturnType<typeof codexEventScope>) {
         const turn = (params as unknown as CodexNotificationParams<"turn/completed">).turn;
         const turnId = turn.id;
-        const turnKey = turnCacheKey(String(field(params, "threadId") || field(event, "thread_id") || ""), turnId);
+        const threadId = String(field(params, "threadId") || field(event, "thread_id") || "");
+        const turnKey = turnCacheKey(threadId, turnId);
+        const compaction = this.pendingCompactions.get(threadId);
+        const isCompaction = compaction?.turnId === turnId;
         this.finalizingTurns.delete(turnKey);
         this.emit("agent_event", { agent: "codex", ...event });
         const pending = this.activeTurns.get(turnKey);
@@ -619,7 +651,7 @@ export class CodexAppClient {
         if (pending) {
             this.activeTurns.delete(turnKey);
             failure ? pending.reject(failure) : pending.resolve(event);
-        } else if (turnId) {
+        } else if (turnId && !isCompaction) {
             this.completedTurns.set(turnKey, failure);
         }
         if (turnId === this.currentTurnId) {
@@ -627,6 +659,13 @@ export class CodexAppClient {
             this.currentTurnId = "";
         }
         this.emit("agent_done", { agent: "codex", usage: event.usage, ...eventScope });
+        if (compaction && isCompaction) {
+            this.pendingCompactions.delete(threadId);
+            this.startedTurnKeys.delete(turnKey);
+            if (error) compaction.reject(new CodexReportedError(error.message || "Codex 上下文压缩失败"));
+            else if (String(field(turn, "status") || "completed") !== "completed") compaction.reject(new Error("Codex 上下文压缩未完成"));
+            else compaction.resolve();
+        }
     }
 
     /** 合并并广播 Agent 文本或执行输出增量。 */
@@ -772,6 +811,8 @@ export class CodexAppClient {
         this.pendingThreadStartedNotifications.length = 0;
         this.structuredOutputByTurn.clear();
         this.pendingTurnStart = undefined;
+        this.pendingCompactions.forEach((compaction) => compaction.reject(new CodexReportedError(message)));
+        this.pendingCompactions.clear();
         this.startedTurnKeys.clear();
         this.lastUsage = null;
         this.currentThreadId = "";
@@ -943,12 +984,19 @@ function mergeDefinedRecord(started: JsonRecord, completed: JsonRecord) {
 
 /** 将 Codex token usage 转换为前端字段。 */
 function normalizeUsage(params: CodexNotificationParams<"thread/tokenUsage/updated">) {
-    const last = params.tokenUsage.last;
+    const source = params as unknown as JsonRecord;
+    const usage = params.tokenUsage as unknown as JsonRecord;
+    const last = field(usage, "last") as JsonRecord | undefined;
+    const contextWindow = [field(usage, "modelContextWindow"), field(usage, "model_context_window"), field(usage, "contextWindow"), field(usage, "context_window"), field(source, "modelContextWindow"), field(source, "model_context_window"), field(source, "contextWindow"), field(source, "context_window")]
+        .map(Number)
+        .find((value) => Number.isFinite(value) && value > 0);
     return {
-        input_tokens: last.inputTokens,
-        cached_input_tokens: last.cachedInputTokens,
-        output_tokens: last.outputTokens,
-        reasoning_output_tokens: last.reasoningOutputTokens,
+        input_tokens: Number(field(last, "inputTokens")) || 0,
+        cached_input_tokens: Number(field(last, "cachedInputTokens")) || 0,
+        context_tokens: Number(field(last, "inputTokens")) || 0,
+        output_tokens: Number(field(last, "outputTokens")) || 0,
+        reasoning_output_tokens: Number(field(last, "reasoningOutputTokens")) || 0,
+        ...(contextWindow ? { context_window: contextWindow } : {}),
     };
 }
 
