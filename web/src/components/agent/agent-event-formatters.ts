@@ -316,20 +316,19 @@ export function agentErrorView(value: unknown) {
     return { title: tr("taskFailed"), text: text || tr("taskFailedDescription") };
 }
 
-export function eventUsage(event: AgentEventPayload, fallbackContextWindow?: number): AgentTokenUsage {
+export function eventUsage(event: AgentEventPayload): AgentTokenUsage {
     const input = numberField(event.usage, "input_tokens");
     const cached = numberField(event.usage, "cached_input_tokens");
     const contextWindow = positiveNumber(event.usage, "model_context_window")
         || positiveNumber(event.usage, "context_window")
         || positiveNumber(event.usage, "contextWindow")
         || positiveNumber(event, "model_context_window")
-        || positiveNumber(event, "modelContextWindow")
-        || fallbackContextWindow;
+        || positiveNumber(event, "modelContextWindow");
     return {
         input,
         cached,
         output: numberField(event.usage, "output_tokens"),
-        contextTokens: contextTokenCount(input, cached, event.agent || "", positiveNumber(event.usage, "context_tokens") || undefined),
+        contextTokens: contextTokenCount(input, cached, event.agent || "", typeof event.usage?.context_tokens === "number" ? event.usage.context_tokens : undefined),
         ...(contextWindow ? { contextWindow } : {}),
     };
 }

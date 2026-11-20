@@ -16,6 +16,21 @@ const AGENT_CONFIG_CACHE_TTL_MS = 30_000;
 const AGENT_CONFIG_FAILURE_COOLDOWN_MS = 5_000;
 const agentConfigCache = new Map<string, { value: AgentConfigResponse | null; expiresAt: number }>();
 const agentConfigInFlight = new Map<string, Promise<AgentConfigResponse | null>>();
+const agentConnections = new Map<string, { connectionId: string; revision: number }>();
+
+function connectionKey(endpoint: string, clientId: string) {
+    return JSON.stringify([endpoint, getActiveWorkspace()?.id || "", clientId]);
+}
+
+export function setAgentConnection(endpoint: string, clientId: string, connectionId: string) {
+    const key = connectionKey(endpoint, clientId);
+    if (connectionId) agentConnections.set(key, { connectionId, revision: 0 });
+    else agentConnections.delete(key);
+}
+
+export function agentConnectionId(endpoint: string, clientId: string) {
+    return agentConnections.get(connectionKey(endpoint, clientId))?.connectionId || "";
+}
 
 export class AgentApiError<T = unknown> extends Error {
     constructor(readonly status: number, readonly response: T & { code?: string; error?: string; msg?: string }) {
@@ -59,27 +74,34 @@ export type AgentPiThreadsResponse = { ok?: boolean; workspace?: { workspacePath
 export type AgentPiThreadResponse = { ok?: boolean; workspace?: { workspacePath: string; activeThreadId?: string }; conversation?: AgentConversationStatePayload; thread?: AgentPiThread; messages?: unknown[]; settledTurnIds?: string[] };
 type AgentConversationStatePayload = AgentConversationState;
 
-export async function postState(endpoint: string, token: string, clientId: string, snapshot: CanvasAgentSnapshot | null) {
+export async function postState(endpoint: string, token: string, clientId: string, snapshot: CanvasAgentSnapshot | null, connectionId = agentConnectionId(endpoint, clientId)) {
+    const connection = agentConnections.get(connectionKey(endpoint, clientId));
+    if (!connectionId || connection?.connectionId !== connectionId) return false;
+    const revision = ++connection.revision;
     try {
-        const response = await fetch(`${endpoint}/canvas/state?token=${encodeURIComponent(token)}&clientId=${encodeURIComponent(clientId)}${workspaceQuerySuffix()}`, {
+        const response = await fetch(`${endpoint}/canvas/state?token=${encodeURIComponent(token)}&clientId=${encodeURIComponent(clientId)}&connectionId=${encodeURIComponent(connectionId)}&stateRevision=${revision}${workspaceQuerySuffix()}`, {
             method: "POST",
             headers: { "content-type": "application/json", ...workspaceHeaders() },
             body: JSON.stringify(snapshot ? { ...snapshot, hasCanvas: true } : { hasCanvas: false }),
         });
-        return response.ok;
+        if (response.ok) return agentConnectionId(endpoint, clientId) === connectionId;
+        const status = await response.json().catch(() => ({})) as { code?: string; connectionId?: string; stateRevision?: number; ready?: boolean };
+        return status.code === "STATE_SUPERSEDED" && status.connectionId === connectionId && status.ready === true && Number(status.stateRevision) >= revision && agentConnectionId(endpoint, clientId) === connectionId;
     } catch {
         return false;
     }
 }
 
-export async function activateAgentClient(endpoint: string, token: string, clientId: string) {
+export async function activateAgentClient(endpoint: string, token: string, clientId: string, connectionId = agentConnectionId(endpoint, clientId)) {
+    if (!connectionId) return;
     try {
-        await fetch(`${endpoint}/canvas/activate?token=${encodeURIComponent(token)}&clientId=${encodeURIComponent(clientId)}${workspaceQuerySuffix()}`, { method: "POST", headers: workspaceHeaders() });
+        await fetch(`${endpoint}/canvas/activate?token=${encodeURIComponent(token)}&clientId=${encodeURIComponent(clientId)}&connectionId=${encodeURIComponent(connectionId)}${workspaceQuerySuffix()}`, { method: "POST", headers: workspaceHeaders() });
     } catch {}
 }
 
-export async function postToolResult(endpoint: string, token: string, clientId: string, body: { requestId: string; result?: unknown; error?: string }) {
-    await fetchAgentJson(endpoint, token, `/canvas/result?clientId=${encodeURIComponent(clientId)}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+export async function postToolResult(endpoint: string, token: string, clientId: string, body: { requestId: string; connectionId: string; result?: unknown; error?: string; outcome?: "unknown" }, workspaceId = getActiveWorkspace()?.id || "") {
+    if ((getActiveWorkspace()?.id || "") !== workspaceId) throw new Error("工作区已切换，工具回执仍保存在原工作区");
+    return await fetchAgentJson(endpoint, token, `/canvas/result?clientId=${encodeURIComponent(clientId)}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 }
 
 export async function postCodexApproval(endpoint: string, token: string, requestId: string, decision: "accept" | "acceptForSession" | "decline") {
@@ -92,6 +114,10 @@ export async function interruptCodexTurn(endpoint: string, token: string, thread
 
 export async function compactCodexThread(endpoint: string, token: string, body: { threadId: string; clientId: string; conversationId: string; expectedRevision: number }) {
     return await fetchAgentJson<{ ok?: boolean; threadId?: string }>(endpoint, token, "/agent/codex/compact", jsonPost(body));
+}
+
+export async function compactPiThread(endpoint: string, token: string, body: { threadId: string; clientId: string; conversationId: string; expectedRevision: number; model?: string; effort?: string }) {
+    return await fetchAgentJson<{ ok?: boolean; threadId?: string }>(endpoint, token, "/agent/pi/compact", jsonPost(body));
 }
 
 export async function interruptPiTurn(endpoint: string, token: string) {
@@ -258,6 +284,11 @@ export function setCodexSkillEnabled(endpoint: string, token: string, skill: Pic
 export async function fetchAgentJson<T>(endpoint: string, token: string, path: string, init?: RequestInit) {
     const workspace = getActiveWorkspace();
     const workspaceId = workspace?.id || "";
+    // Capture admission generation before attachment persistence or any other await.
+    if (init?.body && typeof init.body === "string" && path.startsWith("/agent/")) {
+        const body = JSON.parse(init.body) as { clientId?: string; connectionId?: string };
+        if (body.clientId && !body.connectionId) init = { ...init, body: JSON.stringify({ ...body, connectionId: agentConnectionId(endpoint, body.clientId) }) };
+    }
     const turn = /^\/agent\/(codex|pi)\/turn$/.exec(path);
     const body: AgentAttachmentTurn | null = turn && typeof init?.body === "string" ? JSON.parse(init.body) : null;
     const persisted = body && await persistAgentTurnAttachments(workspaceId, turn![1], body);    if (getActiveWorkspace()?.id !== (workspaceId || undefined)) throw new Error("工作区已切换，未继续原 Agent 请求");

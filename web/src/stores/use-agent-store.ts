@@ -32,7 +32,7 @@ export type AgentQueuedMessage = {
 };
 export type AgentChatItem = { id: string; itemId?: string; clientMessageId?: string; threadId?: string; turnId?: string; engine?: AgentEngine; role: AgentChatRole; title?: string; text: string; meta?: string; detail?: unknown; attachments?: AgentMessageAttachment[]; canvasReferences?: AgentCanvasReference[]; skill?: AgentSkillReference; streamId?: string; activityItems?: Record<string, string> };
 export type AgentEventLog = { id: string; time: string; title: string; text: string; raw?: unknown };
-export type AgentPendingToolCall = { requestId: string; name: string; input?: { ops?: CanvasAgentOp[]; path?: string } & Record<string, unknown>; threadId?: string; turnId?: string; turnScope?: AgentCanvasTurnScope; requestEngine?: AgentEngine; requestThreadId?: string; workspaceId?: string; canvasInstanceId?: string; canvasProjectId?: string };
+export type AgentPendingToolCall = { requestId: string; connectionId: string; name: string; input?: { ops?: CanvasAgentOp[]; path?: string } & Record<string, unknown>; threadId?: string; turnId?: string; turnScope?: AgentCanvasTurnScope; requestEngine?: AgentEngine; requestThreadId?: string; workspaceId?: string; canvasInstanceId?: string; canvasProjectId?: string };
 export type AgentPermissionMode = "request" | "automatic" | "full";
 export type AgentReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 export type AgentModel = {
@@ -78,6 +78,7 @@ type AgentStore = {
     url: string;
     token: string;
     connected: boolean;
+    connectionId: string;
     enabled: boolean;
     silentConnect: boolean;
     fragmentBootstrap: boolean;
@@ -157,6 +158,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     url: runtimeAgentUrl() || defaultAgentUrl(),
     token: typeof window === "undefined" ? "" : usesServerManagedAgent() ? SERVER_MANAGED_AGENT_TOKEN : localStorage.getItem("canvas-agent-token") || "",
     connected: false,
+    connectionId: "",
     enabled: false,
     silentConnect: false,
     fragmentBootstrap: false,
@@ -234,7 +236,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         agentSource = null;
         if (connectTimer) clearTimeout(connectTimer);
         connectTimer = null;
-        set({ enabled: false, connected: false, silentConnect: false, fragmentBootstrap: false, activity: i18n.t("agent.state.offline"), conversation: { engine: get().engine, revision: 0, conversationId: "", threadId: "", status: "idle", mcpStatuses: {} }, bootstrapStatus: null, mcpStartupStatuses: {}, ...patch });
+        set({ enabled: false, connected: false, connectionId: "", silentConnect: false, fragmentBootstrap: false, activity: i18n.t("agent.state.offline"), conversation: { engine: get().engine, revision: 0, conversationId: "", threadId: "", status: "idle", mcpStatuses: {} }, bootstrapStatus: null, mcpStartupStatuses: {}, ...patch });
     },
     addMessage: (item) => set((state) => ({ messages: [...state.messages, item] })),
     addEventLog: (item) => set((state) => ({ eventLogs: [...state.eventLogs.slice(-160), item] })),
