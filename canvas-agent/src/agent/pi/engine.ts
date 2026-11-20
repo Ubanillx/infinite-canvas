@@ -32,7 +32,7 @@ export type PiRunOptions = {
     onFinish?: () => void;
 };
 
-type PiRuntime = { agent: Agent; threadId: string; skillsFingerprint: string };
+type PiRuntime = { agent: Agent; threadId: string; skillsFingerprint: string; contextWindow?: number };
 
 const runtimes = new Map<string, PiRuntime>();
 const skillDrafts = new Map<string, AbortController>();
@@ -161,7 +161,7 @@ async function runPiTurnNow(prompt: string, emit: AgentEmit, attachments: AgentA
                     if (message.stopReason === "aborted") terminalError.name = "AbortError";
                 }
             }
-            handleAgentEvent(event, { emit, threadId: owner.threadId, turnId, display, seq });
+            handleAgentEvent(event, { emit, threadId: owner.threadId, turnId, display, seq, contextWindow: owner.contextWindow });
         });
         try {
             owner.agent.state.tools = [...buildPiTools(options.session), createReadSkillTool(skills)];
@@ -198,8 +198,8 @@ async function runPiTurnNow(prompt: string, emit: AgentEmit, attachments: AgentA
  * 一轮里可能出现多条 assistant 消息（工具调用前后各一条），因此 assistant/reasoning 的 itemId
  * 必须带上自增序号，否则后一条会覆盖前一条已经在界面上渲染的内容。
  */
-function handleAgentEvent(event: AgentEvent, context: { emit: AgentEmit; threadId: string; turnId: string; display: PiDisplayMessage[]; seq: { assistant: number } }) {
-    const { emit, threadId, turnId, display, seq } = context;
+function handleAgentEvent(event: AgentEvent, context: { emit: AgentEmit; threadId: string; turnId: string; display: PiDisplayMessage[]; seq: { assistant: number }; contextWindow?: number }) {
+    const { emit, threadId, turnId, display, seq, contextWindow } = context;
     const scope = { thread_id: threadId, turn_id: turnId };
     const send = (type: string, item: Record<string, unknown>) => emit("agent_event", { agent: "pi", type, item, ...scope });
 
@@ -225,7 +225,7 @@ function handleAgentEvent(event: AgentEvent, context: { emit: AgentEmit; threadI
         }
         const thinking = thinkingOf(message);
         if (thinking.trim()) send("item.completed", { id: reasoningItemId(turnId, index), type: "reasoning", summary: [{ text: thinking }] });
-        emit("agent_event", { agent: "pi", type: "usage.updated", usage: usageOf(message), ...scope });
+        emit("agent_event", { agent: "pi", type: "usage.updated", usage: { ...usageOf(message), ...(contextWindow ? { context_window: contextWindow } : {}) }, ...scope });
         return;
     }
     if (event.type === "tool_execution_start") {
@@ -255,6 +255,7 @@ async function ensureRuntime(emit: AgentEmit, options: PiRunOptions, store: PiTh
         existing = undefined;
     }
     if (existing) {
+        existing.contextWindow = resolved.contextWindow;
         existing.agent.state.model = resolved.model as Model<any>;
         existing.agent.streamFunction = (model, context, streamOptions) => streamFor(model, context, { ...streamOptions, apiKey: resolved.apiKey });
         existing.agent.state.thinkingLevel = thinkingLevel(options.effort, resolved.model);
@@ -270,7 +271,7 @@ async function ensureRuntime(emit: AgentEmit, options: PiRunOptions, store: PiTh
     // 追加而不是赋值，保留构造函数种子化在队首的 system message。
     if (stored?.transcript.length) agent.state.messages.push(...stored.transcript.filter((message: AgentMessage) => message.role !== "system"));
     logger.debug("Pi runtime ready", { threadId, cwd: options.cwd, restored: Boolean(stored?.transcript.length), skills: skills.length });
-    const runtime: PiRuntime = { agent, threadId, skillsFingerprint: fingerprint };
+    const runtime: PiRuntime = { agent, threadId, skillsFingerprint: fingerprint, contextWindow: resolved.contextWindow };
     runtimes.set(key, runtime);
     return runtime;
 }
@@ -302,9 +303,12 @@ function thinkingOf(message: AssistantMessage) {
 }
 
 function usageOf(message: AssistantMessage) {
+    const input = message.usage?.input || 0;
+    const cached = message.usage?.cacheRead || 0;
     return {
-        input_tokens: message.usage?.input || 0,
-        cached_input_tokens: message.usage?.cacheRead || 0,
+        input_tokens: input,
+        cached_input_tokens: cached,
+        context_tokens: input + cached + (message.usage?.cacheWrite || 0),
         output_tokens: message.usage?.output || 0,
         reasoning_output_tokens: message.usage?.reasoning || 0,
     };

@@ -21,8 +21,8 @@ export type PiChannelModel = {
     input?: Array<"text" | "image">;
 };
 export type PiChannel = { id: string; name: string; baseUrl: string; apiKey: string; apiFormat: string; models: PiChannelModel[] };
-export type PiModelOption = { id: string; model: string; displayName: string; defaultReasoningEffort: string; supportedReasoningEfforts: Array<{ reasoningEffort: string }>; isDefault?: boolean };
-export type PiResolvedModel = { model: Model<any>; apiKey: string };
+export type PiModelOption = { id: string; model: string; displayName: string; defaultReasoningEffort: string; supportedReasoningEfforts: Array<{ reasoningEffort: string }>; contextWindow?: number; isDefault?: boolean };
+export type PiResolvedModel = { model: Model<any>; apiKey: string; contextWindow?: number };
 
 const MODEL_SEPARATOR = "::";
 const DEFAULT_CONTEXT_WINDOW = 128_000;
@@ -90,12 +90,14 @@ export function piModelOptions(channels: PiChannel[]): PiModelOption[] {
     return textModels(channels).map(({ channel, model }) => {
         const resolved = buildModel(channel, model);
         const efforts = getSupportedThinkingLevels(resolved).map((level) => level === "off" ? "none" : level);
+        const contextWindow = knownContextWindow(channel, model);
         return {
             id: `${channel.id}${MODEL_SEPARATOR}${model}`,
             model: `${channel.id}${MODEL_SEPARATOR}${model}`,
             displayName: `${model}（${channel.name}）`,
             defaultReasoningEffort: efforts.includes("medium") ? "medium" : efforts[0],
             supportedReasoningEfforts: efforts.map((reasoningEffort) => ({ reasoningEffort })),
+            ...(contextWindow ? { contextWindow } : {}),
         };
     });
 }
@@ -108,7 +110,8 @@ export function resolvePiModel(channels: PiChannel[], value: string): PiResolved
     const candidates = textModels(channels);
     const matched = value ? candidates.find((item) => (!channelId || item.channel.id === channelId) && item.model === modelName) : candidates[0];
     if (!matched) throw new Error(value ? "所选文本模型不可用，请重新选择模型或检查渠道密钥" : "当前没有可用于对话的文本模型，请先在配置中添加文本渠道及 API Key");
-    return { model: buildModel(matched.channel, matched.model), apiKey: matched.channel.apiKey };
+    const contextWindow = knownContextWindow(matched.channel, matched.model);
+    return { model: buildModel(matched.channel, matched.model), apiKey: matched.channel.apiKey, ...(contextWindow ? { contextWindow } : {}) };
 }
 
 /** 按模型 api 懒加载流式适配器，避免把未使用的供应商 SDK 拉进进程。 */
@@ -191,6 +194,10 @@ export function inferOpenAiProtocol(modelName: string): "openai-responses" | "op
 
 function catalogModel(name: string) {
     return catalog.get(name) || catalog.get(name.slice(name.lastIndexOf("/") + 1));
+}
+
+function knownContextWindow(channel: PiChannel, name: string) {
+    return numberValue(channel.models.find((item) => item.name === name)?.contextWindow) || numberValue(catalogModel(name)?.contextWindow) || undefined;
 }
 
 async function discoverModels(channel: PiChannel, refresh: boolean): Promise<PiChannelModel[]> {

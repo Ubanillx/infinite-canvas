@@ -160,6 +160,7 @@ test("Pi 从密钥自动发现模型并优先使用上游协议能力", async ()
         const channels = await readPiChannels(true);
         assert.equal(channels.length, 1, "只有密钥和地址的渠道也应自动发现模型");
         assert.deepEqual(piModelOptions(channels).map((item) => item.model), ["discovery::deepseek-v4-flash", "discovery::gpt-6.1-sol", "discovery::qwen3.8-max"]);
+        assert.equal(piModelOptions(channels)[0].contextWindow, 262144);
         const responses = resolvePiModel(channels, "discovery::deepseek-v4-flash").model;
         assert.equal(responses.api, "openai-responses");
         assert.equal(responses.contextWindow, 262144);
@@ -191,6 +192,7 @@ test("Pi 复用内置模型参数、尊重显式覆盖并推断未知型号协�
     assert.equal(known.reasoning, false);
     assert.deepEqual(known.input, ["text"]);
     assert.equal(known.contextWindow, 8192);
+    assert.equal(resolvePiModel(channels, "auto::gpt-4").contextWindow, 8192);
     assert.equal(known.maxTokens, 8192);
     assert.deepEqual(piModelOptions(channels)[0].supportedReasoningEfforts, [{ reasoningEffort: "none" }]);
     const gpt = resolvePiModel(channels, "auto::gpt-6.1-sol").model;
@@ -301,7 +303,7 @@ test("Pi OpenAI 使用 Responses 完成流式回复与工具往返", async () =>
         event("response.output_item.added", { output_index: 0, item: { ...item, arguments: "", content: [] } });
         if (!tool) event("response.output_text.delta", { output_index: 0, content_index: 0, delta: "PI_RESPONSES_OK" });
         event("response.output_item.done", { output_index: 0, item });
-        event("response.completed", { response: { id: `resp_${requests.length}`, status: "completed", output: [item], usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } } });
+        event("response.completed", { response: { id: `resp_${requests.length}`, status: "completed", output: [item], usage: { input_tokens: 10, input_tokens_details: { cached_tokens: 4 }, output_tokens: 5, total_tokens: 15 } } });
         res.end();
     });
     server.listen(0, "127.0.0.1");
@@ -311,16 +313,17 @@ test("Pi OpenAI 使用 Responses 完成流式回复与工具往返", async () =>
     const store = new PiThreadStore(cwd);
     const thread = await store.create();
     try {
-        const channels = [{ id: "responses", name: "Responses", baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "test-key", apiFormat: "openai", models: [{ name: "test-model", capability: "text", apiFormat: "openai-responses" }] }];
+        const channels = [{ id: "responses", name: "Responses", baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "test-key", apiFormat: "openai", models: [{ name: "test-model", capability: "text", apiFormat: "openai-responses", contextWindow: 10000 }] }];
         await fs.writeFile(path.join(dataDir, "config.json"), JSON.stringify({ config: { channels } }));
         assert.equal(resolvePiModel(channels, "responses::test-model").model.api, "openai-responses");
+        assert.equal(resolvePiModel(channels, "responses::test-model").contextWindow, 10000);
         const events: Array<Record<string, any>> = [];
         await runPiTurn("Read alpha-skill, then reply PI_RESPONSES_OK", (_type, payload) => events.push(payload as Record<string, any>), [], { cwd, session: new CanvasSession(), threadId: thread.id });
         assert.equal(events.find((event) => event.type === "turn.completed")?.status, "completed");
         assert.equal(requests.length, 2);
         assert.ok(requests.every((request) => request.url === "/v1/responses" && request.body.stream === true && !request.body.messages));
         assert.ok(events.some((event) => event.item?.tool === "read_skill" && event.item.status === "completed"));
-        assert.ok(events.some((event) => event.type === "usage.updated" && event.usage?.input_tokens === 10 && event.usage?.output_tokens === 5));
+        assert.ok(events.some((event) => event.type === "usage.updated" && event.usage?.input_tokens === 6 && event.usage?.cached_input_tokens === 4 && event.usage?.context_tokens === 10 && event.usage?.context_window === 10000));
         assert.ok((await store.read(thread.id))?.turns[0].messages.some((item) => item.text === "PI_RESPONSES_OK"));
     } finally {
         releasePiRuntime(cwd, thread.id);

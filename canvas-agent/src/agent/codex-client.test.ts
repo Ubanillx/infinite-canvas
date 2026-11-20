@@ -39,6 +39,65 @@ test("Canvas Codex 为本地 HTTP 代理选择 HTTP 流并仅在 Windows 关闭 
     assert.deepEqual(codexRuntimeConfig({ openai_base_url: "invalid" }, "win32"), { "features.shell_snapshot": false });
 });
 
+test("Codex token usage 事件保留上下文窗口大小", () => {
+    const events: Array<{ type: string; payload: unknown }> = [];
+    const client = Reflect.construct(CodexAppClient, [{ stdin: { write: () => true } }, (type: string, payload: unknown) => events.push({ type, payload }), emptyEventHistory]) as CodexAppClient;
+    (client as unknown as TestClient).handleNotification("thread/tokenUsage/updated", {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        tokenUsage: { last: { inputTokens: 48000, cachedInputTokens: 12000, outputTokens: 2000, reasoningOutputTokens: 500 }, modelContextWindow: 128000 },
+    });
+    const usage = events.find((event) => event.type === "agent_event" && eventType(event.payload) === "usage.updated")?.payload as { usage?: unknown };
+    assert.deepEqual(usage.usage, { input_tokens: 48000, cached_input_tokens: 12000, context_tokens: 48000, output_tokens: 2000, reasoning_output_tokens: 500, context_window: 128000 });
+});
+
+test("Codex 上下文压缩等待 contextCompaction turn 结束", async () => {
+    const writes: Array<Record<string, unknown>> = [];
+    const events: Array<{ type: string; payload: unknown }> = [];
+    const child = { stdin: { write: (line: string) => (writes.push(JSON.parse(line)), true) } };
+    const client = Reflect.construct(CodexAppClient, [child, (type: string, payload: unknown) => events.push({ type, payload }), emptyEventHistory]) as CodexAppClient;
+    const testClient = client as unknown as TestClient;
+    const started: string[] = [];
+    const compacting = client.compactThread("thread-1", (turnId) => started.push(turnId));
+    const request = writes.find((item) => item.method === "thread/compact/start");
+    assert.deepEqual(request?.params, { threadId: "thread-1" });
+    assert.equal(client.isThreadActive("thread-1"), true);
+    testClient.handle({ id: request?.id, result: {} });
+    testClient.handleNotification("turn/started", { threadId: "thread-1", turn: { id: "compact-1", status: "inProgress" } });
+    assert.deepEqual(started, ["compact-1"]);
+    testClient.handleNotification("item/started", { threadId: "thread-1", turnId: "compact-1", item: { id: "compact-item", type: "contextCompaction" } });
+    testClient.handleNotification("item/completed", { threadId: "thread-1", turnId: "compact-1", item: { id: "compact-item", type: "contextCompaction" } });
+    testClient.handleNotification("turn/completed", { threadId: "thread-1", turn: { id: "compact-1", status: "completed" } });
+    await compacting;
+    assert.equal(client.isThreadActive("thread-1"), false);
+    assert.equal(testClient.completedTurns.size, 0);
+    assert.ok(events.some((event) => event.type === "agent_event" && eventType(event.payload) === "item.completed"));
+});
+
+test("Codex 上下文压缩拒绝重复请求，失败、中断与进程退出均释放线程", async (t) => {
+    for (const outcome of ["request-error", "failed", "interrupted", "process-exit"]) {
+        await t.test(outcome, async () => {
+            const writes: Array<Record<string, unknown>> = [];
+            const client = Reflect.construct(CodexAppClient, [{ stdin: { write: (line: string) => (writes.push(JSON.parse(line)), true) } }, () => undefined, emptyEventHistory]) as CodexAppClient;
+            const handler = client as unknown as TestClient;
+            const compacting = client.compactThread("thread-1");
+            const rejected = assert.rejects(compacting, /测试压缩失败|上下文压缩未完成/);
+            await assert.rejects(client.compactThread("thread-1"), /正在运行/);
+            assert.equal(writes.length, 1);
+            if (outcome === "request-error") handler.handle({ id: writes[0].id, error: { message: "测试压缩失败" } });
+            else {
+                handler.handle({ id: writes[0].id, result: {} });
+                handler.handleNotification("turn/started", { threadId: "thread-1", turn: { id: "compact-1", status: "inProgress" } });
+                if (outcome === "process-exit") handler.failAll("测试压缩失败");
+                else handler.handleNotification("turn/completed", { threadId: "thread-1", turn: { id: "compact-1", status: outcome, ...(outcome === "failed" ? { error: { message: "测试压缩失败" } } : {}) } });
+            }
+            await rejected;
+            assert.equal(client.isThreadActive("thread-1"), false);
+            assert.equal(handler.completedTurns.size, 0);
+        });
+    }
+});
+
 test("新建、恢复与 Skill 草稿使用同一份运行时修复且保留画布 MCP", async () => {
     const writes: Array<Record<string, unknown>> = [];
     const child = { stdin: { write: (line: string) => (writes.push(JSON.parse(line)), true) } };
