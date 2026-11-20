@@ -87,9 +87,19 @@ export class PiThreadStore {
     saveTurn(threadId: string, turn: PiStoredTurn, transcript: AgentMessage[]) {
         return this.mutate(async () => {
             const now = Date.now();
-            const thread = await this.read(threadId) || { version: STORAGE_VERSION, id: threadId, createdAt: now, updatedAt: now, turns: [], transcript: [] } as PiThreadFile;
+            const thread = await this.read(threadId);
+            if (!thread) throw new Error("Pi 会话不存在或无法读取，未覆盖原文件");
             const turns = [...thread.turns.filter((item) => item.turnId !== turn.turnId), turn];
             await this.write({ ...thread, turns, transcript, updatedAt: now });
+        });
+    }
+
+    /** 压缩只替换模型上下文；历史展示轮次保持完整。 */
+    replaceTranscript(threadId: string, transcript: AgentMessage[]) {
+        return this.mutate(async () => {
+            const thread = await this.read(threadId);
+            if (!thread || !thread.turns.some((turn) => turn.status === "completed")) throw new Error("Pi 会话不存在或没有可压缩的已完成对话");
+            await this.write({ ...thread, transcript, updatedAt: Date.now() });
         });
     }
 

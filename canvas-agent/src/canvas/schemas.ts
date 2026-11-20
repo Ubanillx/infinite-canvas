@@ -30,6 +30,7 @@ export const siteToolNames = [
 export const toolNames = [
     ...siteToolNames,
     "canvas_get_state",
+    "canvas_get_tool_result",
     "canvas_get_selection",
     "canvas_export_snapshot",
     "canvas_apply_ops",
@@ -118,6 +119,7 @@ export const toolInputSchemas = {
     canvas_update_folder: workspaceTarget.extend({ folderId: z.string().min(1), title: z.string().trim().min(1).optional(), parentId: z.string().min(1).nullable().optional() }),
     canvas_delete_folder: workspaceTarget.extend({ folderId: z.string().min(1) }),
     canvas_get_state: z.object({}).passthrough(),
+    canvas_get_tool_result: z.object({ requestId: z.string().uuid() }),
     canvas_get_selection: z.object({}).passthrough(),
     canvas_export_snapshot: z.object({}).passthrough(),
     canvas_apply_ops: z.object({ ops: z.array(canvasOpSchema) }),
@@ -189,6 +191,7 @@ export const toolDescriptions: Record<ToolName, string> = {
     canvas_update_folder: "重命名或移动画布文件夹，parentId=null 移到根目录。拒绝移动到自身或子文件夹，返回已提交 revision。",
     canvas_delete_folder: "永久删除文件夹及全部子文件夹和其中的画布，不可恢复。包含当前打开画布时先返回画布库；返回实际删除的文件夹/画布 ID 与 revision。",
     canvas_get_state: "读取当前网页画布的节点、连线、选区和视口。",
+    canvas_get_tool_result: "按原 requestId 查询一次画布工具操作的回执状态。返回 pending、completed、failed、unknown 或 not_found；unknown 和 not_found 都不能证明操作未执行，需核对原目标，不要自动重做。查询不会再次执行操作。",
     canvas_get_selection: "读取当前网页画布选中的节点。",
     canvas_export_snapshot: "导出当前画布快照，用于理解布局。",
     canvas_apply_ops: "批量操作当前网页画布。ops 支持 add_node、update_node、delete_node、delete_connections、connect_nodes、set_viewport、select_nodes、run_generation。",

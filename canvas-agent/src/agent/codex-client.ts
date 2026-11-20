@@ -41,7 +41,7 @@ export class CodexAppClient {
     private startedTurnKeys = new Set<string>();
     private textByItem = new Map<string, string>();
     private reasoningTextByItem = new Map<string, Map<number, string>>();
-    private lastUsage: unknown = null;
+    private usageByTurn = new Map<string, unknown>();
     private pending = new Map<number, PendingRequest>();
     private activeTurns = new Map<string, ActiveTurn>();
     private pendingCompactions = new Map<string, PendingCompaction>();
@@ -235,7 +235,6 @@ export class CodexAppClient {
         void completion.catch(() => undefined);
         const pending: PendingCompaction = { onTurn, resolve, reject };
         this.pendingCompactions.set(threadId, pending);
-        this.lastUsage = null;
         try {
             await this.request("thread/compact/start", { threadId });
             await completion;
@@ -282,7 +281,6 @@ export class CodexAppClient {
         this.preheatingThreadIds.delete(threadId);
         this.currentThreadId = threadId;
         this.currentTurnId = "";
-        this.lastUsage = null;
         const pendingStart: PendingTurnStart = { threadId, prompt, messageText, onTurn };
         this.pendingTurnStart = pendingStart;
         try {
@@ -487,8 +485,10 @@ export class CodexAppClient {
             params = update as unknown as JsonRecord;
         }
         if (method === "thread/tokenUsage/updated") {
-            this.lastUsage = normalizeUsage(params as unknown as CodexNotificationParams<"thread/tokenUsage/updated">);
-            this.emit("agent_event", { agent: "codex", type: "usage.updated", usage: this.lastUsage, ...codexEventScope(params) });
+            const usage = normalizeUsage(params as unknown as CodexNotificationParams<"thread/tokenUsage/updated">);
+            const scope = codexEventScope(params);
+            if (scope.thread_id && scope.turn_id) this.usageByTurn.set(turnCacheKey(scope.thread_id, scope.turn_id), usage);
+            this.emit("agent_event", { agent: "codex", type: "usage.updated", usage, ...scope });
             return;
         }
         const event = normalizeCodexNotification(method, params);
@@ -551,7 +551,9 @@ export class CodexAppClient {
             this.finishTurnDeltas(threadId, turnId);
         }
         if (event.type === "turn.completed") {
-            event.usage = this.lastUsage;
+            const key = turnCacheKey(String(field(event, "thread_id") || ""), String(field(event, "turn_id") || ""));
+            event.usage = this.usageByTurn.get(key) || null;
+            this.usageByTurn.delete(key);
             const complete = () => this.completeTurn(event, params, eventScope);
             if (turnPersistence) void turnPersistence.then(complete);
             else complete();
@@ -814,7 +816,7 @@ export class CodexAppClient {
         this.pendingCompactions.forEach((compaction) => compaction.reject(new CodexReportedError(message)));
         this.pendingCompactions.clear();
         this.startedTurnKeys.clear();
-        this.lastUsage = null;
+        this.usageByTurn.clear();
         this.currentThreadId = "";
         this.currentTurnId = "";
         void Promise.all([...finalizing, ...persistence]).then(() => {

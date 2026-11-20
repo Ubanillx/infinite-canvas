@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -14,7 +15,7 @@ import { createReadSkillTool, loadPiSkills, piSkillSummaries, resolveExplicitSki
 import { piToolSchema } from "./tools.js";
 import { PiThreadStore, readPiThread, settledTurnIds, threadMessages } from "./store.js";
 import { piModelOptions, readPiChannels, resolvePiModel, type PiChannel } from "./model.js";
-import { generatePiSkillDraft, interruptPiTurn, releasePiRuntime, runPiTurn } from "./engine.js";
+import { compactPiThread, generatePiSkillDraft, interruptPiTurn, releasePiRuntime, runPiTurn } from "./engine.js";
 import { CanvasSession } from "../../canvas/session.js";
 
 const temporaryDirectories: string[] = [];
@@ -79,9 +80,25 @@ test("未知版本的会话文件不会被当成空会话覆盖", async () => {
     await fs.writeFile(path.join(store.root(), `${created.id}.json`), JSON.stringify({ version: 99, id: created.id }));
     assert.equal(await store.read(created.id), null);
     assert.equal(await readPiThread(workspace, created.id), null);
+    await assert.rejects(store.saveTurn(created.id, { turnId: "turn", userText: "new", startedAt: 1, status: "completed", messages: [] }, []), /不存在|无法读取/);
     // 原文件保持不动
     const raw = JSON.parse(await fs.readFile(path.join(store.root(), `${created.id}.json`), "utf8"));
     assert.equal(raw.version, 99);
+});
+
+test("损坏和不存在的 Pi 会话拒绝追加，不覆盖原文件", async () => {
+    const workspace = await temporaryWorkspace();
+    const store = new PiThreadStore(workspace);
+    const created = await store.create();
+    const file = path.join(store.root(), `${created.id}.json`);
+    await fs.writeFile(file, "{corrupt-json");
+    const turn = { turnId: "turn", userText: "new", startedAt: 1, status: "completed" as const, messages: [] };
+    await assert.rejects(store.saveTurn(created.id, turn, []), /不存在|无法读取/);
+    await assert.rejects(store.saveTurn(crypto.randomUUID(), turn, []), /不存在|无法读取/);
+    const events: Array<Record<string, any>> = [];
+    await runPiTurn("继续", (_type, payload) => events.push(payload as Record<string, any>), [], { cwd: workspace, threadId: created.id, session: new CanvasSession() });
+    assert.ok(events.some((event) => event.type === "error" && String(event.message).includes("无法读取")), "不得把损坏的旧会话当成新会话发送");
+    assert.equal(await fs.readFile(file, "utf8"), "{corrupt-json");
 });
 
 test("非法 threadId 不会读写文件系统", async () => {
@@ -276,6 +293,125 @@ test("Pi Chat Completions 适配器覆盖成功、工具往返、上游错误、
             });
         }
     } finally {
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        if (previous === undefined) delete process.env.INFINITE_CANVAS_DATA_DIR;
+        else process.env.INFINITE_CANVAS_DATA_DIR = previous;
+    }
+});
+
+test("Pi 手动压缩保留展示历史、工具结果与图片并在恢复后使用摘要", async () => {
+    const dataDir = await temporaryWorkspace();
+    const previous = process.env.INFINITE_CANVAS_DATA_DIR;
+    process.env.INFINITE_CANVAS_DATA_DIR = dataDir;
+    const requests: Array<Record<string, any>> = [];
+    const server = createServer(async (req, res) => {
+        let body = "";
+        for await (const chunk of req) body += chunk;
+        const input = JSON.parse(body);
+        requests.push(input);
+        const summarizing = JSON.stringify(input.messages).includes("context summarization assistant");
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        const chunk = (delta: unknown, finish_reason: string | null = null) => res.write(`data: ${JSON.stringify({ id: "test", object: "chat.completion.chunk", created: 1, model: "test-model", choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
+        chunk({ role: "assistant" });
+        chunk({ content: summarizing ? "用户目标：继续操作项目 p 的节点 n；工具结果待核实；保留 requestId R。" : "PI_REPLY" });
+        chunk({}, "stop");
+        res.end("data: [DONE]\n\n");
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const cwd = await skillWorkspace();
+    const store = new PiThreadStore(cwd);
+    const thread = await store.create();
+    try {
+        const port = (server.address() as { port: number }).port;
+        await fs.writeFile(path.join(dataDir, "config.json"), JSON.stringify({ config: { channels: [{ id: "test", name: "Test", baseUrl: `http://127.0.0.1:${port}`, apiKey: "test-key", apiFormat: "ark", models: [{ name: "test-model", capability: "text" }] }] } }));
+        await runPiTurn("请继续项目 p 的节点 n。requestId R 的工具结果还未确认。", () => undefined, [], { cwd, session: new CanvasSession(), threadId: thread.id });
+        const original = (await store.read(thread.id))!.transcript;
+        await store.replaceTranscript(thread.id, [
+            ...original,
+            { role: "assistant", content: [{ type: "toolCall", id: "tool-1", name: "canvas_get_state", arguments: {} }], timestamp: 2 },
+            { role: "toolResult", toolCallId: "tool-1", toolName: "canvas_get_state", content: [{ type: "text", text: "projectId=p; nodeId=n; result=unknown" }], isError: false, timestamp: 3 },
+            { role: "user", content: [{ type: "text", text: "参考图" }, { type: "image", data: "aW1hZ2U=", mimeType: "image/png" }], timestamp: 4 },
+        ] as typeof original);
+        const before = await store.read(thread.id);
+        assert.equal(before?.turns.length, 1);
+        await compactPiThread({ cwd, threadId: thread.id, model: "test::test-model" });
+        const after = await store.read(thread.id);
+        assert.deepEqual(after?.turns, before?.turns, "完整展示历史不能被压缩覆盖");
+        assert.equal(after?.transcript.length, 2);
+        assert.match(String(after?.transcript[0].content), /节点 n.*工具结果待核实.*requestId R/);
+        assert.deepEqual(after?.transcript[1], before?.transcript.at(-1), "原图片字节在模型上下文中保留");
+        assert.ok(requests[1].messages.some((message: any) => JSON.stringify(message.content).includes("requestId R")), "摘要请求读取原会话内容");
+        assert.ok(requests[1].messages.some((message: any) => JSON.stringify(message.content).includes("result=unknown")), "摘要请求读取工具回执");
+        assert.ok(!requests[1].tools?.length, "摘要请求不得调用画布工具");
+        await runPiTurn("继续", () => undefined, [], { cwd, session: new CanvasSession(), threadId: thread.id });
+        assert.ok(requests[2].messages.some((message: any) => JSON.stringify(message.content).includes("工具结果待核实")), "恢复后的下一轮应携带摘要");
+        assert.ok(!requests[2].messages.some((message: any) => JSON.stringify(message.content).includes("请继续项目 p 的节点 n")), "旧文本仅在展示历史中保留");
+        releasePiRuntime(cwd, thread.id);
+        await runPiTurn("再次继续", () => undefined, [], { cwd, session: new CanvasSession(), threadId: thread.id });
+        assert.ok(requests[3].messages.some((message: any) => JSON.stringify(message.content).includes("工具结果待核实")), "重建运行时后仍读取压缩摘要");
+        assert.equal((await store.read(thread.id))?.turns.length, 3);
+    } finally {
+        releasePiRuntime(cwd, thread.id);
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        if (previous === undefined) delete process.env.INFINITE_CANVAS_DATA_DIR;
+        else process.env.INFINITE_CANVAS_DATA_DIR = previous;
+    }
+});
+
+test("Pi 摘要失败、空摘要和未知会话不会改写历史或运行时", async (t) => {
+    const dataDir = await temporaryWorkspace();
+    const previous = process.env.INFINITE_CANVAS_DATA_DIR;
+    process.env.INFINITE_CANVAS_DATA_DIR = dataDir;
+    let reply = "";
+    let cwd = "";
+    const server = createServer(async (req, res) => {
+        for await (const _ of req) { /* consume request */ }
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        if (reply === "hang") {
+            setImmediate(() => interruptPiTurn(cwd));
+            return;
+        }
+        res.write(`data: ${JSON.stringify({ id: "test", object: "chat.completion.chunk", created: 1, model: "test-model", choices: [{ index: 0, delta: { role: "assistant", content: reply }, finish_reason: null }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ id: "test", object: "chat.completion.chunk", created: 1, model: "test-model", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
+        res.end("data: [DONE]\n\n");
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    cwd = await temporaryWorkspace();
+    const store = new PiThreadStore(cwd);
+    const thread = await store.create();
+    try {
+        const port = (server.address() as { port: number }).port;
+        await fs.writeFile(path.join(dataDir, "config.json"), JSON.stringify({ config: { channels: [{ id: "test", name: "Test", baseUrl: `http://127.0.0.1:${port}`, apiKey: "test-key", apiFormat: "ark", models: [{ name: "test-model", capability: "text" }] }] } }));
+        await assert.rejects(compactPiThread({ cwd, threadId: thread.id }), /没有可压缩/);
+        await store.saveTurn(thread.id, { turnId: "turn-1", userText: "original", startedAt: 1, status: "completed", messages: [{ itemId: "u", turnId: "turn-1", role: "user", text: "original" }] }, [{ role: "user", content: "original", timestamp: 1 }]);
+        const original = await store.read(thread.id);
+        await assert.rejects(compactPiThread({ cwd, threadId: crypto.randomUUID() }), /不存在/);
+        reply = "";
+        await assert.rejects(compactPiThread({ cwd, threadId: thread.id }), /摘要|Summarization/);
+        assert.deepEqual((await store.read(thread.id))?.transcript, original?.transcript);
+        reply = "hang";
+        const inFlight = compactPiThread({ cwd, threadId: thread.id });
+        await assert.rejects(compactPiThread({ cwd, threadId: thread.id }), /正在压缩/);
+        await assert.rejects(inFlight, /abort|cancel|取消|中断/i);
+        assert.deepEqual((await store.read(thread.id))?.transcript, original?.transcript);
+        reply = "valid summary";
+        const writeFailure = t.mock.method(fs, "rename", async () => { throw new Error("disk commit failed"); });
+        try {
+            await assert.rejects(compactPiThread({ cwd, threadId: thread.id }), /disk commit failed/);
+            assert.deepEqual(await store.read(thread.id), original, "摘要成功但提交失败也不能改写原历史");
+        } finally {
+            writeFailure.mock.restore();
+        }
+        const invalid = crypto.randomUUID();
+        await fs.writeFile(path.join(store.root(), `${invalid}.json`), JSON.stringify({ version: 99, id: invalid }));
+        await assert.rejects(store.replaceTranscript(invalid, [{ role: "user", content: "new", timestamp: 2 }]), /不存在/);
+        assert.equal(JSON.parse(await fs.readFile(path.join(store.root(), `${invalid}.json`), "utf8")).version, 99);
+    } finally {
+        releasePiRuntime(cwd, thread.id);
         server.closeAllConnections();
         await new Promise<void>((resolve) => server.close(() => resolve()));
         if (previous === undefined) delete process.env.INFINITE_CANVAS_DATA_DIR;

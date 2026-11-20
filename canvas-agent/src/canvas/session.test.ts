@@ -59,7 +59,7 @@ test("平台管理工具在画布库也可分发，并原样返回服务端提�
         assert.equal(field(event, "name"), name);
         assert.deepEqual(field(event, "input"), input);
         const receipt = { status: "committed", workspaceId: "workspace-a", revision: 7, id: "saved" };
-        session.resolveResult("library", { requestId: String(field(event, "requestId")), result: receipt });
+        session.resolveResult("library", { requestId: String(field(event, "requestId")), connectionId: String(field(event, "connectionId")), result: receipt });
         assert.deepEqual(await pending, receipt);
     }
 });
@@ -74,13 +74,13 @@ test("画布工具请求携带正在运行的轮次归属，轮次外请求保�
     const call = await waitForEvent(client, "tool_call");
     assert.equal(field(call, "threadId"), "thread-1");
     assert.equal(field(call, "turnId"), "turn-1");
-    session.resolveResult("canvas", { requestId: String(field(call, "requestId")), result: snapshot("project-1") });
+    session.resolveResult("canvas", { requestId: String(field(call, "requestId")), connectionId: String(field(call, "connectionId")), result: snapshot("project-1") });
     await first;
     session.setCodexState({ busy: false });
     const second = session.callTool("canvas_apply_ops", { ops: [] });
     const outside = client.events("tool_call").at(-1);
     assert.equal(field(outside, "turnId"), undefined);
-    session.resolveResult("canvas", { requestId: String(field(outside, "requestId")), result: snapshot("project-1") });
+    session.resolveResult("canvas", { requestId: String(field(outside, "requestId")), connectionId: String(field(outside, "connectionId")), result: snapshot("project-1") });
     await second;
 });
 
@@ -116,7 +116,7 @@ test("图片导出只从当前 turn 的画布读取并绑定工作区文件，�
     const call = await waitForEvent(first, "tool_call");
     assert.equal(field(call, "name"), "canvas_export_image");
     assert.equal(second.event("tool_call"), undefined);
-    session.resolveResult("first", { requestId: String(field(call, "requestId")), result: { fileId: saved.fileId } });
+    session.resolveResult("first", { requestId: String(field(call, "requestId")), connectionId: String(field(call, "connectionId")), result: { fileId: saved.fileId } });
     const exported = (await result) as { file: { path: string; threadId: string; type: string } };
     assert.equal(exported.file.path, saved.path);
     assert.equal(exported.file.threadId, "thread-1");
@@ -136,11 +136,11 @@ test("图片导出拒绝其他工作区文件及其他线程已绑定的文件",
     const saved = await fileCenterFor(workspace).save(Readable.from([Buffer.from("bytes")]), { name: "other.png", type: "image/png", threadId: "thread-other" });
     const result = session.callTool("canvas_export_image", { nodeId: "image-1" });
     const call = await waitForEvent(first, "tool_call");
-    session.resolveResult("first", { requestId: String(field(call, "requestId")), result: { fileId: saved.fileId } });
+    session.resolveResult("first", { requestId: String(field(call, "requestId")), connectionId: String(field(call, "connectionId")), result: { fileId: saved.fileId } });
     await assert.rejects(result, /另一会话/);
     const missing = session.callTool("canvas_export_image", { nodeId: "image-1" });
     const next = first.events("tool_call").at(-1);
-    session.resolveResult("first", { requestId: String(field(next, "requestId")), result: { fileId: "foreign-workspace-file" } });
+    session.resolveResult("first", { requestId: String(field(next, "requestId")), connectionId: String(field(next, "connectionId")), result: { fileId: "foreign-workspace-file" } });
     await assert.rejects(missing, /找不到/);
 });
 
@@ -197,7 +197,7 @@ test("画布写操作只发送给当前激活网页", async (t) => {
     const call = second.event("tool_call");
     assert.equal(first.event("tool_call"), undefined);
     assert.equal(field(call, "name"), "canvas_apply_ops");
-    session.resolveResult("second", { requestId: String(field(call, "requestId")), result: { ok: true } });
+    session.resolveResult("second", { requestId: String(field(call, "requestId")), connectionId: String(field(call, "connectionId")), result: { ok: true } });
     assert.deepEqual(await result, { ok: true });
 });
 
@@ -223,7 +223,7 @@ test("当前 turn 的图片附件可在发起标签页画布创建图片节点",
     assert.equal("dataUrl" in nodes[0], false);
     assert.equal(session.getTurnAttachment("first", "attachment-1").dataUrl, dataUrl);
 
-    session.resolveResult("first", { requestId: String(field(call, "requestId")), result: { ok: true } });
+    session.resolveResult("first", { requestId: String(field(call, "requestId")), connectionId: String(field(call, "connectionId")), result: { ok: true } });
     const created = (await result) as { nodes: Array<{ id: string; attachmentId: string; title: string }> };
     assert.equal(created.nodes[0].id, nodes[0].id);
     assert.equal(created.nodes[0].attachmentId, "attachment-1");
@@ -268,10 +268,29 @@ test("产物导入只接受工作区内的文本文件并交给当前画布", as
     assert.equal(files[0].name, "summary.md");
     assert.equal(field(files[0], "path"), undefined);
 
-    session.resolveResult("first", { requestId: String(field(call, "requestId")), result: { ok: true } });
+    session.resolveResult("first", { requestId: String(field(call, "requestId")), connectionId: String(field(call, "connectionId")), result: { ok: true } });
     const imported = (await result) as { files: Array<{ fileId: string; kind: string }> };
     assert.equal(imported.files[0].kind, "text");
     assert.ok(imported.files[0].fileId);
+});
+
+test("产物导入回执未知时保留可能已经被画布引用的文件", async (t) => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "canvas-session-uncertain-artifact-"));
+    t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+    const source = path.join(workspace, "summary.md");
+    await fs.writeFile(source, "# 原稿");
+    const session = new CanvasSession("", "codex", workspace);
+    const page = connect(session, "first");
+    t.after(() => page.close());
+    const importing = session.callTool("canvas_import_artifact", { path: source });
+    const call = await waitForEvent(page, "tool_call");
+    const requestId = String(field(call, "requestId"));
+    const fileId = String((field(call, "input") as { files: Array<{ fileId: string }> }).files[0].fileId);
+    assert.equal(session.resolveResult("first", { requestId, connectionId: String(field(call, "connectionId")), outcome: "unknown" }), true);
+    await assert.rejects(importing, /结果未确认/);
+    const retained = await fileCenterFor(workspace).read(fileId);
+    assert.equal(retained.data.toString(), "# 原稿");
+    assert.deepEqual(await session.callTool("canvas_get_tool_result", { requestId }), { status: "unknown", requestId });
 });
 
 test("产物导入拒绝工作区外文件与无工作区的会话", async (t) => {
@@ -302,8 +321,8 @@ test("tool result is accepted only from the request client", async (t) => {
     const call = first.event("tool_call");
     const requestId = String(field(call, "requestId"));
 
-    assert.equal(session.resolveResult("second", { requestId, result: { client: "second" } }), false);
-    assert.equal(session.resolveResult("first", { requestId, result: { client: "first" } }), true);
+    assert.equal(session.resolveResult("second", { requestId, connectionId: String(field(call, "connectionId")), result: { client: "second" } }), false);
+    assert.equal(session.resolveResult("first", { requestId, connectionId: String(field(call, "connectionId")), result: { client: "first" } }), true);
     assert.deepEqual(await result, { client: "first" });
 });
 
@@ -322,7 +341,7 @@ test("生成状态查询由当前激活网页返回", async (t) => {
     assert.equal(first.event("tool_call"), undefined);
     assert.equal(field(call, "name"), "generation_get_status");
     assert.deepEqual(field(call, "input"), { workspaceId: "workspace-a", scope: "all" });
-    session.resolveResult("second", { requestId: String(field(call, "requestId")), result: { total: 1, tasks: [{ id: "image-1", status: "running" }] } });
+    session.resolveResult("second", { requestId: String(field(call, "requestId")), connectionId: String(field(call, "connectionId")), result: { total: 1, tasks: [{ id: "image-1", status: "running" }] } });
     assert.deepEqual(await result, { total: 1, tasks: [{ id: "image-1", status: "running" }] });
 });
 
@@ -362,7 +381,7 @@ test("closing the active client falls back to the most recently focused client",
     assert.equal(field(await session.callTool("canvas_get_state", {}), "projectId"), "canvas-third");
 });
 
-test("closing a client rejects its pending tool requests", async () => {
+test("closing a client preserves its uncertain tool request for a late original receipt", async () => {
     const session = new CanvasSession();
     const first = connect(session, "first");
     const result = session.callTool("canvas_create_text_node", { text: "pending" });
@@ -370,12 +389,172 @@ test("closing a client rejects its pending tool requests", async () => {
     const requestId = String(field(call, "requestId"));
     first.close();
 
-    const outcome = await Promise.race([
-        result.then(() => "resolved", (error) => error instanceof Error ? error.message : String(error)),
-        new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 20)),
-    ]);
-    if (outcome === "pending") session.resolveResult("first", { requestId, result: null });
-    assert.match(outcome, /断开/);
+    assert.equal(session.toolResult("first", String(field(call, "connectionId")), requestId).status, "pending");
+    assert.equal(session.resolveResult("first", { requestId, connectionId: String(field(call, "connectionId")), result: { saved: true } }), true);
+    assert.deepEqual(await result, { saved: true });
+});
+
+test("replacing an SSE connection clears the old snapshot while preserving an in-flight tool result", async (t) => {
+    const session = new CanvasSession();
+    const oldConnection = connect(session, "same-client");
+    t.after(() => oldConnection.close());
+    session.updateState(snapshot("old-canvas"), "same-client");
+    const pending = session.callTool("canvas_create_text_node", { text: "old request" });
+    const requestId = String(field(oldConnection.event("tool_call"), "requestId"));
+
+    const newConnection = connect(session, "same-client");
+    t.after(() => newConnection.close());
+    assert.equal(oldConnection.ended, true);
+    assert.equal(session.canvasStateForClient("same-client"), null);
+    await assert.rejects(session.callTool("canvas_get_state", {}), /当前没有已连接画布/);
+
+    oldConnection.close();
+    session.updateState(snapshot("new-canvas"), "same-client");
+    assert.equal(field(await session.callTool("canvas_get_state", {}), "projectId"), "new-canvas");
+    assert.equal(session.resolveResult("same-client", { requestId, connectionId: String(field(oldConnection.event("tool_call"), "connectionId")), result: { ok: true } }), true);
+    assert.deepEqual(await pending, { ok: true });
+});
+
+test("connection generations reject stale state and activation while preserving the original tool receipt", async (t) => {
+    const session = new CanvasSession();
+    const first = connect(session, "same-client");
+    t.after(() => first.close());
+    const firstId = String(field(first.event("hello"), "connectionId"));
+    assert.ok(firstId);
+    assert.equal(session.updateState(snapshot("first"), "same-client", firstId, 1), true);
+    const pending = session.callTool("canvas_create_text_node", { text: "once" });
+    const call = first.event("tool_call");
+    const requestId = String(field(call, "requestId"));
+    assert.equal(field(call, "connectionId"), firstId);
+    const second = connect(session, "same-client");
+    t.after(() => second.close());
+    const secondId = String(field(second.event("hello"), "connectionId"));
+    assert.notEqual(secondId, firstId);
+    assert.equal(session.updateState(snapshot("stale"), "same-client", firstId, 2), false);
+    assert.equal(session.activateClient("same-client", firstId), false);
+    assert.equal(session.updateState(snapshot("new"), "same-client", secondId, 1), true);
+    assert.equal(session.updateState(snapshot("late"), "same-client", secondId, 1), false);
+    assert.equal(field(session.canvasStateForClient("same-client"), "projectId"), "new");
+    assert.deepEqual(field(second.event("hello"), "pendingToolRequests"), [{ requestId, connectionId: firstId, name: "canvas_apply_ops" }]);
+    assert.equal(session.resolveResult("same-client", { requestId, connectionId: secondId, result: { ok: true } }), false);
+    assert.equal(session.resolveResult("same-client", { requestId, connectionId: firstId, result: { ok: true } }), true);
+    assert.deepEqual(await pending, { ok: true });
+    assert.equal(session.resolveResult("same-client", { requestId, connectionId: firstId, result: { ok: true } }), true);
+    assert.equal(session.resolveResult("same-client", { requestId, connectionId: firstId, result: { ok: false } }), false);
+    assert.deepEqual(session.toolResult("same-client", firstId, requestId), { status: "completed", requestId, result: { ok: true } });
+});
+
+test("turn admission rechecks its captured connection and conversation after asynchronous preparation", async (t) => {
+    const session = new CanvasSession("thread-a");
+    const first = connect(session, "tab");
+    t.after(() => first.close());
+    const firstId = String(field(first.event("hello"), "connectionId"));
+    session.updateState({ hasCanvas: false }, "tab", firstId, 1);
+    const captured = session.conversationStateSnapshot;
+    assert.equal(session.isTurnAdmissionCurrent("tab", firstId, captured.conversationId, captured.revision), true);
+    await Promise.resolve(); // Skill resolution / attachment binding / metadata persistence in HTTP handlers.
+    const replacement = connect(session, "tab");
+    t.after(() => replacement.close());
+    const secondId = String(field(replacement.event("hello"), "connectionId"));
+    session.updateState({ hasCanvas: false }, "tab", secondId, 1);
+    assert.equal(session.isTurnAdmissionCurrent("tab", firstId, captured.conversationId, captured.revision), false);
+    assert.equal(session.isTurnAdmissionCurrent("tab", secondId, captured.conversationId, captured.revision), true);
+    session.activateConversation("thread-b");
+    assert.equal(session.isTurnAdmissionCurrent("tab", secondId, captured.conversationId, captured.revision), false);
+    assert.equal(session.codexBusy, false);
+});
+
+test("unknown browser outcome never repeats the operation and can be reconciled by a late receipt", async (t) => {
+    const session = new CanvasSession();
+    const connection = connect(session, "first");
+    t.after(() => connection.close());
+    const connectionId = String(field(connection.event("hello"), "connectionId"));
+    const pending = session.callTool("canvas_create_text_node", { text: "only once" });
+    const requestId = String(field(connection.event("tool_call"), "requestId"));
+    assert.equal(session.resolveResult("first", { requestId, connectionId, outcome: "unknown" }), true);
+    await assert.rejects(pending, (error: unknown) => error instanceof Error && error.message.includes(requestId) && error.message.includes("未确认"));
+    assert.deepEqual(await session.callTool("canvas_get_tool_result", { requestId }), { status: "unknown", requestId });
+    assert.equal(session.resolveResult("first", { requestId, connectionId, result: { saved: true } }), true);
+    assert.deepEqual(await session.callTool("canvas_get_tool_result", { requestId }), { status: "completed", requestId, result: { saved: true } });
+    assert.equal(connection.events("tool_call").length, 1);
+    connection.close();
+    assert.deepEqual(await session.callTool("canvas_get_tool_result", { requestId }), { status: "completed", requestId, result: { saved: true } });
+});
+
+test("the existing tool wait expires as unknown and still accepts a late original receipt", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const session = new CanvasSession();
+    const client = connect(session, "first");
+    t.after(() => client.close());
+    const pending = session.callTool("canvas_create_text_node", { text: "once" });
+    const outcome = pending.catch((error: unknown) => error);
+    const call = client.event("tool_call");
+    const requestId = String(field(call, "requestId"));
+    const connectionId = String(field(call, "connectionId"));
+    client.close();
+    t.mock.timers.tick(30000);
+    const error = await outcome;
+    assert.ok(error instanceof Error && error.message.includes("结果未确认") && error.message.includes(requestId));
+    assert.equal(session.toolResult("first", connectionId, requestId).status, "unknown");
+    assert.equal(session.resolveResult("first", { requestId, connectionId, result: { saved: true } }), true);
+    assert.equal(session.toolResult("first", connectionId, requestId).status, "completed");
+    assert.equal(client.events("tool_call").length, 1);
+});
+
+test("a reconnect advertises an unknown request so a saved browser receipt can arrive after the original timeout", async (t) => {
+    const session = new CanvasSession();
+    const first = connect(session, "first");
+    t.after(() => first.close());
+    const pending = session.callTool("canvas_create_text_node", { text: "once" });
+    const call = first.event("tool_call");
+    const requestId = String(field(call, "requestId"));
+    const connectionId = String(field(call, "connectionId"));
+    session.resolveResult("first", { requestId, connectionId, outcome: "unknown" });
+    await assert.rejects(pending, /结果未确认/);
+    const reconnected = connect(session, "first");
+    t.after(() => reconnected.close());
+    assert.deepEqual(field(reconnected.event("hello"), "pendingToolRequests"), [{ requestId, connectionId, name: "canvas_apply_ops" }]);
+    assert.equal(reconnected.events("tool_call").length, 0);
+    assert.equal(session.resolveResult("first", { requestId, connectionId, result: { saved: true } }), true);
+    assert.deepEqual(await session.callTool("canvas_get_tool_result", { requestId }), { status: "completed", requestId, result: { saved: true } });
+});
+
+test("an interrupted SSE write keeps an unknown outcome available for the original receipt", async (t) => {
+    const session = new CanvasSession();
+    const page = connect(session, "first");
+    t.after(() => page.close());
+    const write = page.write.bind(page);
+    t.mock.method(page, "write", (chunk: string) => {
+        write(chunk);
+        throw new Error("SSE write failed after delivery");
+    });
+    await assert.rejects(session.callTool("canvas_create_text_node", { text: "possibly created" }), /结果未确认/);
+    const call = page.events("tool_call")[0];
+    const requestId = String(field(call, "requestId"));
+    const connectionId = String(field(call, "connectionId"));
+    assert.deepEqual(session.toolResult("first", connectionId, requestId), { status: "unknown", requestId });
+    assert.equal(session.resolveResult("first", { requestId, connectionId, result: { nodeId: "saved-once" } }), true);
+    assert.deepEqual(session.toolResult("first", connectionId, requestId), { status: "completed", requestId, result: { nodeId: "saved-once" } });
+    assert.equal(page.events("tool_call").length, 1);
+});
+
+test("switching conversations preserves settled receipts and uncertain outcomes", async (t) => {
+    const session = new CanvasSession("thread-a");
+    const page = connect(session, "first");
+    t.after(() => page.close());
+    const done = session.callTool("canvas_create_text_node", { text: "settled" });
+    const doneCall = page.events("tool_call").at(-1)!;
+    const doneId = String(field(doneCall, "requestId"));
+    session.resolveResult("first", { requestId: doneId, connectionId: String(field(doneCall, "connectionId")), result: { ok: true } });
+    await done;
+    const uncertain = session.callTool("canvas_create_text_node", { text: "uncertain" });
+    const unknownCall = page.events("tool_call").at(-1)!;
+    const unknownId = String(field(unknownCall, "requestId"));
+    session.resolveResult("first", { requestId: unknownId, connectionId: String(field(unknownCall, "connectionId")), outcome: "unknown" });
+    await assert.rejects(uncertain, /结果未确认/);
+    session.activateConversation("thread-b");
+    assert.deepEqual(await session.callTool("canvas_get_tool_result", { requestId: doneId }), { status: "completed", requestId: doneId, result: { ok: true } });
+    assert.deepEqual(await session.callTool("canvas_get_tool_result", { requestId: unknownId }), { status: "unknown", requestId: unknownId });
 });
 
 test("shared thread events are broadcast with the active thread id", (t) => {
@@ -401,7 +580,7 @@ test("new clients receive the current Codex state and later updates", (t) => {
     t.after(() => client.close());
 
     const hello = client.event("hello");
-    assert.equal(field(hello, "protocolVersion"), 10);
+    assert.equal(field(hello, "protocolVersion"), 11);
     assert.deepEqual(field(hello, "workspace"), { activeThreadId: "thread-2" });
     assert.deepEqual(field(hello, "conversation"), { engine: "codex", revision: 1, conversationId: "thread-2", threadId: "thread-2", status: "ready", mcpStatuses: {} });
     assert.deepEqual(field(hello, "codex"), { busy: true, threadId: "thread-2", turnId: "turn-1" });
@@ -543,7 +722,7 @@ test("a bound client remains the tool target while focus changes", async (t) => 
     const result = session.callTool("canvas_create_text_node", { text: "bound" });
     const call = first.event("tool_call");
     assert.equal(second.event("tool_call"), undefined);
-    session.resolveResult("first", { requestId: String(field(call, "requestId")), result: { ok: true } });
+    session.resolveResult("first", { requestId: String(field(call, "requestId")), connectionId: String(field(call, "connectionId")), result: { ok: true } });
     assert.deepEqual(await result, { ok: true });
 
     session.releaseClient("first");
@@ -575,7 +754,7 @@ test("a disconnected bound client never falls back and can resume with the same 
     const result = session.callTool("canvas_create_text_node", { text: "reconnected" });
     const call = reconnected.event("tool_call");
     assert.equal(second.event("tool_call"), undefined);
-    session.resolveResult("first", { requestId: String(field(call, "requestId")), result: { ok: true } });
+    session.resolveResult("first", { requestId: String(field(call, "requestId")), connectionId: String(field(call, "connectionId")), result: { ok: true } });
     assert.deepEqual(await result, { ok: true });
 });
 
@@ -753,6 +932,7 @@ function field(value: unknown, key: string) {
 /** 模拟 Node SSE 响应并提供事件读取能力。 */
 class FakeSseResponse extends EventEmitter {
     private chunks: string[] = [];
+    ended = false;
 
     /** 模拟写入响应头。 */
     writeHead() {
@@ -782,5 +962,10 @@ class FakeSseResponse extends EventEmitter {
     /** 触发连接关闭事件。 */
     close() {
         this.emit("close");
+    }
+
+    end() {
+        this.ended = true;
+        this.close();
     }
 }

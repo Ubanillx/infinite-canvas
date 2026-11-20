@@ -10,7 +10,7 @@ type TestClient = {
     skillDraftActive: boolean;
     completedTurns: Map<string, Error | null>;
     plansByTurn: Map<string, unknown>;
-    lastUsage: unknown;
+    usageByTurn: Map<string, unknown>;
     answerServerRequest(message: Record<string, unknown>): void;
     failAll(message: string): void;
     handle(message: Record<string, unknown>): void;
@@ -49,6 +49,20 @@ test("Codex token usage 事件保留上下文窗口大小", () => {
     });
     const usage = events.find((event) => event.type === "agent_event" && eventType(event.payload) === "usage.updated")?.payload as { usage?: unknown };
     assert.deepEqual(usage.usage, { input_tokens: 48000, cached_input_tokens: 12000, context_tokens: 48000, output_tokens: 2000, reasoning_output_tokens: 500, context_window: 128000 });
+});
+
+test("交错运行的线程在完成时保留各自的上下文用量", async () => {
+    const events: Array<{ type: string; payload: unknown }> = [];
+    const client = Reflect.construct(CodexAppClient, [{ stdin: { write: () => true } }, (type: string, payload: unknown) => events.push({ type, payload }), emptyEventHistory]) as CodexAppClient;
+    const handler = client as unknown as TestClient;
+    for (const [threadId, turnId, inputTokens] of [["thread-a", "turn-a", 12000], ["thread-b", "turn-b", 70000]] as const) {
+        handler.handleNotification("thread/tokenUsage/updated", { threadId, turnId, tokenUsage: { last: { inputTokens }, modelContextWindow: 128000 } });
+    }
+    handler.handleNotification("turn/completed", { threadId: "thread-a", turn: { id: "turn-a", status: "completed" } });
+    handler.handleNotification("turn/completed", { threadId: "thread-b", turn: { id: "turn-b", status: "completed" } });
+    await new Promise((resolve) => setImmediate(resolve));
+    const completed = events.filter((event) => event.type === "agent_event" && eventType(event.payload) === "turn.completed").map((event) => event.payload as { thread_id: string; usage: { context_tokens: number } });
+    assert.deepEqual(completed.map(({ thread_id, usage }) => [thread_id, usage?.context_tokens]), [["thread-a", 12000], ["thread-b", 70000]]);
 });
 
 test("Codex 上下文压缩等待 contextCompaction turn 结束", async () => {
@@ -1006,13 +1020,13 @@ test("app-server 失效时清除不能跨进程复用的 turn 状态", () => {
     const testClient = client as unknown as TestClient;
     testClient.completedTurns.set("thread-1\0turn-1", null);
     testClient.plansByTurn.set("thread-1\0turn-1", { threadId: "thread-1" });
-    testClient.lastUsage = { inputTokens: 1 };
+    testClient.usageByTurn.set("thread-1\0turn-1", { inputTokens: 1 });
 
     testClient.failAll("app-server stopped");
 
     assert.equal(testClient.completedTurns.size, 0);
     assert.equal(testClient.plansByTurn.size, 0);
-    assert.equal(testClient.lastUsage, null);
+    assert.equal(testClient.usageByTurn.size, 0);
 });
 
 test("app-server 在 turn 完成通知前退出时保存失败终态", async () => {

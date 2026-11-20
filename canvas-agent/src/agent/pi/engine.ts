@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 
 import { Agent, type AgentEvent, type AgentMessage } from "@earendil-works/pi-agent-core";
 import { normalizeContext, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
+import { generateSummaryWithUsage } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import type { CanvasSession } from "../../canvas/session.js";
@@ -38,6 +39,7 @@ const runtimes = new Map<string, PiRuntime>();
 const skillDrafts = new Map<string, AbortController>();
 /** 每轮从受理开始登记停止信号，覆盖准备运行时和等待首个 token 的阶段。 */
 const activeTurns = new Map<string, AbortController>();
+const activeCompactions = new Map<string, AbortController>();
 let piQueue: Promise<unknown> = Promise.resolve();
 
 /** 串行执行一次 pi turn，事件形状与 Codex 引擎保持一致。 */
@@ -53,6 +55,40 @@ export async function runPiTurn(prompt: string, emit: AgentEmit, attachments: Ag
     } finally {
         if (activeTurns.get(key) === controller) activeTurns.delete(key);
     }
+}
+
+/** 手动压缩 Pi 的模型上下文；完整对话展示历史仍留在原会话文件。 */
+export async function compactPiThread(options: { cwd: string; threadId: string; model?: string; effort?: string }) {
+    const key = normalizeCwd(options.cwd);
+    if (activeCompactions.has(key)) throw new Error("Pi 上下文正在压缩，请等待完成");
+    const controller = new AbortController();
+    activeCompactions.set(key, controller);
+    const queued = piQueue.catch(() => undefined).then(async () => {
+        controller.signal.throwIfAborted();
+        const store = new PiThreadStore(options.cwd);
+        const thread = await store.read(options.threadId);
+        if (!thread || !thread.turns.some((turn) => turn.status === "completed") || !thread.transcript.some((message) => message.role !== "system")) throw new Error("Pi 会话不存在或没有可压缩的已完成对话");
+        const resolved = resolvePiModel(await readPiChannels(), options.model || "");
+        const runtime = runtimes.get(runtimeKey(options.cwd, options.threadId));
+        const messages = thread.transcript.filter((message) => message.role !== "system");
+        const { text } = await generateSummaryWithUsage(
+            messages, resolved.model, undefined, resolved.apiKey, undefined, controller.signal,
+            "保留用户的当前目标、约束、工作区/画布/线程和节点标识、已完成及未完成的操作、生成任务与请求 ID、未确认的工具结果和下一步。不要把不确定的操作说成已成功。",
+            undefined, thinkingLevel(options.effort, resolved.model),
+            (model, context, streamOptions) => streamFor(model, context, { ...streamOptions, apiKey: resolved.apiKey }),
+        );
+        controller.signal.throwIfAborted();
+        if (!text.trim()) throw new Error("Pi 压缩未生成有效摘要，原会话保持不变");
+        // 摘要的文本序列化不会携带旧图片字节；保留含图片的用户消息供后续模型继续查看。
+        const images = messages.filter((message) => message.role === "user" && Array.isArray(message.content) && message.content.some((item) => item.type === "image"));
+        const compacted: AgentMessage[] = [{ role: "user", content: `以下是已完成对话的上下文摘要，请在后续请求中继续遵守其中目标和约束：\n${text.trim()}`, timestamp: Date.now() }, ...images];
+        await store.replaceTranscript(options.threadId, compacted);
+        if (runtime) runtime.agent.state.messages = [...runtime.agent.state.messages.filter((message) => message.role === "system"), ...compacted];
+        return { threadId: options.threadId };
+    });
+    piQueue = queued;
+    try { return await queued; }
+    finally { if (activeCompactions.get(key) === controller) activeCompactions.delete(key); }
 }
 
 /** 使用独立的只读上下文提炼草稿，不调用画布工具、不改写聊天历史。 */
@@ -109,6 +145,11 @@ export function interruptPiTurn(cwd?: string) {
     if (active || activeTurn) {
         activeTurn?.abort();
         active?.[1].agent.abort();
+        return true;
+    }
+    const compaction = cwd ? activeCompactions.get(normalizeCwd(cwd)) : activeCompactions.values().next().value;
+    if (compaction) {
+        compaction.abort();
         return true;
     }
     const draft = cwd ? skillDrafts.get(normalizeCwd(cwd)) : skillDrafts.values().next().value;
@@ -243,6 +284,8 @@ function handleAgentEvent(event: AgentEvent, context: { emit: AgentEmit; threadI
 async function ensureRuntime(emit: AgentEmit, options: PiRunOptions, store: PiThreadStore): Promise<PiRuntime> {
     const threadId = options.threadId || crypto.randomUUID();
     const key = runtimeKey(options.cwd, threadId);
+    const stored = options.threadId ? await store.read(threadId) : await store.create(threadId);
+    if (!stored) throw new Error("Pi 会话不存在或无法读取，未恢复或覆盖原文件");
     const channels = await readPiChannels();
     const resolved = resolvePiModel(channels, options.model || "");
     const skills = await loadPiSkills(options.cwd).then((result) => result.skills);
@@ -261,7 +304,6 @@ async function ensureRuntime(emit: AgentEmit, options: PiRunOptions, store: PiTh
         existing.agent.state.thinkingLevel = thinkingLevel(options.effort, resolved.model);
         return existing;
     }
-    const stored = options.threadId ? await store.read(threadId) : await store.create(threadId);
     const agent = new Agent({
         initialState: { systemPrompt: `${PI_AGENT_PROMPT}${skillsPromptBlock(skills)}`, model: resolved.model, tools: [], thinkingLevel: thinkingLevel(options.effort, resolved.model) },
         streamFn: (model, context, streamOptions) => streamFor(model, context, { ...streamOptions, apiKey: resolved.apiKey }),

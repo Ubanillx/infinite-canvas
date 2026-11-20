@@ -6,7 +6,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 
 import { runClaudeTurn } from "../agent/claude.js";
 import { fileCenterFor, FILE_LIMITS, FileCenterError } from "../agent/file-center.js";
-import { generatePiSkillDraft, interruptPiTurn, releasePiRuntime, runPiTurn } from "../agent/pi/engine.js";
+import { compactPiThread, generatePiSkillDraft, interruptPiTurn, releasePiRuntime, runPiTurn } from "../agent/pi/engine.js";
 import { piModelOptions, readPiChannels } from "../agent/pi/model.js";
 import { loadPiSkills, PiSkillError, piSkillSummaries, setPiSkillEnabled } from "../agent/pi/skills.js";
 import { PiThreadStore, readPiThread } from "../agent/pi/store.js";
@@ -40,7 +40,6 @@ export function startHttpServer() {
     };
     const runtimeContext = new AsyncLocalStorage<WorkspaceRuntime>();
     const runtimes = new Map<string, WorkspaceRuntime>();
-    let lastActiveWorkspaceId = "";
     const initialRuntime: WorkspaceRuntime = {
         id: "site",
         workspace: initialWorkspace,
@@ -70,12 +69,9 @@ export function startHttpServer() {
         return runtime;
     };
     const runtimeForRequest = (req: Request) => {
-        const workspaceId = String(req.headers["x-infinite-canvas-workspace"] || req.query.workspaceId || "").trim();
-        const explicitId = /^[0-9a-f-]{36}$/i.test(workspaceId) ? workspaceId : "";
-        if (explicitId) lastActiveWorkspaceId = explicitId;
-        const id = explicitId || lastActiveWorkspaceId || "site";
+        const id = runtimeWorkspaceId(req);
         const workspace = id === "site" ? ensureSiteWorkspace(config) : ensureRequestWorkspace(config, id);
-        logger.debug("Workspace runtime selected", { requestWorkspaceId: explicitId || "", runtimeId: id, workspacePath: workspace.workspacePath });
+        logger.debug("Workspace runtime selected", { requestWorkspaceId: id === "site" ? "" : id, runtimeId: id, workspacePath: workspace.workspacePath });
         return runtimeForWorkspace(id, workspace);
     };
     /** 将 Agent 事件广播到所属线程或全部网页。 */
@@ -220,18 +216,7 @@ export function startHttpServer() {
         const workspace = requestWorkspace(config, req);
         session.openEvents(requestUrl(req, config), res, workspace.activeThreadId || "");
     });
-    app.post("/canvas/state", (req, res) => {
-        session.updateState(req.body, String(req.query.clientId || "") || undefined);
-        res.json({ ok: true });
-    });
-    app.post("/canvas/activate", (req, res) => {
-        session.activateClient(String(req.query.clientId || ""));
-        res.json({ ok: true });
-    });
-    app.post("/canvas/result", (req, res) => {
-        const ok = session.resolveResult(String(req.query.clientId || ""), req.body);
-        res.status(ok ? 200 : 409).json({ ok });
-    });
+    registerCanvasConnectionRoutes(app, session);
     app.post("/agent/files", route(async (req, res) => {
         const center = fileCenterFor(currentRuntime().workspace.workspacePath);
         const name = String(req.query.name || "");
@@ -526,11 +511,14 @@ export function startHttpServer() {
         const prompt = String(req.body?.prompt || "");
         if (!prompt.trim()) return res.status(400).json({ ok: false, error: "请输入任务内容" });
         const clientId = String(req.body?.clientId || "");
-        if (!clientId || !session.hasClient(clientId)) return res.status(409).json({ ok: false, error: "发起任务的网页已断开，请重新连接后再试" });
+        if (!session.isClientReady(clientId, String(req.body?.connectionId || ""))) return res.status(409).json({ ok: false, code: "CONNECTION_STALE", error: "画布连接已更换或状态尚未上报，请重新连接后再试" });
         const requestedThreadId = String(req.body?.threadId || "");
         const activeThreadId = workspace.activeThreadId || "";
         const conversation = session.conversationStateSnapshot;
-        if (conversation.engine !== "pi" || requestedThreadId !== activeThreadId || conversation.threadId !== activeThreadId) {
+        const connectionId = String(req.body?.connectionId || "");
+        const conversationId = String(req.body?.conversationId || "");
+        const revision = Number(req.body?.expectedRevision);
+        if (conversation.engine !== "pi" || requestedThreadId !== activeThreadId || conversation.threadId !== activeThreadId || conversationId !== conversation.conversationId || revision !== conversation.revision) {
             return res.status(409).json({ ok: false, code: "CONVERSATION_STALE", error: "当前会话已切换，已同步最新状态，请确认后重试", state: conversation });
         }
         if (!activeThreadId || !["ready", "warning"].includes(conversation.status)) {
@@ -540,6 +528,10 @@ export function startHttpServer() {
         const messageId = String(req.body?.messageId || Date.now());
         const messageText = String(req.body?.messageText || prompt || `发送了 ${attachments.length} 张图片`);
         const messageMetadata = await messageMetadataStoreForWorkspace(workspace.workspacePath).recordPending(messageId, req.body?.messageMetadata);
+        if (!session.isTurnAdmissionCurrent(clientId, connectionId, conversationId, revision)) {
+            await messageMetadataStoreForWorkspace(workspace.workspacePath).remove(messageId, activeThreadId).catch(() => undefined);
+            return res.status(409).json({ ok: false, code: "CONNECTION_STALE", error: "画布连接在任务准备期间已更换，请确认后重试", state: session.conversationStateSnapshot });
+        }
         logger.info("Pi turn accepted", { threadId: activeThreadId, model: req.body?.model || "default", promptLength: prompt.length, attachmentCount: attachments.length });
         // Pi 工具仍然回浏览器执行，因此和 Codex 一样把整轮绑定到发起页面。
         session.bindClient(clientId);
@@ -569,7 +561,7 @@ export function startHttpServer() {
                 cwd: workspace.workspacePath,
                 session,
                 model: String(req.body?.model || "") || undefined,
-                effort: reasoningEffort(req.body?.effort),
+                effort: req.body?.effort === "none" ? "none" : reasoningEffort(req.body?.effort),
                 ...(req.body?.skill ? { skill: req.body.skill as { name?: unknown; path?: unknown } } : {}),
                 messageText,
                 onStart: () => session.bindClient(clientId),
@@ -607,19 +599,42 @@ export function startHttpServer() {
         const ok = interruptPiTurn(requestWorkspace(config, req).workspacePath);
         res.status(ok ? 200 : 409).json({ ok, ...(ok ? {} : { error: "当前没有可停止的任务" }) });
     }));
+    app.post("/agent/pi/compact", piMutation(async (req, res) => {
+        const workspace = requestWorkspace(config, req);
+        const clientId = String(req.body?.clientId || "");
+        const threadId = String(req.body?.threadId || "");
+        const conversation = session.conversationStateSnapshot;
+        if (!session.isClientReady(clientId, String(req.body?.connectionId || ""))) return res.status(409).json({ ok: false, code: "CONNECTION_STALE", error: "画布连接已更换或状态尚未上报，请重新连接后再试" });
+        if (!threadId || threadId !== workspace.activeThreadId || conversation.engine !== "pi" || conversation.threadId !== threadId || req.body?.conversationId !== conversation.conversationId || req.body?.expectedRevision !== conversation.revision) {
+            return res.status(409).json({ ok: false, code: "CONVERSATION_STALE", error: "当前 Pi 会话已切换，请确认后重试", state: conversation });
+        }
+        if (!["ready", "warning"].includes(conversation.status)) return res.status(409).json({ ok: false, code: "CONVERSATION_NOT_READY", error: "当前对话无法压缩，请等待任务结束" });
+        session.bindClient(clientId);
+        session.markConversationRunning(threadId);
+        session.setCodexState({ busy: true, threadId, turnId: "" });
+        try {
+            await compactPiThread({ cwd: workspace.workspacePath, threadId, model: String(req.body?.model || "") || undefined, effort: req.body?.effort === "none" ? "none" : reasoningEffort(req.body?.effort) });
+            res.json({ ok: true, threadId });
+        } finally {
+            session.releaseClient(clientId);
+            session.setCodexState({ busy: false, threadId, turnId: "" });
+            session.finishConversationRun(threadId);
+        }
+    }));
     app.post("/agent/codex/turn", codexMutation(async (req, res) => {
         const attachments = Array.isArray(req.body?.attachments) ? (req.body.attachments as AgentAttachment[]) : [];
         const workspace = requestWorkspace(config, req);
         const prompt = String(req.body?.prompt || "");
         if (!prompt.trim()) return res.status(400).json({ ok: false, error: "请输入任务内容" });
         const clientId = String(req.body?.clientId || "");
-        if (!clientId || !session.hasClient(clientId)) return res.status(409).json({ ok: false, error: "发起任务的网页已断开，请重新连接后再试" });
+        if (!session.isClientReady(clientId, String(req.body?.connectionId || ""))) return res.status(409).json({ ok: false, code: "CONNECTION_STALE", error: "画布连接已更换或状态尚未上报，请重新连接后再试" });
         const requestedThreadId = String(req.body?.threadId || "");
         const activeThreadId = workspace.activeThreadId || "";
         const conversation = session.conversationStateSnapshot;
         const requestedConversationId = String(req.body?.conversationId || "");
         const expectedRevision = Number(req.body?.expectedRevision || 0);
-        if (conversation.engine !== "codex" || requestedThreadId !== activeThreadId || conversation.threadId !== activeThreadId || (requestedConversationId && requestedConversationId !== conversation.conversationId) || (expectedRevision && expectedRevision !== conversation.revision)) {
+        const connectionId = String(req.body?.connectionId || "");
+        if (conversation.engine !== "codex" || requestedThreadId !== activeThreadId || conversation.threadId !== activeThreadId || requestedConversationId !== conversation.conversationId || expectedRevision !== conversation.revision) {
             return res.status(409).json({ ok: false, code: "CONVERSATION_STALE", error: "当前会话已切换，已同步最新状态，请确认后重试", state: conversation });
         }
         if (!activeThreadId || !["ready", "warning"].includes(conversation.status)) {
@@ -633,6 +648,10 @@ export function startHttpServer() {
         // 先绑定本轮文件再记录元数据：绑定失败时直接拒绝，不留下指向失效文件的记录。
         const fileRefs = await fileCenterFor(workspace.workspacePath).bind(attachments.flatMap((item) => (item.fileId ? [item.fileId] : [])), activeThreadId);
         const messageMetadata = await messageMetadataStoreForWorkspace(workspace.workspacePath).recordPending(messageId, req.body?.messageMetadata);
+        if (!session.isTurnAdmissionCurrent(clientId, connectionId, requestedConversationId, expectedRevision)) {
+            await messageMetadataStoreForWorkspace(workspace.workspacePath).remove(messageId, activeThreadId).catch(() => undefined);
+            return res.status(409).json({ ok: false, code: "CONNECTION_STALE", error: "画布连接在任务准备期间已更换，请确认后重试", state: session.conversationStateSnapshot });
+        }
         let threadId = activeThreadId;
         logger.info("Codex turn accepted", { threadId: req.body?.threadId, model: model || "default", reasoningEffort: effort || "default", promptLength: prompt.length, attachmentCount: attachments.length, fileCount: fileRefs.length });
         session.bindClient(clientId);
@@ -726,7 +745,7 @@ export function startHttpServer() {
         const conversation = session.conversationStateSnapshot;
         const requestedConversationId = String(req.body?.conversationId || "");
         const expectedRevision = Number(req.body?.expectedRevision || 0);
-        if (!clientId || !session.hasClient(clientId)) return res.status(409).json({ ok: false, error: "发起压缩的网页已断开，请重新连接后再试" });
+        if (!session.isClientReady(clientId, String(req.body?.connectionId || ""))) return res.status(409).json({ ok: false, code: "CONNECTION_STALE", error: "画布连接已更换或状态尚未上报，请重新连接后再试" });
         if (conversation.engine !== "codex" || requestedThreadId !== activeThreadId || conversation.threadId !== activeThreadId || (requestedConversationId && requestedConversationId !== conversation.conversationId) || (expectedRevision && expectedRevision !== conversation.revision)) {
             return res.status(409).json({ ok: false, code: "CONVERSATION_STALE", error: "当前会话已切换，请确认后重试", state: conversation });
         }
@@ -876,15 +895,47 @@ function requestUrl(req: Request, config: CanvasAgentConfig) {
 }
 
 function requestWorkspace(config: CanvasAgentConfig, req: Request) {
-    const workspaceId = String(req.headers["x-infinite-canvas-workspace"] || req.query.workspaceId || "");
-    return ensureRequestWorkspace(config, workspaceId);
+    return ensureRequestWorkspace(config, runtimeWorkspaceId(req));
+}
+
+/** 画布回执和连接代次路由共用一份校验，测试可用隔离 HTTP 服务验证实际状态码。 */
+export function registerCanvasConnectionRoutes(app: express.Express, session: CanvasSession) {
+    app.post("/canvas/state", (req, res) => {
+        const clientId = String(req.query.clientId || "");
+        const connectionId = String(req.query.connectionId || "");
+        const ok = session.updateState(req.body, clientId, connectionId, Number(req.query.stateRevision));
+        const current = session.stateStatus(clientId, connectionId);
+        res.status(ok ? 200 : 409).json({ ok, ...(current || {}), ...(ok ? {} : { code: current ? "STATE_SUPERSEDED" : "CONNECTION_STALE", error: "画布连接已更换或状态上报顺序已过期" }) });
+    });
+    app.post("/canvas/activate", (req, res) => {
+        const ok = session.activateClient(String(req.query.clientId || ""), String(req.query.connectionId || ""));
+        res.status(ok ? 200 : 409).json({ ok });
+    });
+    app.post("/canvas/result", (req, res) => {
+        if (typeof req.body?.connectionId !== "string" || !req.body.connectionId) return res.status(409).json({ ok: false, error: "缺少工具请求连接代次" });
+        const ok = session.resolveResult(String(req.query.clientId || ""), req.body);
+        res.status(ok ? 200 : 409).json({ ok });
+    });
+    app.get("/canvas/result", (req, res) => {
+        const clientId = String(req.query.clientId || "");
+        const connectionId = String(req.query.connectionId || "");
+        const requestId = String(req.query.requestId || "");
+        if (!clientId || !connectionId || !requestId) return res.status(400).json({ ok: false, error: "缺少工具请求归属" });
+        res.json({ ok: true, ...session.toolResult(clientId, connectionId, requestId) });
+    });
+}
+
+/** 为一次请求选择工作区；缺省请求始终属于站点工作区。 */
+export function runtimeWorkspaceId(req: Pick<Request, "headers" | "query">) {
+    const id = String(req.headers["x-infinite-canvas-workspace"] || req.query.workspaceId || "").trim();
+    return /^[0-9a-f-]{36}$/i.test(id) ? id : "site";
 }
 
 /** 设置跨域响应头并记录通过 token 授权的来源。 */
-function setCors(req: Request, res: Response, url: URL, config: CanvasAgentConfig) {
+export function setCors(req: Request, res: Response, url: URL, config: CanvasAgentConfig) {
     const origin = req.headers.origin;
     res.setHeader("Access-Control-Allow-Origin", origin || "*");
-    res.setHeader("Access-Control-Allow-Headers", "content-type,x-canvas-agent-token");
+    res.setHeader("Access-Control-Allow-Headers", "content-type,x-canvas-agent-token,x-infinite-canvas-workspace");
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
     res.setHeader("Access-Control-Allow-Private-Network", "true");
     if (!origin || req.method === "OPTIONS" || url.pathname === "/health" || url.pathname === "/config") return true;
