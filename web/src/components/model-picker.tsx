@@ -15,17 +15,21 @@ type ModelPickerProps = {
     className?: string;
     fullWidth?: boolean;
     flat?: boolean;
+    deferOptions?: boolean;
     placeholder?: string;
     onMissingConfig?: () => void;
 };
 
-export function ModelPicker({ config, value, onChange, capability, className, fullWidth = false, flat = false, placeholder, onMissingConfig }: ModelPickerProps) {
+export function ModelPicker({ config, value, onChange, capability, className, fullWidth = false, flat = false, deferOptions = false, placeholder, onMissingConfig }: ModelPickerProps) {
     const { t } = useTranslation();
     const pickerId = useId();
     const [open, setOpen] = useState(false);
+    const [focused, setFocused] = useState(false);
     const options = useMemo(() => Array.from(new Set([...(config.channelMode === "local" && !capability ? [value] : []), ...selectableModelsByCapability(config, capability)].filter((model): model is string => Boolean(model)))), [capability, config, value]);
     const current = value || "";
     const pickerPlaceholder = placeholder || t("settingsPanels.model.select");
+    // A focused closed trigger needs its options for Radix keyboard typeahead.
+    const showOptions = !deferOptions || focused || open;
 
     useEffect(() => {
         const closeOtherPicker = (event: Event) => {
@@ -56,12 +60,14 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                 )}
                 onMouseDown={(event) => event.stopPropagation()}
                 onPointerDown={(event) => event.stopPropagation()}
+                onFocus={deferOptions ? () => setFocused(true) : undefined}
+                onBlur={deferOptions ? () => setFocused(false) : undefined}
                 title={current ? modelOptionLabel(config, current) : pickerPlaceholder}
             >
                 <ModelIcon model={current} />
                 <span className="canvas-model-picker-text min-w-0 flex-1 truncate text-left">{current ? modelOptionLabel(config, current) : pickerPlaceholder}</span>
             </SelectTrigger>
-            <SelectContent
+            {showOptions ? <SelectContent
                 data-canvas-no-zoom
                 className={cn("z-[1200] w-80 max-w-[calc(100vw-24px)] rounded-xl border border-border/70 bg-popover p-1 shadow-xl", flat && "!shadow-none !ring-0")}
                 position="popper"
@@ -82,7 +88,7 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                         {emptyModelLabel(config, capability)}
                     </SelectItem>
                 )}
-            </SelectContent>
+            </SelectContent> : null}
         </Select>
     );
 }

@@ -139,7 +139,8 @@ function conversationBootstrapView(conversation: AgentConversationState) {
     return { bootstrapStatus, mcpStartupStatuses };
 }
 
-export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?: boolean; headless?: boolean; autoConnect?: boolean }) {
+export function LocalAgentPanel({ embedded, headless, autoConnect, showContent = true }: { embedded?: boolean; headless?: boolean; autoConnect?: boolean; showContent?: boolean }) {
+    const renderContent = embedded && !headless && showContent;
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { message, modal } = App.useApp();
@@ -211,8 +212,8 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     const clearEventLogs = useAgentStore((state) => state.clearEventLogs);
     const loadSkills = useAgentSkillStore((state) => state.loadSkills);
     const clearSkillSelection = useAgentSkillStore((state) => state.clearSelection);
-    const skillCount = useAgentSkillStore((state) => state.skills.length);
-    const messageCount = useAgentStore((state) => state.messages.length);
+    const skillCount = useAgentSkillStore((state) => renderContent ? state.skills.length : 0);
+    const messageCount = useAgentStore((state) => renderContent && activeTab === "log" ? state.messages.length : 0);
     const canvasContextRef = useRef<AgentCanvasContext | null>(useAgentStore.getState().canvasContext);
     const canvasTurnScope = (): AgentCanvasTurnScope => {
         const state = useAgentStore.getState();
@@ -254,10 +255,10 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     }, []);
     const focusNewConversationRef = useRef("");
     useEffect(() => {
-        if (!focusNewConversationRef.current || composerDisabled || sending || waiting || activeTab !== "chat") return;
+        if (!renderContent || !focusNewConversationRef.current || composerDisabled || sending || waiting || activeTab !== "chat") return;
         if (focusNewConversationRef.current === conversation.conversationId) promptInputRef.current?.focus();
         focusNewConversationRef.current = "";
-    }, [activeTab, composerDisabled, conversation.conversationId, sending, waiting]);
+    }, [activeTab, composerDisabled, conversation.conversationId, renderContent, sending, waiting]);
     const endpoint = useMemo(() => url.trim().replace(/\/$/, ""), [url]);
     const urlAgentAutoConnect = searchParams.has("agentUrl") && searchParams.has("agentToken");
     useEffect(() => {
@@ -1780,6 +1781,9 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         setAgentState({ messages: currentMessages.map((message, itemIndex) => itemIndex === index ? { ...message, text: isDelta ? `${message.text}${text}` : mergeStreamText(message.text, text) } : message) });
     };
 
+    // Keep the background connection and queued work active while the panel is collapsed.
+    if (!renderContent) return null;
+
     const newThreadUnavailable = !connected
         ? t("agent.history.newThreadDisconnected")
         : loadingThreads
@@ -1787,7 +1791,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             : sending || waiting || conversationBusy
                 ? t("agent.history.newThreadBusy")
                 : "";
-    const content = (
+    return (
         <>
             <AgentPanelTabs
                 value={activeTab}
@@ -1939,8 +1943,6 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         </>
     );
 
-    if (headless) return null;
-    return embedded ? content : null;
 }
 
 function acquireAgentClientId() {
