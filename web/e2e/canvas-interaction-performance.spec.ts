@@ -84,6 +84,73 @@ test("wheel bursts accumulate around the cursor and panning publishes no empty A
     await page.screenshot({ path: test.info().outputPath("zoom-pan.png") });
 });
 
+test("active pan moves canvas layers before committing the viewport and mounts newly visible nodes", async ({ page, request }) => {
+    const { surface, bounds, read } = await seed(page, request);
+    const loader = page.locator(".app-loading-orbit, .app-loading-orbit-reverse, .app-loading-satellite");
+    await expect(loader).toHaveCount(3);
+    await expect.poll(() => loader.evaluateAll((elements) => elements.map((element) => getComputedStyle(element).animationName))).toEqual(["none", "none", "none"]);
+    await page.getByRole("button", { name: "打开小地图", exact: true }).click();
+    const minimap = page.locator(".bottom-24 .cursor-crosshair");
+    const minimapViewport = minimap.locator(":scope > :last-child");
+    const minimapScale = await minimap.evaluate((element) => Number.parseFloat((element.firstElementChild as HTMLElement).style.width) / 240);
+    const grid = surface.locator(":scope > [style*='background-size']");
+    const initialNode = surface.locator('[data-node-id="node-0"]');
+    const distantNode = surface.locator('[data-node-id="node-20"]');
+    const initial = {
+        node: (await initialNode.boundingBox())!,
+        grid: (await grid.boundingBox())!,
+        minimap: (await minimapViewport.boundingBox())!,
+    };
+    await expect(distantNode).toHaveCount(0);
+    const start = { x: bounds.x + 800, y: bounds.y + 400 };
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down({ button: "middle" });
+    await page.mouse.move(start.x + 65, start.y - 35);
+
+    await expect.poll(async () => (await initialNode.boundingBox())!.x).toBeCloseTo(initial.node.x + 65, 4);
+    expect((await initialNode.boundingBox())!.y).toBeCloseTo(initial.node.y - 35, 4);
+    expect((await grid.boundingBox())!.x).toBeCloseTo(initial.grid.x + 17, 4);
+    expect((await grid.boundingBox())!.y).toBeCloseTo(initial.grid.y - 35, 4);
+    expect((await minimapViewport.boundingBox())!.x).toBeCloseTo(initial.minimap.x - 65 * minimapScale, 4);
+    expect((await minimapViewport.boundingBox())!.y).toBeCloseTo(initial.minimap.y + 35 * minimapScale, 4);
+    expect((await snapshot(page)).viewport).toEqual({ x: 0, y: 0, k: 1 });
+
+    // A single captured move can cross the overscan before the next frame.
+    await page.evaluate(({ x, y }) => window.dispatchEvent(new PointerEvent("pointermove", { clientX: x - 2920, clientY: y, buttons: 4 })), start);
+    await expect(distantNode).toBeInViewport();
+    await expect(initialNode).toHaveCount(0);
+    await expect.poll(async () => (await distantNode.boundingBox())!.x).toBeCloseTo(bounds.x + 80, 4);
+    expect((await snapshot(page)).viewport).toEqual({ x: 0, y: 0, k: 1 });
+    expect((await read()).viewport).toEqual({ x: 0, y: 0, k: 1 });
+
+    await page.evaluate(({ x, y }) => {
+        window.dispatchEvent(new PointerEvent("pointermove", { clientX: x - 2860, clientY: y + 20, buttons: 4 }));
+        window.dispatchEvent(new Event("blur"));
+    }, start);
+    await page.mouse.up({ button: "middle" });
+    const finalViewport = { x: -2860, y: 20, k: 1 };
+    await expect.poll(async () => (await snapshot(page)).viewport).toEqual(finalViewport);
+    await expect.poll(async () => (await read()).viewport).toEqual(finalViewport);
+    expect((await distantNode.boundingBox())!.x).toBeCloseTo(bounds.x + 140, 4);
+
+    const pointer = { x: start.x + 40, y: start.y + 20 };
+    const anchor = { x: 600, y: 260 };
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down({ button: "middle" });
+    await page.mouse.move(pointer.x, pointer.y);
+    await surface.dispatchEvent("wheel", { bubbles: true, cancelable: true, clientX: bounds.x + anchor.x, clientY: bounds.y + anchor.y, deltaY: -100 });
+    const zoomedViewport = {
+        x: anchor.x + (finalViewport.x + 40 - anchor.x) * 1.1,
+        y: anchor.y + (finalViewport.y + 20 - anchor.y) * 1.1,
+        k: 1.1,
+    };
+    await expect.poll(async () => (await snapshot(page)).viewport).toEqual(zoomedViewport);
+    await page.evaluate(({ x, y }) => window.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, buttons: 4 })), pointer);
+    await page.mouse.up({ button: "middle" });
+    await expect.poll(async () => (await read()).viewport).toEqual(zoomedViewport);
+    expect((await snapshot(page)).viewport).toEqual(zoomedViewport);
+});
+
 test("thumbnail notifications only reach subscribers for the changed storage key", async ({ page, request }) => {
     await seed(page, request);
     const result = await page.evaluate(async () => {
@@ -180,7 +247,7 @@ test("mention suggestion navigation reuses caret layout and keeps keyboard selec
 
 test("drag and resize preserve the last position, save and undo as complete gestures", async ({ page, request }) => {
     const { read } = await seed(page, request);
-    await page.getByRole("button", { name: "移动", exact: true }).click();
+    await page.locator("[data-canvas-bottom-toolbar]").getByRole("button", { name: "平移", exact: true }).click();
     const node = page.locator('[data-node-id="node-0"]');
     const rect = (await node.boundingBox())!;
     await page.mouse.move(rect.x + 80, rect.y + 50);
@@ -210,7 +277,7 @@ test("drag and resize preserve the last position, save and undo as complete gest
 
 test("marquee flushes the final event, and connections survive indexed hit testing", async ({ page, request }) => {
     const { bounds } = await seed(page, request);
-    await page.getByRole("button", { name: "移动", exact: true }).click();
+    await page.locator("[data-canvas-bottom-toolbar]").getByRole("button", { name: "平移", exact: true }).click();
     await page.mouse.move(bounds.x + 75, bounds.y + 140);
     await page.mouse.down();
     await page.evaluate(({ x, y }) => {
@@ -233,14 +300,54 @@ test("marquee flushes the final event, and connections survive indexed hit testi
     await page.screenshot({ path: test.info().outputPath("connections.png") });
 });
 
+test("configuration node keeps native mode navigation and model picker keyboard interaction", async ({ page, request }) => {
+    const { surface } = await seed(page, request, "config");
+    await expect(page.locator(".app-loading-overlay")).toBeHidden();
+    await page.evaluate(async () => {
+        const path = "/src/stores/use-config-store.ts";
+        const { useConfigStore, encodeChannelModel } = await import(path);
+        const config = useConfigStore.getState().config;
+        useConfigStore.setState({ config: {
+            ...config,
+            textModel: encodeChannelModel("fixture", "Alpha"),
+            channels: [{ id: "fixture", name: "Fixture", baseUrl: "https://fixture.invalid/v1", apiKey: "", apiFormat: "openai", models: [
+                { name: "Alpha", capability: "text" }, { name: "Beta", capability: "text" },
+            ] }],
+        } });
+    });
+    const node = surface.locator('[data-node-id="node-0"]');
+    const modes = node.getByRole("group", { name: "生成配置", exact: true });
+    const imageMode = modes.getByRole("radio", { name: "图片", exact: true });
+    const textMode = modes.getByRole("radio", { name: "文本", exact: true });
+    await expect(imageMode).toBeChecked();
+    await imageMode.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(textMode).toBeFocused();
+    await expect(textMode).toBeChecked();
+    await expect(imageMode).not.toBeChecked();
+    await expect.poll(async () => (await snapshot(page)).nodes[0].metadata?.generationMode).toBe("text");
+
+    const modelPicker = node.getByRole("combobox");
+    await expect(modelPicker).toHaveText("Alpha（Fixture）");
+    await modelPicker.click();
+    await expect(page.getByRole("option", { name: "Beta（Fixture）", exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(modelPicker).toHaveAttribute("aria-expanded", "false");
+    await expect(modelPicker).toBeFocused();
+    await page.keyboard.press("b");
+    await expect(modelPicker).toHaveText("Beta（Fixture）");
+    await expect(modelPicker).toHaveAttribute("aria-expanded", "false");
+});
+
 test("memoized sidebar exports current geometry after a node drag", async ({ page, request }) => {
     await seed(page, request, "config");
     await page.getByRole("button", { name: "展开面板", exact: true }).click();
+    await expect(page.getByRole("button", { name: "调整左侧面板宽度", exact: true }).locator("../..")).toHaveCSS("width", "281px");
     const node = page.locator('[data-node-id="node-0"]');
     const rect = (await node.boundingBox())!;
-    await page.mouse.move(rect.x + 30, rect.y + 15);
+    await page.mouse.move(rect.x + 80, rect.y + 20);
     await page.mouse.down();
-    await page.mouse.move(rect.x + 100, rect.y + 55, { steps: 12 });
+    await page.mouse.move(rect.x + 150, rect.y + 60, { steps: 12 });
     await page.mouse.up();
     await expect.poll(async () => (await snapshot(page)).nodes[0].position).toEqual({ x: 170, y: 200 });
     await page.getByRole("button", { name: "选择", exact: true }).click();
@@ -309,7 +416,7 @@ test("zoom slider, minimap and side-panel resize commit their final input", asyn
 
 test("window blur flushes pending drag, resize and pan updates without leaving a gesture active", async ({ page, request }) => {
     const { bounds, read } = await seed(page, request);
-    await page.getByRole("button", { name: "移动", exact: true }).click();
+    await page.locator("[data-canvas-bottom-toolbar]").getByRole("button", { name: "平移", exact: true }).click();
     const node = page.locator('[data-node-id="node-0"]');
     await page.mouse.move(bounds.x + 180, bounds.y + 210);
     await page.mouse.down();
