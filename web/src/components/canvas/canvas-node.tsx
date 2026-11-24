@@ -130,6 +130,10 @@ export const CanvasNode = React.memo(function CanvasNode({
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
     const [hovered, setHovered] = useState(false);
+    const showConnectionHandles = !referenceSelectionState && (hovered || isSelected || isConnecting);
+    const [hasShownConnectionHandles, setHasShownConnectionHandles] = useState(showConnectionHandles);
+    if (showConnectionHandles && !hasShownConnectionHandles) setHasShownConnectionHandles(true);
+    const renderConnectionHandles = !referenceSelectionState && hasShownConnectionHandles;
     const definition = getNodeDefinition(data.type);
     const pluginContext = useMemo<CanvasNodeContext | null>(() => (pluginHost && (definition?.Content || definition?.onDoubleClick) ? buildNodeContext(pluginHost, data, theme, scale, isSelected) : null), [pluginHost, data, theme, scale, isSelected, definition]);
     const [isEditingContent, setIsEditingContent] = useState(false);
@@ -465,8 +469,8 @@ export const CanvasNode = React.memo(function CanvasNode({
                 {!referenceSelectionState ? <ResizeHandle corner="bottom-right" onMouseDown={handleResizeMouseDown} /> : null}
             </div>
 
-            {!referenceSelectionState && !isGroup ? <ConnectionHandleDot side="left" visible={hovered || isSelected || isConnecting} onMouseDown={(event) => onConnectStart(event, data.id, "target")} /> : null}
-            {!referenceSelectionState && (definition?.hasSourceHandle ?? true) && data.type !== CanvasNodeType.Config ? <ConnectionHandleDot side="right" visible={hovered || isSelected || isConnecting} onMouseDown={(event) => onConnectStart(event, data.id, "source")} /> : null}
+            {renderConnectionHandles && !isGroup ? <ConnectionHandleDot side="left" visible={showConnectionHandles} theme={theme} onMouseDown={(event) => onConnectStart(event, data.id, "target")} /> : null}
+            {renderConnectionHandles && (definition?.hasSourceHandle ?? true) && data.type !== CanvasNodeType.Config ? <ConnectionHandleDot side="right" visible={showConnectionHandles} theme={theme} onMouseDown={(event) => onConnectStart(event, data.id, "source")} /> : null}
 
             {/* Counter-scale the panel so its on-screen size stays constant while the canvas zooms. */}
             {showPanel && !isGroup && renderPanel ? (
@@ -815,6 +819,7 @@ function ImageContent({
                     <img
                         src={primarySource}
                         alt={node.title}
+                        decoding="async"
                         draggable={false}
                         onDragStart={(event) => event.preventDefault()}
                         className={`pointer-events-none block h-full w-full select-none ${node.metadata?.freeResize ? "object-fill" : "object-contain"}`}
@@ -901,7 +906,7 @@ function ExpandedImageCard({ node, image, index, scale, onView, onSetPrimary, on
                 onView();
             }}
         >
-            {image.content ? <img src={source} alt={node.title} draggable={false} className="pointer-events-none h-full w-full select-none object-contain" /> : <ImageSlotStatus image={image} />}
+            {image.content ? <img src={source} alt={node.title} decoding="async" draggable={false} className="pointer-events-none h-full w-full select-none object-contain" /> : <ImageSlotStatus image={image} />}
             {image.content ? (
                 <div className="pointer-events-none absolute inset-x-2 top-2 flex items-center gap-1 opacity-0 transition-opacity duration-150 group-hover/node:pointer-events-auto group-hover/node:opacity-100 [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100">
                     <button type="button" className="flex h-8 min-w-0 flex-1 items-center justify-center gap-1 rounded-lg border px-1.5 text-[10px] font-medium shadow-[0_6px_18px_rgba(15,23,42,.16)] backdrop-blur-md transition hover:scale-[1.02]" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }} title={t("common.download")} onClick={(event) => (event.stopPropagation(), onDownload())}>
@@ -1003,9 +1008,7 @@ function ResizeHandle({ corner, onMouseDown }: { corner: ResizeCorner; onMouseDo
     return <div className={`absolute z-50 size-7 ${positionClass}`} onMouseDown={(event) => onMouseDown(event, corner)} />;
 }
 
-function ConnectionHandleDot({ side, visible, onMouseDown }: { side: "left" | "right"; visible: boolean; onMouseDown: (event: React.MouseEvent) => void }) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
-
+function ConnectionHandleDot({ side, visible, theme, onMouseDown }: { side: "left" | "right"; visible: boolean; theme: NodeContentRendererProps["theme"]; onMouseDown: (event: React.MouseEvent) => void }) {
     return (
         <div
             className={`absolute top-1/2 z-30 flex size-12 -translate-y-1/2 cursor-crosshair items-center justify-center transition-opacity duration-150 ${

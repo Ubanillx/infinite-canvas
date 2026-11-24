@@ -45,7 +45,7 @@ export function CanvasSelectionToolbar({
 
     return (
         <>
-            <svg className="pointer-events-none absolute z-[65] overflow-visible" style={{ left, top, width, height }}>
+            <svg data-canvas-pan-overlay className="pointer-events-none absolute z-[65] overflow-visible" style={{ left, top, width, height, translate: "var(--canvas-pan-x, 0px) var(--canvas-pan-y, 0px)" }}>
                 <rect
                     x={1}
                     y={1}
@@ -64,10 +64,11 @@ export function CanvasSelectionToolbar({
             {showActions ? (
                 <div
                     className="absolute top-[max(176px,var(--selection-toolbar-top))] z-[70] flex w-max max-w-[calc(100%-24px)] -translate-x-1/2 -translate-y-full flex-wrap items-center justify-center gap-x-2 text-sm sm:top-[max(128px,var(--selection-toolbar-top))]"
-                    style={{ "--selection-toolbar-top": `${top - 8}px`, left: `clamp(min(200px, 50%), ${left + width / 2}px, max(calc(100% - 200px), 50%))`, color: theme.node.text } as CSSProperties}
+                    style={{ "--selection-toolbar-top": `calc(${top - 8}px + var(--canvas-pan-y, 0px))`, left: `clamp(min(200px, 50%), calc(${left + width / 2}px + var(--canvas-pan-x, 0px)), max(calc(100% - 200px), 50%))`, color: theme.node.text } as CSSProperties}
                     onMouseDown={(event) => event.stopPropagation()}
                     onPointerDown={(event) => event.stopPropagation()}
                     data-canvas-selection-toolbar
+                    data-canvas-pan-overlay
                 >
                     <SelectionAction title={t("canvas.layout.selectionHint")} label={t("canvas.layout.selection")} icon={<LayoutDashboard className="size-4" />} onClick={onAutoLayout} />
                     {imageCount > 1 ? <SelectionAction title={t("canvas.reversePrompt.selectionTitle", { count: imageCount })} label={t("canvas.reversePrompt.selectionAction")} description={t("canvas.reversePrompt.selectionSummary", { count: imageCount })} icon={<ScanText className="size-4" />} onClick={onReversePrompt} /> : null}

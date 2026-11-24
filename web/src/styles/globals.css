@@ -496,6 +496,7 @@
 .app-loading-orbit,
 .app-loading-satellite { animation: app-loading-spin 2.2s linear infinite; }
 .app-loading-orbit-reverse { animation: app-loading-spin 7s linear infinite reverse; }
+.app-loading-overlay.invisible :is(.app-loading-orbit, .app-loading-orbit-reverse, .app-loading-satellite) { animation: none; }
 
 @keyframes app-loading-enter {
     from { opacity: 0; transform: translateY(10px); }

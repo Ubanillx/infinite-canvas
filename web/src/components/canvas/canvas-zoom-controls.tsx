@@ -28,7 +28,7 @@ export const CanvasZoomControls = memo(function CanvasZoomControls({ scale, onSc
 
     return (
         <div className="absolute bottom-5 left-5 z-50" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
-            <div className="flex h-14 items-center gap-1 rounded-xl border px-2 shadow-lg backdrop-blur" style={dockStyle}>
+            <div className="flex h-14 items-center gap-1 rounded-xl border px-2 shadow-lg" style={dockStyle}>
                 <Tooltip title={isMiniMapOpen ? t("canvas.miniMapClose") : t("canvas.miniMapOpen")}>
                     <Button
                         type="text"

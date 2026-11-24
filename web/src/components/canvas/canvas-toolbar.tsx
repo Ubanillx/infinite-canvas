@@ -97,7 +97,7 @@ export function CanvasToolbar({
     return (
         <div ref={rootRef} className="pointer-events-none fixed inset-x-3 bottom-[88px] z-[70] flex justify-center md:absolute md:inset-x-4 md:z-50" style={compact ? undefined : { left: 300, bottom: 20 }} data-canvas-bottom-toolbar data-canvas-shortcuts-ignore>
             {tip ? <DockTip label={tip} x={tipX} theme={theme} /> : null}
-            <div className="pointer-events-auto flex h-14 max-w-full items-center rounded-xl border px-2 backdrop-blur" style={dockStyle}>
+            <div className="pointer-events-auto flex h-14 max-w-full items-center rounded-xl border px-2" style={dockStyle}>
                 <div ref={wrapRef} className="thin-scrollbar flex h-full min-w-0 items-center gap-1 overflow-x-auto [&>*]:shrink-0">
                     <ToolbarButton id={`tool-${canvasTool}`} label={t(`canvas.toolbar.${canvasTool}`)} active hovered={hovered} activeStyle={activeStyle} hoverStyle={hoverStyle} wrapRef={wrapRef} onTipX={setTipX} onHover={setHovered} onClick={() => onCanvasToolChange(canvasTool === "select" ? "pan" : "select")}>
                         {canvasTool === "select" ? <MousePointer2 className="size-4.5" /> : <Hand className="size-4.5" />}

@@ -117,9 +117,10 @@ export const Minimap = memo(function Minimap({ nodes, viewport, viewportSize, on
             opacity: 0.8,
         }} />;
     }), [nodes, toMinimap, scale, theme.node.muted, registryVersion]);
+    const panRatio = -scale / viewport.k;
 
     return (
-        <div className="absolute bottom-24 left-6 z-50 overflow-hidden rounded-lg border shadow-2xl backdrop-blur-sm" style={{ width, height, background: theme.toolbar.panel, borderColor: theme.toolbar.border }}>
+        <div className="absolute bottom-24 left-6 z-50 overflow-hidden rounded-lg border shadow-2xl" style={{ width, height, background: theme.toolbar.panel, borderColor: theme.toolbar.border }}>
             <div
                 ref={containerRef}
                 className="relative h-full w-full cursor-crosshair"
@@ -141,7 +142,7 @@ export const Minimap = memo(function Minimap({ nodes, viewport, viewportSize, on
                 onLostPointerCapture={finishDrag}
             >
                 {nodeMarkers}
-                <div className="pointer-events-none absolute border" style={{ transform: `translate(${viewportRect.x}px, ${viewportRect.y}px)`, width: viewportRect.w, height: viewportRect.h, borderColor: theme.node.activeStroke, background: `${theme.node.activeStroke}18` }} />
+                <div data-canvas-pan-overlay className="pointer-events-none absolute border" style={{ transform: `translate(${viewportRect.x}px, ${viewportRect.y}px)`, translate: `calc(var(--canvas-pan-x, 0px) * ${panRatio}) calc(var(--canvas-pan-y, 0px) * ${panRatio})`, width: viewportRect.w, height: viewportRect.h, borderColor: theme.node.activeStroke, background: `${theme.node.activeStroke}18` }} />
             </div>
         </div>
     );

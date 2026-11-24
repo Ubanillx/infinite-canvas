@@ -17,7 +17,6 @@ import { getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
 import { imageReferenceLabel } from "@/lib/image-reference-prompt";
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
 import { getCanvasConnectionIndex, getCanvasNodeIndex } from "@/lib/canvas/canvas-graph-index";
-import { getCanvasConnectionGeometry } from "@/lib/canvas/canvas-connection-geometry";
 import { avoidCanvasNodeOverlap, expandCanvasGroups, placeCanvasNodes } from "@/lib/canvas/canvas-node-placement";
 import { autoLayoutCanvas } from "@/lib/canvas/canvas-auto-layout";
 import { assertCanvasTaskRequest, canvasTaskRetryConfig, savedCanvasTaskRetry } from "@/lib/canvas/canvas-generation-tasks";
@@ -29,7 +28,7 @@ import { fitNodeSize, nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
 import { captureVideoFrame, type VideoFramePosition } from "@/lib/canvas/canvas-video-frame";
 import { App, Button, Modal } from "antd";
 import { NODE_DEFAULT_SIZE, getNodeSpec } from "@/constant/canvas";
-import { ActiveConnectionPath, ConnectionPath } from "@/components/canvas/canvas-connections";
+import { ActiveConnectionPath } from "@/components/canvas/canvas-connections";
 import { CanvasConfigComposer } from "@/components/canvas/canvas-config-composer";
 import { CanvasConfigNodePanel } from "@/components/canvas/canvas-config-node-panel";
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
@@ -58,6 +57,7 @@ import type { TemplateCanvasContext } from "@/lib/agent/agent-template-tools";
 import { useCanvasGenerationTasks } from "@/pages/canvas/hooks/use-canvas-generation-tasks";
 import { useAgentBridge } from "@/pages/canvas/hooks/use-agent-bridge";
 import { usePluginHost } from "@/pages/canvas/hooks/use-plugin-host";
+import { CanvasScene } from "@/pages/canvas/components/canvas-scene";
 import { buildNodeMentionReferences, getGroupResourceNodes, isCanvasReferenceNode, reuseCanvasResourceNodes, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { applyNodeConfigPatch, audioMetadata, buildAudioGenerationMetadata, buildImageGenerationMetadata, createCanvasNode, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-node-factory";
@@ -224,6 +224,8 @@ function InfiniteCanvasPage() {
     const toggleAgentPanel = useAgentStore((state) => state.togglePanel);
     const openAgentPanel = useAgentStore((state) => state.openPanel);
     const containerRef = useRef<HTMLDivElement>(null);
+    const viewportOverlayRef = useRef<HTMLElement>(null);
+    const sceneCoverageRef = useRef<((viewport: ViewportTransform) => boolean) | null>(null);
     const imageInputRef = useRef<HTMLInputElement>(null);
     const uploadTargetRef = useRef<{ nodeId?: string; position?: Position } | null>(null);
     const clipboardRef = useRef<CanvasClipboard | null>(null);
@@ -608,7 +610,7 @@ function InfiniteCanvasPage() {
         if (!projectLoaded) return;
         if (viewportSaveTimerRef.current) clearTimeout(viewportSaveTimerRef.current);
         viewportSaveTimerRef.current = setTimeout(() => {
-            updateProject(projectId, { viewport: viewportRef.current });
+            updateProject(projectId, { viewport });
             viewportSaveTimerRef.current = null;
         }, 500);
         return () => {
@@ -620,12 +622,11 @@ function InfiniteCanvasPage() {
         nodesRef.current = nodes;
         connectionsRef.current = connections;
         selectedNodeIdsRef.current = selectedNodeIds;
-        viewportRef.current = viewport;
         sizeRef.current = size;
         connectingParamsRef.current = connectingParams;
         connectionTargetNodeIdRef.current = connectionTargetNodeId;
         pendingConnectionCreateRef.current = pendingConnectionCreate;
-    }, [nodes, connections, selectedNodeIds, viewport, size, connectingParams, connectionTargetNodeId, pendingConnectionCreate]);
+    }, [nodes, connections, selectedNodeIds, size, connectingParams, connectionTargetNodeId, pendingConnectionCreate]);
 
     useLayoutEffect(() => {
         selectionBoxRef.current = selectionBox;
@@ -761,49 +762,9 @@ function InfiniteCanvasPage() {
         [],
     );
 
-    const viewBounds = useMemo(() => {
-        const padding = 280;
-        const { width, height } = size;
-        const left = -viewport.x / viewport.k - padding;
-        const top = -viewport.y / viewport.k - padding;
-        return { left, top, right: left + width / viewport.k + padding * 2, bottom: top + height / viewport.k + padding * 2 };
-    }, [size.height, size.width, viewport.k, viewport.x, viewport.y]);
-
-    // Reuse the scene while panning leaves its visible items unchanged.
-    const visibleNodesRef = useRef<CanvasNodeData[]>([]);
-    const visibleNodes = useMemo(
-        () => {
-            const visible = nodes.filter((node) => node.id === dialogNodeId || ((isNodeDragging || isNodeResizing) && selectedNodeIds.has(node.id)) || (node.position.x + node.width > viewBounds.left && node.position.x < viewBounds.right && node.position.y + node.height > viewBounds.top && node.position.y < viewBounds.bottom));
-            const previous = visibleNodesRef.current;
-            return visible.length === previous.length && visible.every((node, index) => node === previous[index]) ? previous : visible;
-        },
-        [dialogNodeId, isNodeDragging, isNodeResizing, nodes, selectedNodeIds, viewBounds],
-    );
-
     const nodeById = useMemo(() => getCanvasNodeIndex(nodes).byId, [nodes]);
     const connectionIndex = useMemo(() => getCanvasConnectionIndex(connections), [connections]);
 
-    // Connections are culled like nodes; a cubic curve stays inside its control-point hull, so endpoint bounds widened by the curvature is a safe test.
-    const visibleConnectionsRef = useRef<Array<{ connection: CanvasConnection; from: CanvasNodeData; to: CanvasNodeData }>>([]);
-    const visibleConnections = useMemo(
-        () => {
-            const visible = connections.flatMap((connection) => {
-                const from = nodeById.get(connection.fromNodeId);
-                const to = nodeById.get(connection.toNodeId);
-                if (!from || !to) return [];
-                const bounds = getCanvasConnectionGeometry(from, to);
-                const inView = bounds.right > viewBounds.left && bounds.left < viewBounds.right && bounds.bottom > viewBounds.top && bounds.top < viewBounds.bottom;
-                return inView ? [{ connection, from, to }] : [];
-            });
-            const previous = visibleConnectionsRef.current;
-            return visible.length === previous.length && visible.every((item, index) => item.connection === previous[index].connection && item.from === previous[index].from && item.to === previous[index].to) ? previous : visible;
-        },
-        [connections, nodeById, viewBounds],
-    );
-    useLayoutEffect(() => {
-        visibleNodesRef.current = visibleNodes;
-        visibleConnectionsRef.current = visibleConnections;
-    }, [visibleNodes, visibleConnections]);
     // The toolbar follows a single selected node selected by click, creation, marquee, or keyboard.
     // It stays hidden for multi-selection and while isNodeDragging is true.
     const singleSelectedNodeId = selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null;
@@ -3366,6 +3327,13 @@ function InfiniteCanvasPage() {
         setViewport(next);
         setContextMenu(null);
     }, []);
+    const handlePanStart = useCallback(() => {
+        if (focusAnimRef.current !== null) {
+            cancelAnimationFrame(focusAnimRef.current);
+            focusAnimRef.current = null;
+        }
+        setContextMenu(null);
+    }, []);
     const toggleMiniMap = useCallback(() => setIsMiniMapOpen((value) => !value), []);
 
     const renderNodePanel = useCallback(
@@ -3600,26 +3568,31 @@ function InfiniteCanvasPage() {
         };
     }, [viewport.k, selectedNodeIds, showSelectionToolbar, isNodeDragging, draggedNodeIds, relatedHighlight, activeNodeId, connectionTargetNodeId, connectingParams, referencePickerNodeId, referenceConnectedNodeIds, resourceNodes, isNodeResizing, dialogNodeId, selectionBox, resourceNodesByGroup, dropTargetGroupId, expandedBatchNodeIds, showImageInfo, mentionReferencesByNodeId, pluginHost, nodeRegistryVersion, activeRenderNodePanel, renderNodeContentPanel, handleNodeMouseDown, handleNodeSelectCapture, handleNodeHoverStart, handleNodeHoverEnd, handleConnectStart, handleNodeResizeStart, handleNodeResize, handleNodeResizeEnd, handleNodeContentChange, handleNodeTitleChange, toggleBatchExpanded, setBatchPrimary, duplicateBatchImage, downloadBatchImage, retryBatchImage, deleteBatchImage, handleNodeRetry, handleNodeViewImage, activeSelectNodeReference, handleNodeContextMenu]);
 
-    const connectionPaths = useMemo(() => visibleConnections.map(({ connection, from, to }) => (
-        <ConnectionPath
-            key={connection.id}
-            connection={connection}
-            from={from}
-            to={to}
-            active={selectedConnectionId === connection.id || relatedHighlight.connectionIds.has(connection.id)}
-            onSelect={handleConnectionSelect}
-            onContextMenu={handleConnectionContextMenu}
+    const activeConnection = useMemo(() => connectingParams ? (
+        <ActiveConnectionPath node={nodeById.get(connectingParams.nodeId)} handle={connectingParams} mouseWorld={mouseWorld} target={connectionTargetNodeId ? nodeById.get(connectionTargetNodeId) : undefined} />
+    ) : null, [connectingParams, nodeById, mouseWorld, connectionTargetNodeId]);
+    const pinnedNodeIds = isNodeDragging || isNodeResizing ? selectedNodeIds : undefined;
+    const isSceneCovered = useCallback((next: ViewportTransform) => sceneCoverageRef.current?.(next) ?? false, []);
+    const renderScene = useCallback((sceneViewport: ViewportTransform, isPanning: boolean, visibleOnly: boolean) => (
+        <CanvasScene
+            viewport={sceneViewport}
+            isPanning={isPanning}
+            visibleOnly={visibleOnly}
+            size={size}
+            nodes={nodes}
+            connections={connections}
+            nodeById={nodeById}
+            dialogNodeId={dialogNodeId}
+            pinnedNodeIds={pinnedNodeIds}
+            coverageRef={sceneCoverageRef}
+            selectedConnectionId={selectedConnectionId}
+            highlightedConnectionIds={relatedHighlight.connectionIds}
+            activeConnection={activeConnection}
+            renderNode={renderCanvasNode}
+            onConnectionSelect={handleConnectionSelect}
+            onConnectionContextMenu={handleConnectionContextMenu}
         />
-    )), [visibleConnections, selectedConnectionId, relatedHighlight, handleConnectionSelect, handleConnectionContextMenu]);
-
-    const scene = useMemo(() => (<>
-        <svg className="absolute left-0 top-0 overflow-visible" width={1} height={1} style={{ pointerEvents: "none", zIndex: 0 }}>
-            {connectionPaths}
-            {connectingParams ? <ActiveConnectionPath node={nodeById.get(connectingParams.nodeId)} handle={connectingParams} mouseWorld={mouseWorld} target={connectionTargetNodeId ? nodeById.get(connectionTargetNodeId) : undefined} /> : null}
-        </svg>
-
-        {visibleNodes.map(renderCanvasNode)}
-    </>), [connectionPaths, connectingParams, nodeById, mouseWorld, connectionTargetNodeId, visibleNodes, renderCanvasNode]);
+    ), [size, nodes, connections, nodeById, dialogNodeId, pinnedNodeIds, selectedConnectionId, relatedHighlight.connectionIds, activeConnection, renderCanvasNode, handleConnectionSelect, handleConnectionContextMenu]);
 
     // Viewport frames must not rerender closed dialogs or their form/portal trees.
     const dialogs = useMemo(() => (<>
@@ -3680,15 +3653,18 @@ function InfiniteCanvasPage() {
     return (
         <main className="flex h-full min-h-0 overflow-hidden" style={{ background: theme.canvas.background, color: theme.node.text }}>
             <CanvasSidePanel nodes={nodes} selectedNodeIds={selectedNodeIds} onFocusNode={focusNode} onPreviewNode={setPreviewNodeId} onHoverNode={setHoverPreviewNodeId} onInsertAsset={handleAssetInsert} />
-            <section className="relative min-w-0 flex-1 overflow-hidden">
+            <section ref={viewportOverlayRef} className="relative min-w-0 flex-1 overflow-hidden">
                 {topBar}
 
                 <InfiniteCanvas
                     containerRef={containerRef}
+                    overlayRef={viewportOverlayRef}
                     viewport={viewport}
+                    liveViewportRef={viewportRef}
                     tool={canvasTool}
                     backgroundMode={backgroundMode}
                     onViewportChange={handleViewportChange}
+                    onPanStart={handlePanStart}
                     onCanvasMouseDown={(event) => {
                         if (!referencePickerNodeId) handleCanvasMouseDown(event);
                     }}
@@ -3700,9 +3676,9 @@ function InfiniteCanvasPage() {
                     }}
                     onContextMenu={preventCanvasContextMenu}
                     onDrop={handleDrop}
+                    renderScene={renderScene}
+                    isSceneCovered={isSceneCovered}
                 >
-                    {scene}
-
                     {referencePickerNodeId ? <button type="button" className="absolute left-1/2 top-4 z-[90] -translate-x-1/2 rounded-full border px-4 py-2 text-sm font-medium shadow-lg backdrop-blur" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border }} onClick={exitNodeReferenceSelection}>{t("canvas.references.selectingHint")}</button> : null}
 
                     {selectionBox ? (
@@ -3755,7 +3731,7 @@ function InfiniteCanvasPage() {
                     </div>
                 </div>
 
-                <div className="absolute left-0 top-0 z-[70]" style={{ transform: visibleToolbarNode ? `translate(${viewport.x + (visibleToolbarNode.position.x + visibleToolbarNode.width / 2) * viewport.k}px, ${viewport.y + visibleToolbarNode.position.y * viewport.k - 14}px)` : undefined }}>
+                <div className="absolute left-0 top-0 z-[70]" data-canvas-pan-overlay={visibleToolbarNode ? "" : undefined} style={visibleToolbarNode ? { transform: `translate(${viewport.x + (visibleToolbarNode.position.x + visibleToolbarNode.width / 2) * viewport.k}px, ${viewport.y + visibleToolbarNode.position.y * viewport.k - 14}px)`, translate: "var(--canvas-pan-x, 0px) var(--canvas-pan-y, 0px)" } : undefined}>
                     {nodeHoverToolbar}
                 </div>
 

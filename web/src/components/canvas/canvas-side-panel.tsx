@@ -103,7 +103,7 @@ export const CanvasSidePanel = memo(function CanvasSidePanel({ nodes, selectedNo
 
     return (
         <motion.div
-            className="relative z-[60] flex h-full shrink-0"
+            className="relative z-[60] flex h-full shrink-0 will-change-[opacity]"
             initial={{ width: 0, opacity: 0 }}
             animate={{ width: panelOpen ? width + 1 : 0, opacity: panelOpen ? 1 : 0 }}
             transition={{ duration: resizing ? 0 : PANEL_MOTION_SECONDS, ease: PANEL_EASE }}
@@ -410,7 +410,7 @@ const CanvasNodesTab = memo(function CanvasNodesTab({ nodes, selectedNodeIds, on
 
 const NodeThumbnail = memo(function NodeThumbnail({ storageKey, content, title }: { storageKey?: string; content?: string; title: string }) {
     const previewUrl = useImagePreview(storageKey);
-    return <img src={previewUrl || content} alt={title} className="size-full object-cover" />;
+    return <img src={previewUrl || content} alt={title} loading="lazy" decoding="async" className="size-full object-cover" />;
 });
 
 function CheckMark({ checked, theme }: { checked: boolean; theme: CanvasTheme }) {
