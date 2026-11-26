@@ -14,7 +14,7 @@ async function snapshot(page: Page): Promise<CanvasAgentSnapshot> {
     });
 }
 
-async function seed(page: Page, request: APIRequestContext, firstNodeType = "text") {
+async function seed(page: Page, request: APIRequestContext, firstNodeType = "text", secondNodeType = "text") {
     const response = await request.post("/api/workspaces", { data: { name: "Canvas interaction performance" } });
     expect(response.ok()).toBeTruthy();
     const { workspace } = await response.json();
@@ -23,7 +23,7 @@ async function seed(page: Page, request: APIRequestContext, firstNodeType = "tex
     const project = {
         id: "performance", title: "Performance fixture", folderId: null, createdAt: now, updatedAt: now,
         nodes: Array.from({ length: 500 }, (_, index) => ({
-            id: `node-${index}`, type: index === 0 ? firstNodeType : "text", title: `Node ${index}`, width: 240, height: 180,
+            id: `node-${index}`, type: index === 0 ? firstNodeType : index === 1 ? secondNodeType : "text", title: `Node ${index}`, width: 240, height: 180,
             position: index < 2 ? { x: 100 + index * 420, y: 160 } : { x: 3000 + index % 20 * 280, y: Math.floor(index / 20) * 220 },
             metadata: { content: `Text ${index}` },
         })),
@@ -151,6 +151,103 @@ test("active pan moves canvas layers before committing the viewport and mounts n
     expect((await snapshot(page)).viewport).toEqual(zoomedViewport);
 });
 
+test("urgent visible-only pan keeps nearby mounted nodes through overscan preparation", async ({ page, request }) => {
+    const { surface, bounds } = await seed(page, request);
+    await page.evaluate(async (x) => {
+        const { useAgentStore } = await import("/src/stores/use-agent-store.ts");
+        useAgentStore.getState().canvasContext!.applyOps([{ type: "update_node", id: "node-2", patch: { position: { x, y: 160 } } }]);
+    }, bounds.width + 320);
+    await expect.poll(async () => (await snapshot(page)).nodes.find((node) => node.id === "node-2")?.position.x).toBe(bounds.width + 320);
+    await expect(surface.locator('[data-node-id="node-2"]')).toHaveCount(0);
+    await expect(page.locator(".app-loading-overlay")).toBeHidden();
+
+    const start = { x: bounds.x + 800, y: bounds.y + 400 };
+    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest(".relative.h-full.w-full.select-none.overflow-hidden") !== null, start)).toBe(true);
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down({ button: "middle" });
+    await expect(surface).toHaveCSS("cursor", "grabbing");
+    const result = await page.evaluate(async ({ x, y }) => {
+        const scene = document.querySelector(".relative.h-full.w-full.select-none.overflow-hidden > .absolute.origin-top-left")!;
+        const original = scene.querySelector('[data-node-id="node-0"]');
+        let removed = 0;
+        let added = 0;
+        const observer = new MutationObserver((records) => {
+            for (const record of records) {
+                removed += [...record.removedNodes].filter((node) => node === original).length;
+                added += [...record.addedNodes].filter((node) => node === original).length;
+            }
+        });
+        observer.observe(scene, { childList: true });
+        window.dispatchEvent(new PointerEvent("pointermove", { clientX: x - 600, clientY: y, buttons: 4 }));
+        for (let frame = 0; frame < 10 && !scene.style.transform.includes("-600px"); frame++) await new Promise(requestAnimationFrame);
+        for (let frame = 0; frame < 10 && !scene.querySelector('[data-node-id="node-2"]'); frame++) await new Promise(requestAnimationFrame);
+        await new Promise(requestAnimationFrame);
+        await new Promise(requestAnimationFrame);
+        observer.takeRecords().forEach((record) => {
+            removed += [...record.removedNodes].filter((node) => node === original).length;
+            added += [...record.addedNodes].filter((node) => node === original).length;
+        });
+        observer.disconnect();
+        return { removed, added, sameNode: scene.querySelector('[data-node-id="node-0"]') === original, newNodeVisible: Boolean(scene.querySelector('[data-node-id="node-2"]')), transform: scene.style.transform };
+    }, start);
+    expect(result.transform).toContain("-600px");
+    expect(result.newNodeVisible).toBe(true);
+    expect(result).toMatchObject({ removed: 0, added: 0, sameNode: true });
+    expect((await snapshot(page)).viewport).toEqual({ x: 0, y: 0, k: 1 });
+    await page.evaluate(({ x, y }) => window.dispatchEvent(new PointerEvent("pointerup", { clientX: x - 600, clientY: y, buttons: 0 })), start);
+    await page.mouse.up({ button: "middle" });
+    await expect.poll(async () => (await snapshot(page)).viewport.x).toBe(-600);
+});
+
+test("pan cursor stays scoped to the canvas through temporary tools and pointer cancellation", async ({ page, request }) => {
+    const { surface, bounds } = await seed(page, request);
+    const scene = surface.locator(":scope > .absolute.origin-top-left");
+    const panCursor = surface.locator("[data-canvas-pan-cursor]");
+    const cursorOf = (selector: typeof surface) => selector.evaluate((element) => getComputedStyle(element).cursor);
+    const bodyCursor = await page.evaluate(() => document.body.style.cursor);
+    await page.locator("[data-canvas-bottom-toolbar]").getByRole("button", { name: "平移", exact: true }).click();
+    expect(await cursorOf(scene)).toBe("auto");
+
+    await page.evaluate(() => (document.activeElement as HTMLElement)?.blur());
+    await page.keyboard.down("Space");
+    await expect.poll(() => cursorOf(scene)).toBe("grab");
+    await page.keyboard.up("Space");
+    await expect.poll(() => cursorOf(scene)).toBe("auto");
+    await page.keyboard.down("Control");
+    await expect.poll(() => cursorOf(scene)).toBe("grab");
+    await page.keyboard.up("Control");
+    await expect.poll(() => cursorOf(scene)).toBe("auto");
+
+    const corner = surface.locator('[data-node-id="node-0"] .cursor-nwse-resize').first();
+    expect(await cursorOf(corner)).toBe("nwse-resize");
+    await page.locator("[data-canvas-bottom-toolbar]").getByRole("button", { name: "选择", exact: true }).click();
+    await expect.poll(() => cursorOf(scene)).toBe("grab");
+    expect(await cursorOf(corner)).toBe("nwse-resize");
+
+    await surface.evaluate((element) => element.addEventListener("pointerdown", (event) => { (window as any).panPointerId = event.pointerId; }, { once: true }));
+    const start = { x: bounds.x + 800, y: bounds.y + 400 };
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down({ button: "middle" });
+    await expect.poll(() => cursorOf(surface)).toBe("grabbing");
+    await expect(panCursor).toBeVisible();
+    expect(await cursorOf(scene)).toBe("grab");
+    expect(await cursorOf(panCursor)).toBe("grabbing");
+    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.hasAttribute("data-canvas-pan-cursor"), start)).toBe(true);
+    expect(await page.evaluate(() => document.body.style.cursor)).toBe(bodyCursor);
+    expect(await surface.evaluate((element) => element.hasPointerCapture((window as any).panPointerId))).toBe(true);
+
+    const outside = { x: bounds.x - 20, y: start.y + 40 };
+    await page.mouse.move(outside.x, outside.y, { steps: 4 });
+    await expect.poll(async () => (await snapshot(page)).viewport.x).toBe(0);
+    await page.evaluate(() => window.dispatchEvent(new PointerEvent("pointercancel", { pointerId: (window as any).panPointerId })));
+    await expect.poll(async () => (await snapshot(page)).viewport).toEqual({ x: outside.x - start.x, y: outside.y - start.y, k: 1 });
+    await expect.poll(() => cursorOf(surface)).toBe("grab");
+    await expect(panCursor).toHaveCount(0);
+    expect(await cursorOf(scene)).toBe("grab");
+    expect(await page.evaluate(() => document.body.style.cursor)).toBe(bodyCursor);
+    await page.mouse.up({ button: "middle" });
+});
+
 test("thumbnail notifications only reach subscribers for the changed storage key", async ({ page, request }) => {
     await seed(page, request);
     const result = await page.evaluate(async () => {
@@ -193,6 +290,60 @@ test("thumbnail notifications only reach subscribers for the changed storage key
         }
     });
     expect(result).toEqual({ afterFirst: { first: 1, other: 0, all: 1 }, afterCached: { first: 1, other: 0, all: 1 }, afterOther: { first: 2, other: 1, all: 3 } });
+});
+
+test("concurrent preview requests generate one thumbnail per image", async ({ page, request }) => {
+    await seed(page, request);
+    const image = await page.evaluate(async () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 2000;
+        canvas.height = 1000;
+        const context = canvas.getContext("2d")!;
+        context.fillStyle = "#b74d32";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.fillStyle = "#325b85";
+        context.fillRect(0, 0, 800, 1000);
+        const blob = await new Promise<Blob>((resolve) => canvas.toBlob((result) => resolve(result!), "image/png"));
+        return Array.from(new Uint8Array(await blob.arrayBuffer()));
+    });
+    let reads = 0;
+    let releaseRead!: () => void;
+    const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+    await page.route("**/api/media/blob/image%3Aperformance-preview-*", async (route) => {
+        if (route.request().url().endsWith("dedup")) {
+            reads++;
+            await readGate;
+        }
+        await route.fulfill({ status: 200, contentType: "image/png", body: Buffer.from(image) });
+    });
+    await page.evaluate(async () => {
+        const { ensureImagePreview, subscribeImagePreviews } = await import("/src/services/image-storage.ts");
+        const key = "image:performance-preview-dedup";
+        (window as any).previewDedupNotifications = 0;
+        (window as any).previewDedupUnsubscribe = subscribeImagePreviews(() => (window as any).previewDedupNotifications++, key);
+        await Promise.all(Array.from({ length: 40 }, () => ensureImagePreview(key)));
+    });
+    await expect.poll(() => reads).toBe(1);
+    await page.evaluate(async () => {
+        const { resolveImageUrl } = await import("/src/services/image-storage.ts");
+        (window as any).previewDedupOriginal = resolveImageUrl("image:performance-preview-dedup");
+    });
+    await page.evaluate(async () => {
+        const { ensureImagePreview, subscribeImagePreviews } = await import("/src/services/image-storage.ts");
+        (window as any).previewDedupDrain = 0;
+        subscribeImagePreviews(() => (window as any).previewDedupDrain++, "image:performance-preview-drain");
+        await ensureImagePreview("image:performance-preview-drain");
+    });
+    releaseRead();
+    await expect.poll(() => page.evaluate(() => (window as any).previewDedupDrain), { timeout: 30_000 }).toBe(1);
+    expect(await page.evaluate(() => (window as any).previewDedupOriginal)).toMatch(/^blob:/);
+    await page.evaluate(async () => {
+        const { ensureImagePreview } = await import("/src/services/image-storage.ts");
+        await Promise.all(Array.from({ length: 20 }, () => ensureImagePreview("image:performance-preview-dedup")));
+    });
+    expect(reads).toBe(1);
+    expect(await page.evaluate(() => (window as any).previewDedupNotifications)).toBe(1);
+    await page.evaluate(() => (window as any).previewDedupUnsubscribe());
 });
 
 test("concurrent image readers share downloads and failed reads can be retried", async ({ page, request }) => {
@@ -339,6 +490,22 @@ test("configuration node keeps native mode navigation and model picker keyboard 
     await expect(modelPicker).toHaveAttribute("aria-expanded", "false");
 });
 
+test("opening another model picker closes the previous picker", async ({ page, request }) => {
+    const { surface } = await seed(page, request, "config", "config");
+    await expect(page.locator(".app-loading-overlay")).toBeHidden();
+    const first = surface.locator('[data-node-id="node-0"] [role="combobox"]');
+    const second = surface.locator('[data-node-id="node-1"] [role="combobox"]');
+    await page.evaluate(() => {
+        (document.querySelector('[data-node-id="node-0"] [role="combobox"]') as HTMLElement).click();
+        (document.querySelector('[data-node-id="node-1"] [role="combobox"]') as HTMLElement).click();
+    });
+    await expect(first).toHaveAttribute("aria-expanded", "false");
+    await expect(second).toHaveAttribute("aria-expanded", "true");
+    await first.evaluate((trigger: HTMLElement) => trigger.click());
+    await expect(second).toHaveAttribute("aria-expanded", "false");
+    await expect(first).toHaveAttribute("aria-expanded", "true");
+});
+
 test("memoized sidebar exports current geometry after a node drag", async ({ page, request }) => {
     await seed(page, request, "config");
     await page.getByRole("button", { name: "展开面板", exact: true }).click();
@@ -416,6 +583,7 @@ test("zoom slider, minimap and side-panel resize commit their final input", asyn
 
 test("window blur flushes pending drag, resize and pan updates without leaving a gesture active", async ({ page, request }) => {
     const { bounds, read } = await seed(page, request);
+    const bodyCursor = await page.evaluate(() => document.body.style.cursor);
     await page.locator("[data-canvas-bottom-toolbar]").getByRole("button", { name: "平移", exact: true }).click();
     const node = page.locator('[data-node-id="node-0"]');
     await page.mouse.move(bounds.x + 180, bounds.y + 210);
@@ -448,6 +616,8 @@ test("window blur flushes pending drag, resize and pan updates without leaving a
     await page.mouse.up({ button: "middle" });
     await expect.poll(async () => (await snapshot(page)).viewport).toEqual({ x: 40, y: 20, k: 1 });
     expect((await snapshot(page)).nodes[0].position).toEqual({ x: 190, y: 210 });
+    expect(await page.evaluate(() => document.body.style.cursor)).toBe(bodyCursor);
+    await expect(page.locator(".relative.h-full.w-full.select-none.overflow-hidden")).toHaveCSS("cursor", "auto");
 });
 
 test("memoized plugin UI follows registration, removal and the current zoom scale", async ({ page, request }) => {

@@ -137,6 +137,31 @@ for (const source of ["remote", "stored"] as const) {
     });
 }
 
+test("canvas image actions only blur while visible", async ({ page, request }) => {
+    await seedDownloadButtons(page, request, "remote");
+    await page.goto("/canvas/download-buttons");
+    const node = page.locator('[data-node-id="download-node"]').first();
+    const primaryDownload = node.locator('button[title="下载"]').first();
+    await expect(node).toBeVisible();
+    const noHover = await page.evaluate(() => matchMedia("(hover: none)").matches);
+    if (!noHover) await page.mouse.move(0, 0);
+    await expect.poll(() => primaryDownload.evaluate((button) => getComputedStyle(button).backdropFilter)).toBe(noHover ? "blur(12px)" : "none");
+
+    await node.click({ position: { x: 65, y: 70 } });
+    await node.getByRole("button", { name: "图片组已收起", exact: true }).click();
+    await expect(node.getByRole("button", { name: "图片组已展开", exact: true })).toBeVisible();
+    const candidateActions = node.locator('.absolute.z-20.overflow-hidden.rounded-3xl button[title="下载"], .absolute.z-20.overflow-hidden.rounded-3xl button[title="创建副本"], .absolute.z-20.overflow-hidden.rounded-3xl button[title="设为主图"]');
+    await expect(candidateActions).toHaveCount(3);
+    if (!noHover) await page.mouse.move(0, 0);
+    await expect.poll(() => candidateActions.evaluateAll((buttons) => buttons.map((button) => getComputedStyle(button).backdropFilter))).toEqual(Array(3).fill(noHover ? "blur(12px)" : "none"));
+
+    if (!noHover) {
+        await node.hover();
+        await expect.poll(() => primaryDownload.evaluate((button) => getComputedStyle(button).backdropFilter)).toBe("blur(12px)");
+        await expect.poll(() => candidateActions.evaluateAll((buttons) => buttons.map((button) => getComputedStyle(button).backdropFilter))).toEqual(Array(3).fill("blur(12px)"));
+    }
+});
+
 test("image downloads save bytes for URL, data URL, blob URL and binary results without opening a tab", async ({ page, context }) => {
     await page.route("**/api/remote-media?*", (route) => {
         expect(new URL(route.request().url()).searchParams.get("url")).toBe(downloadUrl);
