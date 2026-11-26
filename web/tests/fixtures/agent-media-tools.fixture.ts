@@ -109,7 +109,7 @@ test("invalid package references and unknown metadata never upload or commit", a
 test("failed template commit reports media uploads without claiming success", async () => {
     const exported = await runMediaTool("templates_export", { workspaceId: workspace.id, templateId: template.id }) as any;
     failCommit = true;
-    await expect(runMediaTool("templates_import", { workspaceId: workspace.id, package: exported.package })).rejects.toThrow("已上传但尚未引用的媒体：image:new-1, image:new-2");
+    await expect(runMediaTool("templates_import", { workspaceId: workspace.id, package: exported.package })).rejects.toThrow("已上传但尚未引用：image:new-1, image:new-2");
     expect(commit).toBeNull();
 });
 

@@ -891,13 +891,13 @@ function workspaceMediaStorage(): Plugin {
             if (req.method !== "PUT") return sendJson(res, 405, { error: "Method not allowed" });
             if (!canWriteWorkspace(context)) return sendJson(res, 403, { error: "当前工作区为只读权限" });
             const declaredLength = Number(req.headers["content-length"] || 0);
-            if (declaredLength > maxMediaBytes) return sendJson(res, 413, { error: "媒体超过 100 MB，未保存到服务器" });
+            if (declaredLength > maxMediaBytes) return sendJson(res, 413, { error: "媒体超过 100 MB，未能保存" });
             let receivedBytes = 0;
             const limit = new Transform({
                 transform(chunk: Buffer, _encoding, callback) {
                     receivedBytes += chunk.length;
                     // 声明长度缺失时仍以实际字节数兜底，超限即中断上传。
-                    if (receivedBytes > maxMediaBytes) return callback(new RequestBodyError(413, "媒体超过 100 MB，未保存到服务器"));
+                    if (receivedBytes > maxMediaBytes) return callback(new RequestBodyError(413, "媒体超过 100 MB，未能保存"));
                     callback(null, chunk);
                 },
             });

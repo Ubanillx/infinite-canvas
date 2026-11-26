@@ -134,7 +134,7 @@ async function readMedia(workspaceId: string, storageKey: string) {
 async function upload(workspaceId: string, kind: Kind, blob: Blob) {
     assertAgentWorkspace(workspaceId);
     const stored = kind === "image" ? await uploadImage(blob) : await uploadMediaFile(blob, kind);
-    if (!stored.storageKey) throw new Error("媒体未保存到工作区");
+    if (!stored.storageKey) throw new Error("媒体未保存");
     return { storageKey: stored.storageKey, mimeType: stored.mimeType, bytes: stored.bytes, ...("width" in stored ? { width: stored.width, height: stored.height } : {}) };
 }
 
@@ -266,8 +266,8 @@ export async function runMediaTool(name: MediaToolName, input: Input): Promise<u
         if (kind !== "image" && kind !== "video" && kind !== "audio" && kind !== "file") throw new Error("媒体类型无效");
         const stored = await upload(workspaceId, kind, dataBlob(input.dataUrl, kind, "dataUrl"));
         try { assertAgentWorkspace(workspaceId); }
-        catch (error) { throw new Error(`${error instanceof Error ? error.message : String(error)}；已上传但尚未引用的媒体：${stored.storageKey}`); }
-        return { status: "stored", workspaceId, ...stored, note: "媒体已存储；尚未加入画布、素材或模板" };
+        catch (error) { throw new Error(`${error instanceof Error ? error.message : String(error)}；已上传但尚未引用：${stored.storageKey}`); }
+        return { status: "stored", workspaceId, ...stored, note: "媒体已存储，尚未加入画布、素材或模板" };
     }
     if (name === "templates_export") {
         const templateId = text(input.templateId, "templateId");
@@ -312,7 +312,7 @@ export async function runMediaTool(name: MediaToolName, input: Input): Promise<u
             const receipt = await useCanvasTemplateStore.getState().addImportedTemplate(template);
             return { status: "committed", ...receipt, id: template.id, templateId: template.id };
         } catch (error) {
-            throw new Error(`${error instanceof Error ? error.message : String(error)}；已上传但尚未引用的媒体：${uploaded.length ? uploaded.join(", ") : "无"}`);
+            throw new Error(`${error instanceof Error ? error.message : String(error)}；已上传但尚未引用：${uploaded.length ? uploaded.join(", ") : "无"}`);
         }
     }
 }

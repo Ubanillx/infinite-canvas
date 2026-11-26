@@ -159,7 +159,7 @@ export async function createGenerationTask(context: Context, body: unknown, opti
         const references: ReferenceSnapshot[] = [];
         for (const reference of input.references) {
             const media = await queryOne<{ object_version: string; mime_type: string; remote_path: string }>(tx, "SELECT object_version, mime_type, remote_path FROM media_files WHERE workspace_id = $1 AND storage_key = $2", context.id, reference.storageKey);
-            if (!media || media.remote_path || !media.mime_type.startsWith(`${reference.kind}/`)) throw new GenerationTaskError("参考媒体不存在、类型不符或尚未保存到服务器");
+            if (!media || media.remote_path || !media.mime_type.startsWith(`${reference.kind}/`)) throw new GenerationTaskError("参考媒体不存在、类型不符或尚未保存");
             references.push({ ...reference, objectVersion: media.object_version, mimeType: media.mime_type });
         }
         const submissions = input.kind === "image" || input.kind === "text" ? Array.from({ length: Number(input.settings.count) }, () => ({ status: "queued" })) : [];
