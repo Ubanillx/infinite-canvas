@@ -56,10 +56,10 @@ export const CanvasScene = memo(function CanvasScene({
         const mounted = isPanning ? new Set(previous.map((node) => node.id)) : null;
         const retainedBounds = isPanning ? getViewBounds(viewport, size, padding + Math.max(size.width, size.height) / viewport.k) : null;
         const visible = nodes.filter((node) => node.id === dialogNodeId || pinnedNodeIds?.has(node.id) || nodeIntersects(node, viewBounds)
-            || (retainedBounds && node.type === CanvasNodeType.Config && mounted?.has(node.id)
+            || (retainedBounds && (node.type === CanvasNodeType.Config || (visibleOnly && (node.type === CanvasNodeType.Image || node.type === CanvasNodeType.Text))) && mounted?.has(node.id)
                 && nodeIntersects(node, retainedBounds) && getNodePluginId(node.type) === "builtin"));
         return visible.length === previous.length && visible.every((node, index) => node === previous[index]) ? previous : visible;
-    }, [dialogNodeId, isPanning, nodes, padding, pinnedNodeIds, size, viewBounds, viewport]);
+    }, [dialogNodeId, isPanning, nodes, padding, pinnedNodeIds, size, viewBounds, viewport, visibleOnly]);
 
     // A curve may cross the viewport while both endpoints are outside it.
     const sceneConnections = useMemo(() => connections.flatMap((connection) => {

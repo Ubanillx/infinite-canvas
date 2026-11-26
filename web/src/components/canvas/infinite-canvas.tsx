@@ -167,7 +167,6 @@ export function InfiniteCanvas({ containerRef, overlayRef, viewport, liveViewpor
         const next = inputViewportRef.current;
         if (next !== renderedViewportRef.current) onViewportChange(next);
         setIsPanning(false);
-        document.body.style.cursor = "";
     }, [onViewportChange, viewportTask]);
 
     useEffect(() => {
@@ -261,7 +260,6 @@ export function InfiniteCanvas({ containerRef, overlayRef, viewport, liveViewpor
             };
             onPanStart();
             setIsPanning(true);
-            document.body.style.cursor = "grabbing";
             return;
         }
 
@@ -314,7 +312,6 @@ export function InfiniteCanvas({ containerRef, overlayRef, viewport, liveViewpor
             window.removeEventListener("pointermove", handlePointerMove);
             window.removeEventListener("pointerup", handlePointerUp);
             window.removeEventListener("pointercancel", handlePointerUp);
-            document.body.style.cursor = "";
         };
     }, [finishPan, onCanvasDeselect, viewportTask]);
 
@@ -355,11 +352,14 @@ export function InfiniteCanvas({ containerRef, overlayRef, viewport, liveViewpor
                 style={{
                     transform: sceneTransform(viewport),
                     willChange: "transform",
+                    // Keep gesture cursor changes outside the scene's inherited styles.
+                    cursor: activeTool === "pan" ? "grab" : "auto",
                 }}
             >
                 {renderScene(cullingViewport, isPanning, currentWindow?.visibleOnly ?? false)}
                 {children}
             </div>
+            {isPanning ? <div data-canvas-pan-cursor className="absolute inset-0 cursor-grabbing" /> : null}
         </div>
     );
 }

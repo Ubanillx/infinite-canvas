@@ -28,6 +28,7 @@ const previewListeners = new Set<() => void>();
 const previewListenersByKey = new Map<string, Set<() => void>>();
 let previewRevision = 0;
 let previewQueue: Promise<unknown> = Promise.resolve();
+const queuedPreviewKeys = new Set<string>();
 const IMAGE_PREVIEW_VERSION = 1;
 const IMAGE_DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
 const IMAGE_DECODE_TIMEOUT_MS = 10_000;
@@ -196,6 +197,8 @@ export async function ensureImagePreview(storageKey?: string) {
     const cached = previewUrls.get(storageKey);
     if (cached) return cached;
     const stored = await previewStore.getItem<StoredImagePreview>(storageKey).catch(() => null);
+    const loaded = previewUrls.get(storageKey);
+    if (loaded) return loaded;
     if (stored?.version === IMAGE_PREVIEW_VERSION) return stored.blob ? cacheImagePreview(storageKey, stored.blob) : undefined;
     queueImagePreview(storageKey);
     return undefined;
@@ -203,12 +206,16 @@ export async function ensureImagePreview(storageKey?: string) {
 
 // 缩略图生成排成一队，避免一次打开大量图片时同时解码。
 function queueImagePreview(storageKey: string) {
+    if (queuedPreviewKeys.has(storageKey)) return;
+    queuedPreviewKeys.add(storageKey);
     previewQueue = previewQueue
         .then(async () => {
-            const original = await getImageBlob(storageKey);
-            if (original) await storeImagePreview(storageKey, original);
+            if (previewUrls.has(storageKey)) return;
+            const url = await resolveImageUrl(storageKey);
+            if (url) await storeImagePreview(storageKey, await fetch(url).then((response) => response.blob()));
         })
-        .catch(() => undefined);
+        .catch(() => undefined)
+        .finally(() => queuedPreviewKeys.delete(storageKey));
 }
 
 async function storeImagePreview(storageKey: string, original: Blob) {
