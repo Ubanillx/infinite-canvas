@@ -5,6 +5,12 @@ description: Implemented changes that still need manual verification
 
 # Pending Tests
 
+## Canvas loading placeholder
+
+- While a canvas project loads its workspace, project and nodes, the page shows a themed placeholder shell. Background, dot grid and toolbar placeholders come from the current canvas theme, so light and dark themes no longer fall back to fixed black and white blocks.
+- A centered “Loading canvas…” status with a four-tile pulse sits above the shell; reduced-motion users get static tiles. On narrow screens the toolbar placeholder is docked and centered, while desktop offsets it past the left panel so it never covers the canvas.
+- Verify: refresh or first open never flashes the placeholder after content, dark and light palettes match the canvas, reduced motion shows no animation, the mobile toolbar placeholder is not clipped, and swapping to the real canvas causes no jump.
+
 ## Agent 重启后的工具回执恢复
 
 - 工具请求和结果保存在所属 Agent 工作区的 `.infinite-canvas/tool-receipts/`，存储版本独立于通信协议。逐请求文件先写临时文件并刷新，再原子替换；发出工具前保存请求，确认 HTTP 回执及结束工具等待前保存结果。磁盘提交失败不派发新工具或确认结果，浏览器保留原回执供恢复后补交。
