@@ -1,33 +1,46 @@
+import { useTranslation } from "react-i18next";
+
+import { canvasThemes } from "@/lib/canvas-theme";
+import { useThemeStore } from "@/stores/use-theme-store";
+
+import "./canvas-refresh-shell.css";
+
 export function CanvasRefreshShell() {
+    const { t } = useTranslation();
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const dockStyle = { background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.item };
+
     return (
-        <main className="relative h-full min-h-0 overflow-hidden bg-background text-foreground">
+        <main className="relative grid h-full min-h-0 place-items-center overflow-hidden" style={{ background: theme.canvas.background }}>
             <div
-                className="absolute inset-0 opacity-60"
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0 opacity-40"
                 style={{
-                    backgroundImage: "radial-gradient(circle, var(--border) 1px, transparent 1px)",
-                    backgroundSize: "28px 28px",
+                    backgroundImage: `radial-gradient(circle, ${theme.canvas.dot} 1.15px, transparent 1.35px)`,
+                    backgroundSize: "48px 48px",
                 }}
             />
 
-            <div className="absolute bottom-5 left-1/2 z-50 flex h-14 -translate-x-1/2 items-center gap-1 rounded-xl border px-2 shadow-lg backdrop-blur" style={{ background: "var(--background)", borderColor: "var(--border)" }} aria-hidden="true">
-                {Array.from({ length: 7 }).map((_, index) => (
-                    <div key={index} className="size-8 rounded-md bg-current opacity-10" />
-                ))}
+            <div role="status" className="relative flex flex-col items-center gap-4 px-6 text-center" style={{ color: theme.node.muted }}>
+                <div aria-hidden="true" className="canvas-refresh-mosaic grid size-11 grid-cols-2 grid-rows-2 gap-1">
+                    <span className="row-span-2 rounded-md bg-current" />
+                    <span className="rounded-md bg-current" />
+                    <span className="rounded-md bg-current" />
+                </div>
+                <p className="text-sm font-medium">{t("canvas.projectPage.loading")}</p>
             </div>
 
-            <div className="absolute bottom-24 left-6 z-50 h-40 w-[240px] rounded-lg border shadow-2xl backdrop-blur-sm" style={{ background: "var(--background)", borderColor: "var(--border)" }} aria-hidden="true">
-                <div className="absolute left-7 top-7 h-5 w-12 rounded-sm bg-current opacity-10" />
-                <div className="absolute left-28 top-16 h-6 w-16 rounded-sm bg-current opacity-10" />
-                <div className="absolute bottom-7 left-16 h-8 w-20 rounded-sm bg-current opacity-10" />
-                <div className="absolute inset-5 rounded border border-current opacity-15" />
+            <div aria-hidden="true" className="pointer-events-none absolute inset-x-3 bottom-[88px] flex justify-center md:bottom-5 md:left-[300px] md:right-4">
+                <div className="flex h-14 max-w-full items-center gap-4 overflow-hidden rounded-xl border px-4" style={dockStyle}>
+                    {Array.from({ length: 8 }, (_, index) => <span key={index} className="size-4 shrink-0 rounded-sm bg-current opacity-15" />)}
+                </div>
             </div>
 
-            <div className="absolute bottom-5 left-5 z-50 flex h-14 w-[260px] items-center gap-2 rounded-xl border px-2 shadow-lg backdrop-blur" style={{ background: "var(--background)", borderColor: "var(--border)" }} aria-hidden="true">
-                <div className="size-8 rounded-md bg-current opacity-10" />
-                <div className="size-8 rounded-md bg-current opacity-10" />
-                <div className="h-1 flex-1 rounded-full bg-current opacity-10" />
-                <div className="h-4 w-10 rounded bg-current opacity-10" />
-                <div className="size-8 rounded-md bg-current opacity-10" />
+            <div aria-hidden="true" className="pointer-events-none absolute bottom-5 left-5 flex h-14 w-64 max-w-[calc(100%-40px)] items-center gap-4 rounded-xl border px-4" style={dockStyle}>
+                <span className="size-4 shrink-0 rounded-sm bg-current opacity-15" />
+                <span className="size-4 shrink-0 rounded-sm bg-current opacity-15" />
+                <span className="h-1 flex-1 rounded-full bg-current opacity-15" />
+                <span className="h-3 w-7 shrink-0 rounded-sm bg-current opacity-15" />
             </div>
         </main>
     );
